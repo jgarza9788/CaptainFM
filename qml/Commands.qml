@@ -287,6 +287,7 @@ QtObject {
               else if (p.dir.selectedCount > 0) p.dir.clearSelection()
               else if (p.deep) p.exitDeep()
               else if (p.dir.filter !== "") p.dir.setFilterText("")
+              else if (app.pickMode) app.quit()     // nothing left to clear: Esc cancels the file chooser
           } },
 
         { id: "file.copy", title: "Copy (yank)", fp: ["<C-c>"], keys: ["y y", "<C-c>"], run: () => yank(false) },
