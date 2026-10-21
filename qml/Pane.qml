@@ -252,18 +252,60 @@ FocusScope {
 
     DragGhost { id: ghost }
 
+    // Drags out of the list start from this item, which lives as long as the pane. A row can be destroyed in
+    // the middle of a drag (the folder changes under it), and the drag must not hold on to it.
+    Item {
+        id: dragSource
+        width: 1; height: 1
+        opacity: 0
+        Drag.dragType: Drag.Automatic
+        Drag.supportedActions: Qt.CopyAction | Qt.MoveAction | Qt.LinkAction
+        Drag.onDragFinished: dragSource.Drag.active = false
+    }
+    property int dragToken: 0
+    property var ghostResult: null      // keeps the grabbed picture alive for as long as the drag uses it
+
+    function beginDrag(rowIndex, fullPath, isDir) {
+        const paths = dragPaths(rowIndex)
+        const payload = JSON.parse(Backend.dragPayload(JSON.stringify(paths)))
+        // The picture under the pointer: the first name, "+N" for the rest.
+        ghost.name = baseName(paths[0])
+        ghost.count = paths.length
+        ghost.glyph = Style.glyph(ghost.name, paths[0] === fullPath && isDir, false)
+        const token = dragToken
+        ghost.grabToImage((result) => {
+            if (token !== dragToken) return
+            ghostResult = result
+            dragSource.Drag.mimeData = { "text/uri-list": payload.uriList, "text/plain": payload.plain }
+            dragSource.Drag.imageSource = result.url
+            dragSource.Drag.hotSpot = Qt.point(Style.pad * 2, ghost.height / 2)
+            dragSource.Drag.active = true
+        })
+    }
+
     // "Copy to docs", "Move to Trash", ...: what releasing the drag here would do.
     component DropChip: Rectangle {
-        property alias text: label.text
-        width: label.implicitWidth + Style.pad * 2.5
-        height: label.implicitHeight + Style.pad
+        property var hint: ({ kind: "", text: "" })
+        width: content.implicitWidth + Style.pad * 2.5
+        height: Math.round(Style.fontSize * 1.9)
         radius: height / 2
         color: Style.accent
-        Text {
-            id: label
+        Row {
+            id: content
             anchors.centerIn: parent
-            color: Style.bg
-            font { family: Style.font; pixelSize: Style.smallFont; bold: true }
+            spacing: Style.pad / 1.5
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: Dnd.glyph(hint.kind)
+                color: Style.bg
+                font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.15) }
+            }
+            Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: hint.text
+                color: Style.bg
+                font { family: Style.font; pixelSize: Style.smallFont; bold: true }
+            }
         }
     }
 
@@ -286,7 +328,7 @@ FocusScope {
         id: paneDrop
         anchors.fill: parent
         enabled: !pane.deep
-        property string hint: ""
+        property var hint: ({ kind: "", text: "" })
         onEntered: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
         onPositionChanged: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
         onDropped: (drop) => Dnd.accept(drop, dir.path, false)
@@ -298,8 +340,8 @@ FocusScope {
             z: 5
         }
         DropChip {
-            visible: paneDrop.containsDrag && paneDrop.hint !== ""
-            text: paneDrop.hint
+            visible: paneDrop.containsDrag && paneDrop.hint.kind !== ""
+            hint: paneDrop.hint
             anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: Style.pad * 3 }
             z: 7
         }
@@ -649,35 +691,19 @@ FocusScope {
                 text: Style.humanDate(row.mtime)
             }
 
-            Drag.dragType: Drag.Automatic
-            Drag.supportedActions: Qt.CopyAction | Qt.MoveAction | Qt.LinkAction
-            Drag.onDragFinished: row.Drag.active = false
-
             DragHandler {
                 id: dragHandler
                 target: null
                 onActiveChanged: {
-                    if (!active) return
-                    const paths = pane.dragPaths(row.index)
-                    const payload = JSON.parse(Backend.dragPayload(JSON.stringify(paths)))
-                    row.Drag.mimeData = { "text/uri-list": payload.uriList, "text/plain": payload.plain }
-                    // The picture under the pointer: the first name, "+N" for the rest.
-                    ghost.name = pane.baseName(paths[0])
-                    ghost.count = paths.length
-                    ghost.glyph = Style.glyph(ghost.name, paths[0] === row.fullPath && row.isDir, false)
-                    ghost.grabToImage((result) => {
-                        if (!dragHandler.active) return
-                        row.Drag.imageSource = result.url
-                        row.Drag.hotSpot = Qt.point(Style.pad * 2, ghost.height / 2)
-                        row.Drag.active = true
-                    })
+                    pane.dragToken++            // a release cancels a drag that is still being prepared
+                    if (active) pane.beginDrag(row.index, row.fullPath, row.isDir)
                 }
             }
 
             DropArea {
                 anchors.fill: parent
                 enabled: row.isDir
-                property string hint: ""
+                property var hint: ({ kind: "", text: "" })
                 onEntered: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onPositionChanged: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onDropped: (drop) => Dnd.accept(drop, row.fullPath, false)
@@ -687,8 +713,8 @@ FocusScope {
                     color: Style.alpha(Style.accent, 0.25)
                 }
                 DropChip {
-                    visible: parent.containsDrag && parent.hint !== ""
-                    text: parent.hint
+                    visible: parent.containsDrag && parent.hint.kind !== ""
+                    hint: parent.hint
                     anchors { right: parent.right; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
                     z: 8
                 }

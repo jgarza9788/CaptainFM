@@ -26,14 +26,27 @@ QtObject {
         return list.length > 0 && list.every(p => parentOf(p) === destination || p === destination)
     }
 
-    // The label shown on the drop target while dragging over it; "" when the drop would do nothing useful.
+    // Icon for a kind of drop (an arrow for move, a copy sheet for copy, ...), with a plain fallback.
+    function glyph(kind) {
+        switch (kind) {
+        case "copy": return Style.pick("\uf0c5", "+")
+        case "move": return Style.pick("\uf061", "→")
+        case "link": return Style.pick("\uf0c1", "↪")
+        case "trash": return Style.pick("\uf1f8", "✕")
+        case "download": return Style.pick("\uf019", "↓")
+        case "none": return Style.pick("\uf00c", "✓")
+        }
+        return ""
+    }
+
+    // What the drop target says while dragging over it: `{ kind, text }`, kind "" when a drop would do nothing useful.
     function hint(drag, destination, name, trash) {
         const list = paths(drag)
-        if (list.length === 0) return webUrls(drag).length > 0 ? "Download to " + name : ""
-        if (trash) return "Move to Trash"
+        if (list.length === 0) return webUrls(drag).length > 0 ? { kind: "download", text: "Download to " + name } : { kind: "", text: "" }
+        if (trash) return { kind: "trash", text: "Move to Trash" }
         const act = action(drag)
-        if (act === "move" && alreadyThere(list, destination)) return "Already here"
-        return (act === "copy" ? "Copy to " : act === "move" ? "Move to " : "Link in ") + name
+        if (act === "move" && alreadyThere(list, destination)) return { kind: "none", text: "Already here" }
+        return { kind: act, text: (act === "copy" ? "Copy to " : act === "move" ? "Move to " : "Link in ") + name }
     }
 
     // Do what the hint says. `trash` sends the files to the trash instead of into `destination`.

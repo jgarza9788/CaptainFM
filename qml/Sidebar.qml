@@ -207,7 +207,7 @@ Rectangle {
             id: dropHere
             anchors.fill: parent
             enabled: entry.item && entry.item.path !== "" && !entry.item.file
-            property string hint: ""
+            property var hint: ({ kind: "", text: "" })
             function update(drag) { hint = Dnd.hint(drag, entry.item.path, entry.item.label, entry.item.trash === true) }
             onEntered: (drag) => update(drag)
             onPositionChanged: (drag) => update(drag)
@@ -221,9 +221,9 @@ Rectangle {
             }
         }
         Text {
-            visible: dropHere.containsDrag && dropHere.hint !== "" && !side.compact
+            visible: dropHere.containsDrag && dropHere.hint.kind !== "" && !side.compact
             anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
-            text: dropHere.hint
+            text: Dnd.glyph(dropHere.hint.kind) + "  " + dropHere.hint.text
             color: Style.accent
             font { family: Style.font; pixelSize: Style.smallFont; bold: true }
         }
