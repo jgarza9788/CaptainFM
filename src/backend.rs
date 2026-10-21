@@ -118,6 +118,14 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "drop_paths"]
         fn dropPaths(&self, urls: &QString, text: &QString) -> QString;
+        /// `http(s)` URLs (JSON array) in a drop, e.g. a link or image dragged from a browser; same arguments as `dropPaths`.
+        #[qinvokable]
+        #[rust_name = "drop_urls"]
+        fn dropUrls(&self, urls: &QString, text: &QString) -> QString;
+        /// Download `urls` (JSON array) into `dest`. Reports through `opDone`.
+        #[qinvokable]
+        #[rust_name = "download_urls"]
+        fn downloadUrls(self: Pin<&mut Self>, urls: &QString, dest: &QString);
         /// Whether CaptainFM is the system file chooser for other apps (xdg-desktop-portal).
         #[qinvokable]
         #[rust_name = "system_picker"]
@@ -312,6 +320,25 @@ fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     let mut out: Vec<String> = urls.iter().filter_map(|u| local(u)).collect();
     if out.is_empty() {
         out = text.lines().filter_map(local).filter(|p| std::path::Path::new(p).exists()).collect();
+    }
+    out.dedup();
+    out
+}
+
+/// Web addresses in a drop: `http(s)` URLs in `urls`, else one per line in `text` (browsers offer a dragged link or
+/// image as text plus their own formats, not as a URI list).
+fn drop_urls(urls: &[String], text: &str) -> Vec<String> {
+    let web = |s: &str| {
+        let s = s.trim();
+        (s.starts_with("http://") || s.starts_with("https://")).then(|| s.to_owned())
+    };
+    let mut out: Vec<String> = urls.iter().filter_map(|u| web(u)).collect();
+    if out.is_empty() {
+        let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        // Only when every line is an address: selected text that merely contains one is not a download.
+        if !lines.is_empty() && lines.iter().all(|l| web(l).is_some() && !l.contains(' ')) {
+            out = lines.iter().filter_map(|l| web(l)).collect();
+        }
     }
     out.dedup();
     out
@@ -656,6 +683,16 @@ impl qobject::Backend {
         q(&serde_json::json!(drop_paths(&urls, &text.to_string())).to_string())
     }
 
+    fn drop_urls(&self, urls: &QString, text: &QString) -> QString {
+        let urls: Vec<String> = serde_json::from_str(&urls.to_string()).unwrap_or_default();
+        q(&serde_json::json!(drop_urls(&urls, &text.to_string())).to_string())
+    }
+
+    fn download_urls(self: Pin<&mut Self>, urls: &QString, dest: &QString) {
+        let (urls, dest) = (parse_paths(urls), dest.to_string());
+        self.run_op(move || ops::download(&urls, &dest));
+    }
+
     fn system_picker(&self) -> bool {
         crate::cli::portal_installed()
     }
@@ -778,6 +815,14 @@ mod tests {
         assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
         assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
         assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
+    }
+
+    #[test]
+    fn web_drops_become_downloads() {
+        assert_eq!(drop_urls(&["https://a/b.png".to_owned(), "file:///x".to_owned()], ""), ["https://a/b.png"]);
+        assert_eq!(drop_urls(&[], "https://a/b.png\r\n"), ["https://a/b.png"]);
+        assert!(drop_urls(&[], "see https://a/b.png for details").is_empty());
+        assert!(drop_urls(&[], "plain words").is_empty());
     }
 
     #[test]
