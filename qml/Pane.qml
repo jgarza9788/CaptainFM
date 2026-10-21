@@ -200,7 +200,14 @@ FocusScope {
     // Copy or move a drop into `destination`: what the source and modifier keys ask for, unless the user fixed it.
     function acceptDrop(drop, destination) {
         const paths = droppedPaths(drop)
-        if (paths.length === 0) return
+        if (paths.length === 0) {
+            // A link or image from a browser: fetch it into the folder.
+            const urls = JSON.parse(Backend.dropUrls(JSON.stringify(drop.hasUrls ? drop.urls.map(u => String(u)) : []), drop.hasText ? drop.text : ""))
+            if (urls.length === 0) return
+            drop.accept(Qt.CopyAction)
+            Backend.downloadUrls(JSON.stringify(urls), destination)
+            return
+        }
         drop.acceptProposedAction()
         const fixed = Prefs.v.dropAction
         const move = fixed === "move" || (fixed === "auto" && drop.proposedAction !== Qt.CopyAction)

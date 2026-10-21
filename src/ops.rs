@@ -67,6 +67,44 @@ fn record(action: Action) {
     j.undo.drain(..excess);
 }
 
+/// The file name a downloaded URL gets: its last path segment, decoded; `download` when there is none.
+pub fn url_file_name(url: &str) -> String {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    let path = rest.split(['?', '#']).next().unwrap_or("");
+    let path = path.split_once('/').map_or("", |(_, p)| p);
+    let name = crate::dbus::percent_decode(path.rsplit('/').next().unwrap_or(""));
+    let name: String = name.chars().filter(|c| !c.is_control() && *c != '/').collect();
+    let name = name.trim();
+    if name.is_empty() || name == "." || name == ".." { "download".to_owned() } else { name.to_owned() }
+}
+
+/// Download http(s) URLs into `dest_dir` with curl, e.g. an image or link dragged out of a browser.
+/// Not journaled: undo cannot bring a download back, and removing one is a plain delete.
+pub fn download(urls: &[String], dest_dir: &str) -> Outcome {
+    let mut out = Outcome::new("Downloaded");
+    for url in urls {
+        let dst = unique_dest(Path::new(dest_dir), &url_file_name(url));
+        let status = std::process::Command::new("curl")
+            .args(["-fsSL", "--max-time", "300", "--proto", "=http,https", "-o"])
+            .arg(&dst)
+            .args(["--", url])
+            .stdin(std::process::Stdio::null())
+            .status();
+        match status {
+            Ok(s) if s.success() => {
+                out.paths.push(dst.to_string_lossy().into_owned());
+                out.ok += 1;
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(&dst);
+                out.errors.push(format!("{}: download failed", base_name(&dst.to_string_lossy())));
+            }
+            Err(e) => out.errors.push(format!("curl: {e}")),
+        }
+    }
+    out
+}
+
 // ---- helpers ---------------------------------------------------------------------------
 
 fn base_name(p: &str) -> String {
@@ -443,6 +481,14 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn download_names_come_from_the_url() {
+        assert_eq!(url_file_name("https://example.com/a/b%20c.png?x=1#top"), "b c.png");
+        assert_eq!(url_file_name("https://example.com/"), "download");
+        assert_eq!(url_file_name("https://example.com"), "download");
+        assert_eq!(url_file_name("http://h/dir/.."), "download");
     }
 
     #[test]

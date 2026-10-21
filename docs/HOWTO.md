@@ -67,10 +67,12 @@ frequently and recently used folders (ranked by frecency), and common places lik
 - Name clashes never overwrite: pasting `a.txt` next to `a.txt` creates `a (copy).txt`.
 - Trash follows the freedesktop spec. **Undo works for copy, move, rename, new items and trash** (permanent
   delete cannot be undone). Undo is per session.
-- **Drag and drop** works between CaptainFM and other apps (tested against Nautilus, both directions). Drop onto a
+- **Drag and drop** works between CaptainFM and other apps (tested against Nautilus, Firefox and Chromium, both directions). Drop onto a
   folder row or a pane; the source and your modifier keys decide copy or move (`Ctrl` copies, `Shift` moves) unless
   you fix it in Settings. Dragged files are offered as a `text/uri-list` (file managers, upload fields) and as plain
-  paths (editors, terminals). Dropping files from other apps works the same; web links are ignored.
+  paths (editors, terminals). Dropping files from other apps works the same. **Browsers:** files dragged into Firefox
+  and Chromium arrive as real files, and an image or link dragged out of a browser is downloaded into the folder you
+  drop it on (needs `curl`).
 - Right-click or press `Menu` (`Space c` in Vim) for the **context menu**: a searchable list with "Open with" for
   every app that handles the file type, standard actions, and your pinned actions (`Ctrl-D` pins one).
 
