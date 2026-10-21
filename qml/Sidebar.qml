@@ -169,7 +169,7 @@ Rectangle {
         }
         Text {
             visible: !side.compact
-            anchors { left: glyph.right; leftMargin: Style.pad; right: usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
+            anchors { left: glyph.right; leftMargin: Style.pad; right: dropIcon.visible ? dropIcon.left : usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
             text: entry.item ? entry.item.label : ""
             elide: Text.ElideRight
             color: entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight)
@@ -220,12 +220,16 @@ Rectangle {
                 border { width: 1; color: Style.accent }
             }
         }
+        // Just the icon (an arrow for "move to"): a long label would run into the place's name.
         Text {
-            visible: dropHere.containsDrag && dropHere.hint.kind !== "" && !side.compact
+            id: dropIcon
+            visible: dropHere.containsDrag && dropHere.hint.kind !== ""
+            width: Math.round(Style.fontSize * 1.8)
+            horizontalAlignment: Text.AlignRight
             anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
-            text: Dnd.glyph(dropHere.hint.kind) + "  " + dropHere.hint.text
+            text: Dnd.glyph(dropHere.hint.kind)
             color: Style.accent
-            font { family: Style.font; pixelSize: Style.smallFont; bold: true }
+            font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.25); bold: true }
         }
         MouseArea {
             id: hover

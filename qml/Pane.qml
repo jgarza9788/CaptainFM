@@ -278,7 +278,8 @@ FocusScope {
             ghostResult = result
             dragSource.Drag.mimeData = { "text/uri-list": payload.uriList, "text/plain": payload.plain }
             dragSource.Drag.imageSource = result.url
-            dragSource.Drag.hotSpot = Qt.point(Style.pad * 2, ghost.height / 2)
+            // The picture carries its own offset (see DragGhost), so the pointer is at its corner.
+            dragSource.Drag.hotSpot = Qt.point(0, 0)
             dragSource.Drag.active = true
         })
     }
