@@ -76,8 +76,14 @@ QtObject {
     function trash() {
         const paths = targets()
         if (paths.length === 0) return
-        pane().endVisual()
-        Backend.trash(JSON.stringify(paths))
+        const go = () => { pane().endVisual(); Backend.trash(JSON.stringify(paths)) }
+        if (!Prefs.v.confirmTrash) { go(); return }
+        app.prompt.open({
+            label: "Move " + plural(paths.length, "item") + " to the trash?",
+            confirm: true,
+            accept: go,
+            cancel: () => app.refocus()
+        })
     }
 
     function remove() {
@@ -412,6 +418,7 @@ QtObject {
         { id: "devices.eject", title: "Unmount / eject device…", keys: ["<Space> g e"], run: () => app.devicesPicker("eject") },
         { id: "remote.connect", title: "Connect to server… (smb, sftp, ftp, dav)", keys: ["<Space> g c"], run: () => app.connectPrompt() },
         { id: "app.palette", title: "Command palette", fp: ["<C-p>", "<C-S-p>", "<C-k>"], keys: ["<Space> <Space>", ":", "<C-p>"], run: () => app.openPalette() },
+        { id: "app.settings", title: "Settings…", fp: ["<C-,>"], keys: ["<Space> ,"], run: () => app.openSettings() },
         { id: "app.keys", title: "Show key bindings file", keys: ["<Space> ?"],
           run: () => { Backend.openPath(Backend.home() + "/.config/captainfm/keys.json"); } },
         { id: "app.quit", title: "Quit", fp: ["<C-q>"], keys: ["<C-q>", "Z Z", "<Space> q"], run: () => app.quit() }

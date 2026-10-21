@@ -57,7 +57,7 @@ pub fn handle(args: &[String]) -> Action {
         Some("--portal") => Action::Exit(crate::dbus::run_portal()),
         Some("--install-portal") => {
             let off = args.get(1).map(String::as_str) == Some("off");
-            Action::Exit(report(if off { uninstall_portal() } else { install_portal() }))
+            Action::Exit(report(set_portal(!off)))
         }
         Some("--install-dbus") => Action::Exit(report(install_dbus())),
         Some("--default") => {
@@ -128,6 +128,7 @@ fn write_file(path: &std::path::Path, text: &str) -> Result<(), String> {
     fs::write(path, text).map_err(|e| e.to_string())
 }
 
+/// Register CaptainFM as an xdg-desktop-portal backend and make it the file chooser.
 fn install_portal() -> Result<String, String> {
     use crate::dbus::{PORTAL_NAME, portal_definition, portal_file, portal_service_file, service_definition};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
@@ -136,19 +137,39 @@ fn install_portal() -> Result<String, String> {
         &portal_service_file(),
         &service_definition(PORTAL_NAME, &format!("{} --portal", exe.display())),
     )?;
-    Ok("Installed the CaptainFM file chooser portal.\n\
-         To use it, add to ~/.config/xdg-desktop-portal/portals.conf (or <desktop>-portals.conf):\n\n\
-         [preferred]\n\
-         org.freedesktop.impl.portal.FileChooser=captainfm\n\n\
-         then restart the portal: systemctl --user restart xdg-desktop-portal\n\
-         Tip: make the picker float with a window rule for class \"captainfm-picker\".\n\
-         Remove with: captainfm --install-portal off".to_string())
+    let conf = crate::dbus::portals_conf_path();
+    let old = fs::read_to_string(&conf).unwrap_or_default();
+    write_file(&conf, &crate::dbus::with_file_chooser(&old, true))?;
+    Ok(format!(
+        "CaptainFM is now the file chooser (set in {}). Undo with: captainfm --install-portal off",
+        conf.display()
+    ))
 }
 
 fn uninstall_portal() -> Result<String, String> {
     let _ = fs::remove_file(crate::dbus::portal_file());
     let _ = fs::remove_file(crate::dbus::portal_service_file());
-    Ok("Removed the CaptainFM portal files. Remove the [preferred] line from your portals.conf too.".into())
+    let conf = crate::dbus::portals_conf_path();
+    if let Ok(old) = fs::read_to_string(&conf) {
+        write_file(&conf, &crate::dbus::with_file_chooser(&old, false))?;
+    }
+    Ok("CaptainFM is no longer the file chooser.".into())
+}
+
+/// Install or remove the portal, then restart xdg-desktop-portal so the change applies at once.
+pub fn set_portal(on: bool) -> Result<String, String> {
+    let msg = if on { install_portal() } else { uninstall_portal() }?;
+    // CFM_NO_RESTART=1 leaves the running portal alone (packaging and tests on a private bus).
+    if std::env::var_os("CFM_NO_RESTART").is_none() {
+        let _ = Command::new("systemctl").args(["--user", "restart", "xdg-desktop-portal"]).status();
+    }
+    Ok(msg)
+}
+
+/// Whether CaptainFM is currently configured as the file chooser.
+pub fn portal_installed() -> bool {
+    crate::dbus::portal_file().exists()
+        && fs::read_to_string(crate::dbus::portals_conf_path()).is_ok_and(|c| crate::dbus::file_chooser_preferred(&c))
 }
 
 fn install_dbus() -> Result<String, String> {
@@ -240,12 +261,14 @@ mod install_tests {
     fn portal_install_and_removal() {
         let sb = Sandbox::new("cli-portal");
         let msg = install_portal().unwrap();
-        assert!(msg.contains("FileChooser=captainfm"));
+        assert!(msg.contains("file chooser"));
         assert!(crate::dbus::portal_file().exists() && crate::dbus::portal_service_file().exists());
+        assert!(portal_installed());
         let service = fs::read_to_string(crate::dbus::portal_service_file()).unwrap();
         assert!(service.contains("--portal"));
         uninstall_portal().unwrap();
         assert!(!crate::dbus::portal_file().exists() && !crate::dbus::portal_service_file().exists());
+        assert!(!portal_installed());
         drop(sb);
     }
 

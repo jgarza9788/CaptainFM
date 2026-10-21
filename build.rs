@@ -3,6 +3,7 @@ use cxx_qt_build::{CxxQtBuilder, QmlFile, QmlModule};
 fn main() {
     let qml_files = [
         QmlFile::from("qml/Style.qml").singleton(true),
+        QmlFile::from("qml/Prefs.qml").singleton(true),
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/Pane.qml"),
         QmlFile::from("qml/TabPage.qml"),
@@ -20,6 +21,7 @@ fn main() {
         QmlFile::from("qml/KeyEngine.qml"),
         QmlFile::from("qml/Commands.qml"),
         QmlFile::from("qml/BatchRename.qml"),
+        QmlFile::from("qml/Settings.qml"),
     ];
     CxxQtBuilder::new_qml_module(QmlModule::new("CaptainFM").qml_files(qml_files))
         .files(["src/dir_model.rs", "src/theme.rs", "src/backend.rs"])

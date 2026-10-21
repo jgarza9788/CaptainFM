@@ -110,6 +110,23 @@ mod qobject {
         #[rust_name = "open_terminal"]
         fn openTerminal(&self, dir: &QString);
 
+        /// What a drag out of CaptainFM carries, as JSON `{"uriList", "plain"}`, for `paths` (JSON array).
+        #[qinvokable]
+        #[rust_name = "drag_payload"]
+        fn dragPayload(&self, paths: &QString) -> QString;
+        /// Local paths (JSON array) in what was dropped: `urls` is a JSON array of URL strings, `text` the plain-text payload.
+        #[qinvokable]
+        #[rust_name = "drop_paths"]
+        fn dropPaths(&self, urls: &QString, text: &QString) -> QString;
+        /// Whether CaptainFM is the system file chooser for other apps (xdg-desktop-portal).
+        #[qinvokable]
+        #[rust_name = "system_picker"]
+        fn systemPicker(&self) -> bool;
+        /// Make CaptainFM the system file chooser, or stop. Returns JSON `{"ok": bool, "message": string}`.
+        #[qinvokable]
+        #[rust_name = "set_system_picker"]
+        fn setSystemPicker(&self, on: bool) -> QString;
+
         /// Put `paths` (JSON array) on the system clipboard as a file list.
         #[qinvokable]
         #[rust_name = "clipboard_write"]
@@ -271,6 +288,33 @@ fn rank_items(items: &[String], query: &str, fuzzy_fallback: bool) -> Vec<usize>
 
 fn file_url(path: &str) -> String {
     format!("file://{}", ops::percent_encode_path(path))
+}
+
+/// The drag payload for `paths`: an RFC 2483 `text/uri-list` for file managers and upload fields, and the
+/// plain paths (one per line) for editors and terminals.
+fn drag_payload(paths: &[String]) -> serde_json::Value {
+    let uri_list: String = paths.iter().map(|p| format!("{}\r\n", file_url(p))).collect();
+    serde_json::json!({"uriList": uri_list, "plain": paths.join("\n")})
+}
+
+/// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
+/// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
+fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
+    let local = |s: &str| -> Option<String> {
+        let s = s.trim();
+        let rest = s.strip_prefix("file://localhost").or_else(|| s.strip_prefix("file://"));
+        match rest {
+            Some(r) if r.starts_with('/') => Some(percent_decode(r)),
+            Some(_) => None,
+            None => s.starts_with('/').then(|| s.to_owned()),
+        }
+    };
+    let mut out: Vec<String> = urls.iter().filter_map(|u| local(u)).collect();
+    if out.is_empty() {
+        out = text.lines().filter_map(local).filter(|p| std::path::Path::new(p).exists()).collect();
+    }
+    out.dedup();
+    out
 }
 
 fn parse_file_list(text: &str) -> (Vec<String>, bool) {
@@ -589,7 +633,39 @@ impl qobject::Backend {
 
     fn open_terminal(&self, dir: &QString) {
         let dir = dir.to_string();
-        spawn_detached("xdg-terminal-exec", &[], Some(&dir));
+        // `terminal` in settings.json is a command line (`kitty --single-instance`); default xdg-terminal-exec.
+        let settings: serde_json::Value = serde_json::from_str(&state::read_config("settings")).unwrap_or_default();
+        let custom = settings.get("terminal").and_then(|t| t.as_str()).unwrap_or("").trim().to_owned();
+        let mut words = custom.split_whitespace();
+        match words.next() {
+            Some(program) => {
+                let rest: Vec<&str> = words.collect();
+                spawn_detached(program, &rest, Some(&dir));
+            }
+            None => spawn_detached("xdg-terminal-exec", &[], Some(&dir)),
+        }
+    }
+
+    fn drag_payload(&self, paths: &QString) -> QString {
+        let paths: Vec<String> = serde_json::from_str(&paths.to_string()).unwrap_or_default();
+        q(&drag_payload(&paths).to_string())
+    }
+
+    fn drop_paths(&self, urls: &QString, text: &QString) -> QString {
+        let urls: Vec<String> = serde_json::from_str(&urls.to_string()).unwrap_or_default();
+        q(&serde_json::json!(drop_paths(&urls, &text.to_string())).to_string())
+    }
+
+    fn system_picker(&self) -> bool {
+        crate::cli::portal_installed()
+    }
+
+    fn set_system_picker(&self, on: bool) -> QString {
+        let (ok, message) = match crate::cli::set_portal(on) {
+            Ok(m) => (true, m),
+            Err(e) => (false, e),
+        };
+        q(&serde_json::json!({"ok": ok, "message": message}).to_string())
     }
 
     fn clipboard_write(&self, paths: &QString, cut: bool) {
@@ -688,6 +764,21 @@ fn spawn_detached(program: &str, args: &[&str], cwd: Option<&str>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn drag_payload_carries_uris_and_plain_paths() {
+        let v = drag_payload(&["/a b/c#1".to_owned(), "/d".to_owned()]);
+        assert_eq!(v["uriList"], "file:///a%20b/c%231\r\nfile:///d\r\n");
+        assert_eq!(v["plain"], "/a b/c#1\n/d");
+    }
+
+    #[test]
+    fn drops_accept_local_urls_and_ignore_remote_ones() {
+        let urls = ["file:///a%20b".to_owned(), "file://localhost/x".to_owned(), "https://example.com/f".to_owned(), "smb://nas/s".to_owned()];
+        assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
+        assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
+        assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
+    }
 
     #[test]
     fn file_list_round_trip() {
