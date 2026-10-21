@@ -174,9 +174,23 @@ impl PickRequest {
     }
 }
 
+/// This program's executable. After an upgrade replaces the file, Linux reports the old path with a
+/// " (deleted)" suffix; the new version lives at the path without it.
+fn running_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let text = exe.to_string_lossy();
+    Some(PathBuf::from(text.strip_suffix(" (deleted)").unwrap_or(&text)))
+}
+
+/// Modification time and size of the installed executable, to notice an upgrade.
+fn exe_stamp() -> Option<(std::time::SystemTime, u64)> {
+    let meta = std::fs::metadata(running_exe()?).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
 /// Run the picker window as a child process; `Some(uris)` when the user chose something.
 fn run_picker(req: &PickRequest) -> Option<Vec<String>> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = running_exe()?;
     let output = Command::new(exe)
         .arg("--pick")
         .arg(req.to_json().to_string())
@@ -267,10 +281,15 @@ pub fn run_portal() -> i32 {
         .and_then(|b| b.name(PORTAL_NAME))
         .and_then(|b| b.serve_at("/org/freedesktop/portal/desktop", FileChooser))
         .and_then(|b| b.build());
+    let started_with = exe_stamp();
     match built {
-        // Stay up while the session bus does: a backend must not outlive the bus it was started on.
+        // Stay up while the session bus does: a backend must not outlive the bus it was started on, nor
+        // the version it was started from (D-Bus activation starts the new one on the next request).
         Ok(connection) => loop {
             std::thread::sleep(std::time::Duration::from_secs(5));
+            if started_with.is_some() && exe_stamp() != started_with {
+                return 0;
+            }
             let alive = connection
                 .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "GetId", &())
                 .is_ok();
@@ -416,6 +435,13 @@ mod tests {
         assert_eq!(with_file_chooser(&on, false), conf);
         assert_eq!(with_file_chooser("", true), "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\n");
         assert_eq!(with_file_chooser(&with_file_chooser("", true), false), "");
+    }
+
+    #[test]
+    fn running_exe_ignores_the_deleted_marker() {
+        // The test binary is not deleted, so the path is returned as is and exists.
+        assert!(running_exe().is_some_and(|p| p.exists() && !p.to_string_lossy().ends_with("(deleted)")));
+        assert!(exe_stamp().is_some());
     }
 
     #[test]
