@@ -27,10 +27,12 @@ QtObject {
     }
 
     // Icon for a kind of drop (an arrow for move, a copy sheet for copy, ...), with a plain fallback.
-    function glyph(kind) {
+    // `pointing` is where the arrow looks: toward the destination's name, so "left" when the icon is drawn
+    // to the right of that name, "right" (the default) when it is to the left of it.
+    function glyph(kind, pointing) {
         switch (kind) {
         case "copy": return Style.pick("\uf0c5", "+")
-        case "move": return Style.pick("\uf061", "→")
+        case "move": return pointing === "left" ? Style.pick("\uf060", "←") : Style.pick("\uf061", "→")
         case "link": return Style.pick("\uf0c1", "↪")
         case "trash": return Style.pick("\uf1f8", "✕")
         case "download": return Style.pick("\uf019", "↓")

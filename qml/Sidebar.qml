@@ -220,14 +220,14 @@ Rectangle {
                 border { width: 1; color: Style.accent }
             }
         }
-        // Just the icon (an arrow for "move to"): a long label would run into the place's name.
+        // Just the icon, to the right of the place's name (so a move arrow points left, at the name): a long label would run into it.
         Text {
             id: dropIcon
             visible: dropHere.containsDrag && dropHere.hint.kind !== ""
             width: Math.round(Style.fontSize * 1.8)
             horizontalAlignment: Text.AlignRight
             anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
-            text: Dnd.glyph(dropHere.hint.kind)
+            text: Dnd.glyph(dropHere.hint.kind, "left")
             color: Style.accent
             font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.25); bold: true }
         }
