@@ -1,0 +1,483 @@
+//! Devices and remotes: disks via lsblk/udisksctl (UDisks2) and network or phone mounts via GVfs.
+
+use std::fs;
+use std::io::{Read, Write};
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Mutex;
+use std::time::Duration;
+
+use serde::Serialize;
+use serde_json::Value;
+
+#[derive(Serialize, Debug, PartialEq, Clone)]
+pub struct Device {
+    /// `disk:/dev/sdb1`, `remote:<gvfs entry>` or `mtp:<activation uri>`.
+    pub id: String,
+    pub kind: &'static str,
+    pub label: String,
+    pub detail: String,
+    pub mounted: bool,
+    /// Mount point (or GVfs path) when mounted.
+    pub path: String,
+    pub device: String,
+    pub uri: String,
+    pub removable: bool,
+    /// Percent of the filesystem in use, when mounted.
+    pub usage: i32,
+}
+
+fn gvfs_dir() -> PathBuf {
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));
+    runtime.join("gvfs")
+}
+
+// ---- parsing (pure, unit-tested) -----------------------------------------------------------
+
+/// Filesystems hidden from the list: containers rather than something you can open.
+const CONTAINER_FS: &[&str] = &["swap", "crypto_LUKS", "LVM2_member", "linux_raid_member", "zfs_member"];
+
+fn collect_block(node: &Value, out: &mut Vec<Device>) {
+    let s = |k: &str| node.get(k).and_then(Value::as_str).unwrap_or("").to_owned();
+    let fstype = s("fstype");
+    let mount = node
+        .get("mountpoints")
+        .and_then(Value::as_array)
+        // A filesystem can be mounted several times (btrfs subvolumes): the shortest path is the root.
+        .and_then(|a| a.iter().filter_map(Value::as_str).filter(|m| m.starts_with('/')).min_by_key(|m| m.len()))
+        .unwrap_or("")
+        .to_owned();
+    let removable = node.get("rm").and_then(Value::as_bool).unwrap_or(false)
+        || node.get("hotplug").and_then(Value::as_bool).unwrap_or(false);
+
+    if !fstype.is_empty() && !CONTAINER_FS.contains(&fstype.as_str()) {
+        let label = [s("label"), s("model"), s("name")].into_iter().find(|l| !l.is_empty()).unwrap_or_default();
+        out.push(Device {
+            id: format!("disk:{}", s("path")),
+            kind: "disk",
+            label,
+            detail: format!("{} {}", s("size"), fstype).trim().to_owned(),
+            mounted: !mount.is_empty(),
+            path: mount,
+            device: s("path"),
+            uri: String::new(),
+            removable,
+            usage: -1,
+        });
+    }
+    if let Some(children) = node.get("children").and_then(Value::as_array) {
+        for child in children {
+            collect_block(child, out);
+        }
+    }
+}
+
+pub fn parse_lsblk(json: &str) -> Vec<Device> {
+    let Ok(v) = serde_json::from_str::<Value>(json) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for node in v.get("blockdevices").and_then(Value::as_array).into_iter().flatten() {
+        collect_block(node, &mut out);
+    }
+    out
+}
+
+/// `sftp:host=example.com,user=bob` -> (`sftp`, {host, user}).
+fn split_gvfs_name(entry: &str) -> (String, Vec<(String, String)>) {
+    let (scheme, rest) = entry.split_once(':').unwrap_or((entry, ""));
+    let params = rest
+        .split(',')
+        .filter_map(|kv| kv.split_once('='))
+        .map(|(k, v)| (k.to_owned(), v.to_owned()))
+        .collect();
+    (scheme.to_owned(), params)
+}
+
+/// Human-readable URI for a GVfs mount directory name.
+pub fn gvfs_label(entry: &str) -> String {
+    let (scheme, params) = split_gvfs_name(entry);
+    let get = |k: &str| params.iter().find(|(n, _)| n == k).map(|(_, v)| v.as_str()).unwrap_or("");
+    match scheme.as_str() {
+        "smb-share" => format!("smb://{}/{}", get("server"), get("share")),
+        "sftp" | "ftp" | "dav" | "davs" | "afp-volume" => {
+            let user = get("user");
+            let scheme = if scheme == "dav" { "http" } else if scheme == "davs" { "https" } else { &scheme };
+            if user.is_empty() { format!("{scheme}://{}", get("host")) } else { format!("{scheme}://{user}@{}", get("host")) }
+        }
+        _ => format!("{scheme}://{}", get("host")),
+    }
+}
+
+pub fn gvfs_kind(entry: &str) -> &'static str {
+    let scheme = entry.split(':').next().unwrap_or("");
+    if matches!(scheme, "mtp" | "gphoto2" | "afc") { "mtp" } else { "remote" }
+}
+
+/// Parse `gio mount -li` for volumes that can be mounted but are not yet (phones, cameras).
+pub fn parse_gio_volumes(text: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("Volume(") {
+            current = rest.split_once("): ").map(|(_, n)| n.trim().to_owned());
+        } else if !line.starts_with(' ') {
+            current = None;
+        } else if let (Some(name), Some(uri)) = (&current, line.trim().strip_prefix("activation_root="))
+            && ["mtp://", "gphoto2://", "afc://"].iter().any(|p| uri.starts_with(p)) {
+                out.push((name.clone(), uri.to_owned()));
+            }
+    }
+    out
+}
+
+/// Path reported by `udisksctl mount`: "Mounted /dev/sdb1 at /run/media/u/DISK."
+pub fn parse_udisks_mount(output: &str) -> Option<String> {
+    let (_, rest) = output.split_once(" at ")?;
+    Some(rest.trim().trim_end_matches('.').to_owned())
+}
+
+// ---- listing -------------------------------------------------------------------------------
+
+fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
+    let out = Command::new(cmd)
+        .args(args)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|e| format!("{cmd}: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr);
+        Err(err.trim().lines().last().unwrap_or("failed").to_owned())
+    }
+}
+
+/// Percent of a mounted filesystem that is used (like `df`), or -1.
+pub fn usage_percent(path: &str) -> i32 {
+    let Ok(c) = std::ffi::CString::new(path) else { return -1 };
+    // SAFETY: statvfs only writes into the zeroed struct we pass.
+    unsafe {
+        let mut st: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c.as_ptr(), &mut st) != 0 || st.f_blocks == 0 {
+            return -1;
+        }
+        let used = st.f_blocks - st.f_bfree;
+        let avail = st.f_bavail;
+        ((used as f64 / (used + avail).max(1) as f64) * 100.0).round() as i32
+    }
+}
+
+pub fn list() -> Vec<Device> {
+    let mut devices = run(
+        "lsblk",
+        &["-J", "-o", "NAME,PATH,LABEL,SIZE,TYPE,MOUNTPOINTS,FSTYPE,RM,HOTPLUG,MODEL,PKNAME"],
+    )
+    .map(|j| parse_lsblk(&j))
+    .unwrap_or_default();
+
+    for d in devices.iter_mut().filter(|d| d.mounted) {
+        d.usage = usage_percent(&d.path);
+    }
+
+    let mut mounted_hosts: Vec<String> = Vec::new();
+    if let Ok(rd) = fs::read_dir(gvfs_dir()) {
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            mounted_hosts.push(name.clone());
+            devices.push(Device {
+                id: format!("remote:{name}"),
+                kind: gvfs_kind(&name),
+                label: gvfs_label(&name),
+                detail: "mounted".into(),
+                mounted: true,
+                path: e.path().to_string_lossy().into_owned(),
+                device: String::new(),
+                uri: gvfs_label(&name),
+                removable: true,
+                usage: -1,
+            });
+        }
+    }
+    if let Ok(text) = run("gio", &["mount", "-li"]) {
+        for (name, uri) in parse_gio_volumes(&text) {
+            let host = uri.split("host=").nth(1).unwrap_or("").trim_end_matches('/').to_owned();
+            if !host.is_empty() && mounted_hosts.iter().any(|m| m.contains(&host)) {
+                continue;
+            }
+            devices.push(Device {
+                id: format!("mtp:{uri}"),
+                kind: "mtp",
+                label: name,
+                detail: "not mounted".into(),
+                mounted: false,
+                path: String::new(),
+                device: String::new(),
+                uri,
+                removable: true,
+                usage: -1,
+            });
+        }
+    }
+    devices
+}
+
+// ---- mounting ------------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct MountResult {
+    pub ok: bool,
+    pub path: String,
+    pub message: String,
+}
+
+fn done(path: String, message: &str) -> MountResult {
+    MountResult { ok: true, path, message: message.to_owned() }
+}
+
+fn failed(message: String) -> MountResult {
+    MountResult { ok: false, path: String::new(), message }
+}
+
+pub fn mount_disk(device: &str) -> MountResult {
+    match run("udisksctl", &["mount", "-b", device]) {
+        Ok(out) => match parse_udisks_mount(&out) {
+            Some(path) => done(path, "Mounted"),
+            None => failed(format!("mounted, but no mount point reported: {}", out.trim())),
+        },
+        // udisks refuses when it is already mounted; the caller refreshes and navigates.
+        Err(e) => failed(e),
+    }
+}
+
+/// Unmount a disk and, for removable media, power the drive off.
+pub fn eject_disk(device: &str, removable: bool) -> MountResult {
+    if let Err(e) = run("udisksctl", &["unmount", "-b", device])
+        && !e.contains("not mounted") {
+            return failed(e);
+        }
+    if removable {
+        let parent = device.trim_end_matches(|c: char| c.is_ascii_digit()).trim_end_matches('p');
+        let target = if parent.len() < "/dev/".len() { device } else { parent };
+        if let Err(e) = run("udisksctl", &["power-off", "-b", target]) {
+            return failed(e);
+        }
+        return done(String::new(), "Ejected");
+    }
+    done(String::new(), "Unmounted")
+}
+
+pub fn unmount_remote(uri_or_path: &str) -> MountResult {
+    match run("gio", &["mount", "-u", uri_or_path]) {
+        Ok(_) => done(String::new(), "Unmounted"),
+        Err(e) => failed(e),
+    }
+}
+
+/// Answers to `gio mount` prompts, delivered from the UI thread.
+static ANSWERS: Mutex<Option<Sender<Option<String>>>> = Mutex::new(None);
+
+/// Deliver the answer (or `None` to cancel) to the prompt `mount_uri` is waiting on.
+pub fn answer_prompt(answer: Option<String>) {
+    if let Some(tx) = ANSWERS.lock().unwrap().as_ref() {
+        let _ = tx.send(answer);
+    }
+}
+
+/// Which credential a `gio mount` prompt asks for, if any.
+pub fn prompt_kind(prompt: &str) -> Option<&'static str> {
+    let p = prompt.to_lowercase();
+    if p.contains("password") {
+        Some("password")
+    } else if p.contains("user") {
+        Some("user")
+    } else if p.contains("domain") {
+        Some("domain")
+    } else if p.trim_end().ends_with("[y/n]:") || p.contains("(yes/no") {
+        Some("confirm")
+    } else {
+        None
+    }
+}
+
+/// Mount `uri` with `gio mount`, relaying credential prompts through `ask`.
+/// `ask` gets the prompt text and returns the answer, or `None` to cancel.
+pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult {
+    let Ok(mut child) = Command::new("gio")
+        .args(["mount", uri])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    else {
+        return failed("gio is not installed".into());
+    };
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+
+    let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 256];
+        while let Ok(n) = stdout.read(&mut buf) {
+            if n == 0 || tx.send(buf[..n].to_vec()).is_err() {
+                break;
+            }
+        }
+    });
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        let _ = stderr.read_to_string(&mut s);
+        s
+    });
+
+    let mut pending = String::new();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(400)) {
+            Ok(bytes) => pending.push_str(&String::from_utf8_lossy(&bytes)),
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                // A prompt is output without a trailing newline and then gio waits for input.
+                let prompt = pending.trim_end_matches('\n').rsplit('\n').next().unwrap_or("").to_owned();
+                if prompt_kind(&prompt).is_some() && !prompt.is_empty() {
+                    pending.clear();
+                    match ask(&prompt) {
+                        Some(answer) => {
+                            let _ = writeln!(stdin, "{answer}");
+                            let _ = stdin.flush();
+                        }
+                        None => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            return failed("Cancelled".into());
+                        }
+                    }
+                }
+                if matches!(child.try_wait(), Ok(Some(_))) {
+                    break;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    let status = child.wait();
+    let err = err_reader.join().unwrap_or_default();
+    match status {
+        Ok(s) if s.success() => done(find_gvfs_path(uri).unwrap_or_default(), "Connected"),
+        _ => failed(err.trim().lines().last().unwrap_or("could not connect").to_owned()),
+    }
+}
+
+/// Register a channel the UI answers prompts through; returns the receiving end.
+pub fn begin_prompting() -> Receiver<Option<String>> {
+    let (tx, rx) = mpsc::channel();
+    *ANSWERS.lock().unwrap() = Some(tx);
+    rx
+}
+
+/// Find the GVfs FUSE directory for a freshly mounted URI.
+pub fn find_gvfs_path(uri: &str) -> Option<String> {
+    let rest = uri.split_once("://")?.1;
+    let host = rest.split('/').next()?.rsplit('@').next()?;
+    let host = host.split(':').next()?;
+    let wanted_share = rest.split('/').nth(1).unwrap_or("");
+    for e in fs::read_dir(gvfs_dir()).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let (_, params) = split_gvfs_name(&name);
+        let has_host = params.iter().any(|(k, v)| (k == "host" || k == "server") && v.eq_ignore_ascii_case(host));
+        let share_ok = wanted_share.is_empty()
+            || !name.starts_with("smb-share")
+            || params.iter().any(|(k, v)| k == "share" && v.eq_ignore_ascii_case(wanted_share));
+        if has_host && share_ok {
+            return Some(e.path().to_string_lossy().into_owned());
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LSBLK: &str = r#"{"blockdevices":[
+      {"name":"zram0","path":"/dev/zram0","label":"zram0","size":"31G","type":"disk","mountpoints":["[SWAP]"],"fstype":"swap","rm":false,"hotplug":false,"model":null},
+      {"name":"sda","path":"/dev/sda","label":null,"size":"58G","type":"disk","mountpoints":[null],"fstype":null,"rm":true,"hotplug":true,"model":"USB DISK",
+       "children":[{"name":"sda1","path":"/dev/sda1","label":"STICK","size":"58G","type":"part","mountpoints":["/run/media/u/STICK"],"fstype":"exfat","rm":true,"hotplug":true,"model":null},
+                   {"name":"sda2","path":"/dev/sda2","label":null,"size":"1G","type":"part","mountpoints":[null],"fstype":"ext4","rm":true,"hotplug":true,"model":null},
+                   {"name":"sda3","path":"/dev/sda3","label":null,"size":"1G","type":"part","mountpoints":[null],"fstype":"crypto_LUKS","rm":true,"hotplug":true,"model":null}]}]}"#;
+
+    #[test]
+    fn lsblk_lists_filesystems_only() {
+        let d = parse_lsblk(LSBLK);
+        let ids: Vec<_> = d.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["disk:/dev/sda1", "disk:/dev/sda2"]);
+        assert!(d[0].mounted && d[0].path == "/run/media/u/STICK" && d[0].label == "STICK");
+        assert!(!d[1].mounted && d[1].removable);
+    }
+
+    #[test]
+    fn gvfs_names_become_uris() {
+        assert_eq!(gvfs_label("smb-share:server=nas,share=media"), "smb://nas/media");
+        assert_eq!(gvfs_label("sftp:host=example.com,user=bob"), "sftp://bob@example.com");
+        assert_eq!(gvfs_kind("mtp:host=Pixel_7"), "mtp");
+        assert_eq!(gvfs_kind("sftp:host=x"), "remote");
+    }
+
+    #[test]
+    fn gio_volume_parsing() {
+        let text = "Drive(0): Pixel\n  Type: GProxyDrive\nVolume(0): Pixel 7\n  Type: GProxyVolume\n  activation_root=mtp://Google_Pixel_7/\n  can_mount=1\nVolume(1): Data\n  activation_root=file:///mnt\n";
+        assert_eq!(parse_gio_volumes(text), [("Pixel 7".to_owned(), "mtp://Google_Pixel_7/".to_owned())]);
+    }
+
+    #[test]
+    fn udisks_output() {
+        assert_eq!(parse_udisks_mount("Mounted /dev/sdb1 at /run/media/u/DISK.\n").as_deref(), Some("/run/media/u/DISK"));
+        assert_eq!(parse_udisks_mount("nope"), None);
+    }
+
+    #[test]
+    fn prompts_are_recognised() {
+        assert_eq!(prompt_kind("Password: "), Some("password"));
+        assert_eq!(prompt_kind("User [bob]: "), Some("user"));
+        assert_eq!(prompt_kind("Domain [WORKGROUP]: "), Some("domain"));
+        assert_eq!(prompt_kind("Mounting..."), None);
+    }
+}
+
+#[cfg(test)]
+mod more_tests {
+    use super::*;
+
+    #[test]
+    fn usage_is_a_percentage_or_unknown() {
+        let u = usage_percent("/");
+        assert!((0..=100).contains(&u), "{u}");
+        assert_eq!(usage_percent("/definitely/not/here"), -1);
+        assert_eq!(usage_percent("bad\0path"), -1);
+    }
+
+    #[test]
+    fn btrfs_style_multiple_mounts_pick_the_shortest() {
+        let json = r#"{"blockdevices":[{"name":"nvme0n1p2","path":"/dev/nvme0n1p2","label":"root","size":"236G","type":"part",
+            "mountpoints":["/var/cache/pacman/pkg","/","/home"],"fstype":"btrfs","rm":false,"hotplug":false}]}"#;
+        let d = parse_lsblk(json);
+        assert_eq!(d.len(), 1);
+        assert_eq!(d[0].path, "/");
+        assert_eq!(d[0].detail, "236G btrfs");
+    }
+
+    #[test]
+    fn garbage_lsblk_output_gives_no_devices() {
+        assert!(parse_lsblk("not json").is_empty());
+        assert!(parse_lsblk("{}").is_empty());
+    }
+
+    #[test]
+    fn gvfs_labels_for_other_schemes() {
+        assert_eq!(gvfs_label("dav:host=cloud.example,ssl=true"), "http://cloud.example");
+        assert_eq!(gvfs_label("davs:host=cloud.example"), "https://cloud.example");
+        assert_eq!(gvfs_label("ftp:host=files.example"), "ftp://files.example");
+    }
+}

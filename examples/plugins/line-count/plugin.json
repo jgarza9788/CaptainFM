@@ -1,0 +1,6 @@
+{
+  "name": "Line count",
+  "actions": [
+    { "id": "count", "title": "Count lines in selection", "keys": ["<Space> x l"] }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "Git",
+  "panels": [
+    { "id": "status", "title": "Git status", "qml": "Status.qml", "side": "right" }
+  ],
+  "actions": [
+    { "id": "status", "title": "Refresh status", "function": "status" },
+    { "id": "copy_branch", "title": "Copy branch name", "keys": ["<Space> x b"], "function": "copy_branch" }
+  ]
+}
