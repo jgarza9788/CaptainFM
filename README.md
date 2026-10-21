@@ -22,7 +22,8 @@ The feature set is inspired by [File Pilot](https://filepilot.tech/) on Windows;
   group by type, date or size.
 - **Pins, jump bar, batch rename, undo/redo**, devices and remotes (SMB, SFTP, MTP), drag and drop.
 - **Fits Omarchy:** live theme sync, your system font, frameless, sane at half-screen tile width, a
-  file-picker portal and `FileManager1` so other apps can use it.
+  file-picker portal (Open/Save dialogs of other apps), drag and drop with other apps, and `FileManager1`.
+- **Settings for everything** (`Ctrl-,`): start behavior, keys, view defaults, font, units, drop behavior, terminal.
 - **Extensible** with Lua actions and QML side panels.
 - Lean: one ~10 MB binary on top of Qt 6, no daemon.
 

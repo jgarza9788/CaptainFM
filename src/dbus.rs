@@ -268,8 +268,15 @@ pub fn run_portal() -> i32 {
         .and_then(|b| b.serve_at("/org/freedesktop/portal/desktop", FileChooser))
         .and_then(|b| b.build());
     match built {
-        Ok(_connection) => loop {
-            std::thread::park();
+        // Stay up while the session bus does: a backend must not outlive the bus it was started on.
+        Ok(connection) => loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let alive = connection
+                .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "GetId", &())
+                .is_ok();
+            if !alive {
+                return 0;
+            }
         },
         Err(e) => {
             eprintln!("captainfm: cannot start the file chooser portal: {e}");
@@ -299,10 +306,67 @@ pub fn file_manager_service_file() -> PathBuf {
     data_home().join(format!("dbus-1/services/{FILE_MANAGER_NAME}.service"))
 }
 
+/// Desktops named in `XDG_CURRENT_DESKTOP` (`Hyprland`, `GNOME:Unity`, ...); Hyprland when unset.
+pub fn current_desktops() -> Vec<String> {
+    let names: Vec<String> = std::env::var("XDG_CURRENT_DESKTOP")
+        .unwrap_or_default()
+        .split(':')
+        .filter(|d| !d.is_empty())
+        .map(str::to_owned)
+        .collect();
+    if names.is_empty() { vec!["Hyprland".to_owned()] } else { names }
+}
+
 pub fn portal_definition() -> String {
     format!(
-        "[portal]\nDBusName={PORTAL_NAME}\nInterfaces=org.freedesktop.impl.portal.FileChooser;\nUseIn=Hyprland;\n"
+        "[portal]\nDBusName={PORTAL_NAME}\nInterfaces=org.freedesktop.impl.portal.FileChooser;\nUseIn={};\n",
+        current_desktops().join(";")
     )
+}
+
+const FILE_CHOOSER_KEY: &str = "org.freedesktop.impl.portal.FileChooser";
+
+/// The portal configuration file that applies to this desktop: the first existing
+/// `<desktop>-portals.conf`, else `portals.conf`.
+pub fn portals_conf_path() -> PathBuf {
+    let dir = crate::state::config_dir().parent().map(PathBuf::from).unwrap_or_default().join("xdg-desktop-portal");
+    current_desktops()
+        .iter()
+        .map(|d| dir.join(format!("{}-portals.conf", d.to_lowercase())))
+        .find(|p| p.exists())
+        .unwrap_or_else(|| dir.join("portals.conf"))
+}
+
+/// Whether `conf` already names CaptainFM as the file chooser.
+pub fn file_chooser_preferred(conf: &str) -> bool {
+    conf.lines().any(|l| {
+        l.split_once('=')
+            .is_some_and(|(k, v)| k.trim() == FILE_CHOOSER_KEY && v.split(';').any(|b| b.trim() == "captainfm"))
+    })
+}
+
+/// `conf` with the file chooser preference set to CaptainFM (`on`) or removed; every other line is kept.
+pub fn with_file_chooser(conf: &str, on: bool) -> String {
+    let mut lines: Vec<&str> = conf.lines().filter(|l| l.split_once('=').is_none_or(|(k, _)| k.trim() != FILE_CHOOSER_KEY)).collect();
+    if on {
+        let entry = format!("{FILE_CHOOSER_KEY}=captainfm");
+        match lines.iter().position(|l| l.trim() == "[preferred]") {
+            Some(i) => lines.insert(i + 1, &entry),
+            None => {
+                lines.push("[preferred]");
+                lines.push(&entry);
+            }
+        }
+        return lines.join("\n") + "\n";
+    }
+    // Drop a `[preferred]` header that is now empty.
+    if let Some(i) = lines.iter().position(|l| l.trim() == "[preferred]")
+        && lines[i + 1..].iter().take_while(|l| !l.trim_start().starts_with('[')).all(|l| l.trim().is_empty())
+    {
+        lines.remove(i);
+    }
+    let text = lines.join("\n");
+    if text.trim().is_empty() { String::new() } else { text + "\n" }
 }
 
 pub fn service_definition(name: &str, exec: &str) -> String {
@@ -340,6 +404,18 @@ mod tests {
         let (code, results) = reply(Some(vec!["file:///x".into()]));
         assert_eq!(code, 0);
         assert!(results.contains_key("uris"));
+    }
+
+    #[test]
+    fn file_chooser_preference_is_added_and_removed() {
+        let conf = "[preferred]\ndefault=hyprland;gtk\n";
+        let on = with_file_chooser(conf, true);
+        assert_eq!(on, "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\ndefault=hyprland;gtk\n");
+        assert!(file_chooser_preferred(&on) && !file_chooser_preferred(conf));
+        assert_eq!(with_file_chooser(&on, true), on, "idempotent");
+        assert_eq!(with_file_chooser(&on, false), conf);
+        assert_eq!(with_file_chooser("", true), "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\n");
+        assert_eq!(with_file_chooser(&with_file_chooser("", true), false), "");
     }
 
     #[test]

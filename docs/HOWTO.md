@@ -6,7 +6,7 @@ the default) and **Vim** (modal). Press `Ctrl-Shift-K` any time to switch; your 
 Contents: [The window](#the-window) · [Moving around](#moving-around) · [Selecting and file operations](#selecting-and-file-operations) ·
 [Finding things](#finding-things) · [Pins](#pins) · [Tabs, panes and layouts](#tabs-panes-and-layouts) · [Views](#views) ·
 [The preview pane](#the-preview-pane) · [Batch rename](#batch-rename) · [The command palette](#the-command-palette) ·
-[Customizing keys](#customizing-keys) · [Devices and remotes](#devices-and-remotes) · [Themes and look](#themes-and-look) ·
+[Customizing keys](#customizing-keys) · [Devices and remotes](#devices-and-remotes) · [Themes and look](#themes-and-look) · [Settings](#settings) ·
 [Other programs](#other-programs) · [Plugins](#plugins) · [Configuration files](#configuration-files) · [Key tables](#key-tables) ·
 [Troubleshooting](#troubleshooting)
 
@@ -67,8 +67,10 @@ frequently and recently used folders (ranked by frecency), and common places lik
 - Name clashes never overwrite: pasting `a.txt` next to `a.txt` creates `a (copy).txt`.
 - Trash follows the freedesktop spec. **Undo works for copy, move, rename, new items and trash** (permanent
   delete cannot be undone). Undo is per session.
-- You can also drag files: onto a folder row to move, onto a pane to move into it; hold `Ctrl` to copy. Dragged
-  files are offered as standard URI lists, so other apps can accept them.
+- **Drag and drop** works between CaptainFM and other apps (tested against Nautilus, both directions). Drop onto a
+  folder row or a pane; the source and your modifier keys decide copy or move (`Ctrl` copies, `Shift` moves) unless
+  you fix it in Settings. Dragged files are offered as a `text/uri-list` (file managers, upload fields) and as plain
+  paths (editors, terminals). Dropping files from other apps works the same; web links are ignored.
 - Right-click or press `Menu` (`Space c` in Vim) for the **context menu**: a searchable list with "Open with" for
   every app that handles the file type, standard actions, and your pinned actions (`Ctrl-D` pins one).
 
@@ -241,14 +243,31 @@ and **updates live** when you run `omarchy theme set …`. Without Omarchy it fa
 
 Look-and-feel switches: zoom, row spacing (compact/normal/roomy), animations on/off, sidebar state, hidden files.
 
+## Settings
+
+Press `Ctrl-,` (`Space ,` in Vim, or *Settings…* in the palette). `↑` `↓` pick a row, `←` `→` or `Enter` change it,
+`Enter` on a text row edits it, `Esc` closes. Changes apply at once.
+
+| Section | Setting |
+| --- | --- |
+| General | on start (restore the last session, home, or a start folder) · key style · default view · single or double click to open · terminal command |
+| Appearance | font family · row spacing · animations · file sizes (1024 or 1000) · date format |
+| Browsing | hidden files · preview pane · sidebar · sort by and order · group by |
+| Files | what a drop does (as the drag asks, always copy, always move) · ask before trashing |
+| System | use CaptainFM as the file picker for other apps |
+
+Most of these live in `~/.config/captainfm/settings.json` (only values that differ from the defaults are written);
+the view, sort and key settings are saved with the session.
+
 ## Other programs
 
 - **Make it your default folder handler:** `captainfm --default` (undo with `--default off`). It does not touch your
   keybindings.
-- **File picker for other apps:** `captainfm --install-portal`, then add `org.freedesktop.impl.portal.FileChooser=captainfm`
-  under `[preferred]` in `~/.config/xdg-desktop-portal/portals.conf` and restart the portal. Open and Save dialogs
-  then use a CaptainFM window with an Open/Save bar. Float it with a Hyprland window rule for class `captainfm`
-  (or the title you see).
+- **File picker for other apps:** `captainfm --install-portal` (or *File picker for other apps* in Settings) registers
+  CaptainFM with xdg-desktop-portal, sets it as the `FileChooser` in your portals.conf and restarts the portal.
+  Open, Save and choose-folder dialogs in browsers and other apps then use a CaptainFM window with an Open/Save
+  bar, filters and multi-select. Undo with `captainfm --install-portal off`. Float it with a Hyprland window rule
+  for class `captainfm` and a title that starts with the dialog's title.
 - **"Show in folder"** from browsers and chat apps: while CaptainFM is the folder handler it serves
   `org.freedesktop.FileManager1`. `captainfm --install-dbus` adds D-Bus activation so it also starts on demand.
 - **Open folders in the running window:** `captainfm --tab <path…>`; open a file's folder with `--select <path>`.
@@ -287,6 +306,7 @@ stopped after 10 seconds. Examples: [`examples/plugins/`](../examples/plugins).
 
 | File | Holds |
 | --- | --- |
+| `~/.config/captainfm/settings.json` | your settings (see [Settings](#settings)) |
 | `~/.config/captainfm/session.json` | tabs, panes, views, sort, group-by, zoom, keymap, sidebar state (written automatically) |
 | `~/.config/captainfm/keys.json` | your key overrides, per keymap |
 | `~/.config/captainfm/aliases.json` | command aliases: `{ "del": "file.trash" }` |

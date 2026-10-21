@@ -47,7 +47,8 @@ Window {
     readonly property alias jump: jumpBar
     readonly property alias picker: pickerBox
     readonly property alias batchRename: batch
-    readonly property bool overlayOpen: promptBar.visible || jumpBar.visible || pickerBox.visible || batch.visible
+    function openSettings() { settingsBox.open() }
+    readonly property bool overlayOpen: promptBar.visible || jumpBar.visible || pickerBox.visible || batch.visible || settingsBox.visible
 
     ListModel { id: tabsModel }
 
@@ -97,7 +98,9 @@ Window {
     }
 
     function newTab(path, layout) {
-        tabsModel.append({ paths: JSON.stringify(Array.isArray(path) ? path : [path]), views: "[]", layout: layout ?? "columns" })
+        const paths = Array.isArray(path) ? path : [path]
+        const views = Prefs.v.defaultView === "list" ? [] : paths.map(() => Prefs.v.defaultView)
+        tabsModel.append({ paths: JSON.stringify(paths), views: JSON.stringify(views), layout: layout ?? "columns" })
         tabIndex = tabsModel.count - 1
         markDirty()
     }
@@ -660,6 +663,7 @@ Window {
     Timer { id: saveTimer; interval: 1500; onTriggered: app.saveSession() }
 
     Component.onCompleted: {
+        Prefs.load()
         Theme.start()
         try { userKeys = JSON.parse(Backend.readConfig("keys")) } catch (e) { userKeys = ({}) }
         engine.rebuild(userKeys)
@@ -720,6 +724,9 @@ Window {
         } else if (args.length > 0) {
             for (const a of args) newTab(Backend.expandPath(a).replace(/^file:\/\//, ""))
             tabIndex = 0
+        } else if (Prefs.v.startup !== "restore") {
+            const folder = Prefs.v.startup === "folder" ? Backend.expandPath(Prefs.v.startFolder) : ""
+            newTab(folder !== "" && Backend.isDir(folder) ? folder : Backend.home())
         } else if (session.tabs && session.tabs.length > 0) {
             applySnapshot(session)
         } else {
@@ -934,6 +941,9 @@ Window {
                             onSortRequested: (key) => commands.setSort(key)
                             onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
                             onDropped: (paths, destination, move) => {
+                                // Moving something onto the folder it already lives in does nothing.
+                                const parent = (p) => p.substring(0, Math.max(1, p.lastIndexOf("/")))
+                                if (move && paths.every(p => parent(p) === destination || p === destination)) return
                                 Backend.paste(JSON.stringify(paths), destination, move)
                             }
                         }
@@ -1139,6 +1149,12 @@ Window {
             onClosed: app.refocus()
         }
 
+        Settings {
+            id: settingsBox
+            app: app
+            onClosed: app.refocus()
+        }
+
         Toast {
             id: toastBox
             anchors { right: parent.right; bottom: parent.bottom; rightMargin: Style.pad * 2; bottomMargin: Math.round(48 * Style.zoom) }
@@ -1189,6 +1205,7 @@ Window {
                 bindKey(cid, seq.replace(/_/g, " "))
             } else if (t.indexOf("!mode:") === 0) batch.setMode(t.substring(6))
             else if (t.indexOf("!fold:") === 0) sidebar.toggleFold(t.substring(6))
+            else if (t.indexOf("!set:") === 0) settingsBox.press(t.substring(5))
             else if (t === "!play") inspectorPane.togglePlayback()
             else if (t === "!clear") { const f = app.activeFocusItem; if (f && f.text !== undefined) f.text = "" }
             else if (t === "!next") batch.nextField(false)

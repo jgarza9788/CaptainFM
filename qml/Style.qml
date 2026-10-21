@@ -26,7 +26,7 @@ QtObject {
     readonly property color blue: p.blue ?? "#89b4fa"
     readonly property color magenta: p.magenta ?? "#f5c2e7"
 
-    readonly property string font: Theme.fontFamily !== "" ? Theme.fontFamily : "monospace"
+    readonly property string font: Prefs.v.fontFamily !== "" ? Prefs.v.fontFamily : (Theme.fontFamily !== "" ? Theme.fontFamily : "monospace")
     readonly property bool nerd: font.toLowerCase().indexOf("nerd") >= 0
 
     // Zoom is animated by whoever sets `zoomTarget`; everything else scales from `zoom`.
@@ -79,10 +79,11 @@ QtObject {
 
     function humanSize(n) {
         if (n === undefined || n < 0) return ""
-        if (n < 1024) return n + "B"
+        const base = Prefs.v.sizeUnits === "decimal" ? 1000 : 1024
+        if (n < base) return n + "B"
         const units = ["K", "M", "G", "T", "P"]
-        let v = n / 1024, i = 0
-        while (v >= 1024 && i < units.length - 1) { v /= 1024; i++ }
+        let v = n / base, i = 0
+        while (v >= base && i < units.length - 1) { v /= base; i++ }
         return (v < 10 ? v.toFixed(1) : Math.round(v)) + units[i]
     }
 
@@ -91,6 +92,8 @@ QtObject {
         if (!t || t < 0) return ""
         const d = new Date(t * 1000), now = new Date()
         const pad = n => (n < 10 ? "0" : "") + n
+        if (Prefs.v.dateFormat === "iso")
+            return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes())
         const months = ["jan","feb","mar","apr","may","jun","jul","aug","sep","oct","nov","dec"]
         const day = x => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime()
         const diff = Math.round((day(now) - day(d)) / 86400000)

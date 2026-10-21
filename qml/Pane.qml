@@ -191,12 +191,20 @@ FocusScope {
         return sel.indexOf(path) >= 0 ? sel : [path]
     }
 
-    function urlList(paths) {
-        return paths.map(p => "file://" + encodeURI(p).replace(/#/g, "%23").replace(/\?/g, "%3F")).join("\r\n")
+    // Local paths in a drop (from this app or any other); empty when it carries no local files.
+    function droppedPaths(drop) {
+        const urls = drop.hasUrls ? drop.urls.map(u => String(u)) : []
+        return JSON.parse(Backend.dropPaths(JSON.stringify(urls), drop.hasText ? drop.text : ""))
     }
 
-    function pathsFromUrls(urls) {
-        return urls.map(u => decodeURIComponent(String(u).replace(/^file:\/\//, "")))
+    // Copy or move a drop into `destination`: what the source and modifier keys ask for, unless the user fixed it.
+    function acceptDrop(drop, destination) {
+        const paths = droppedPaths(drop)
+        if (paths.length === 0) return
+        drop.acceptProposedAction()
+        const fixed = Prefs.v.dropAction
+        const move = fixed === "move" || (fixed === "auto" && drop.proposedAction !== Qt.CopyAction)
+        pane.dropped(paths, destination, move)
     }
 
     signal dropped(var paths, string destination, bool move)
@@ -275,11 +283,7 @@ FocusScope {
         id: paneDrop
         anchors.fill: parent
         enabled: !pane.deep
-        onDropped: (drop) => {
-            if (!drop.hasUrls) return
-            drop.acceptProposedAction()
-            pane.dropped(pane.pathsFromUrls(drop.urls), dir.path, drop.proposedAction !== Qt.CopyAction)
-        }
+        onDropped: (drop) => pane.acceptDrop(drop, dir.path)
         Rectangle {
             anchors.fill: parent
             visible: paneDrop.containsDrag
@@ -643,7 +647,8 @@ FocusScope {
                 onActiveChanged: {
                     if (!active) return
                     const paths = pane.dragPaths(row.index)
-                    row.Drag.mimeData = { "text/uri-list": pane.urlList(paths) }
+                    const payload = JSON.parse(Backend.dragPayload(JSON.stringify(paths)))
+                    row.Drag.mimeData = { "text/uri-list": payload.uriList, "text/plain": payload.plain }
                     row.Drag.active = true
                 }
             }
@@ -651,11 +656,7 @@ FocusScope {
             DropArea {
                 anchors.fill: parent
                 enabled: row.isDir
-                onDropped: (drop) => {
-                    if (!drop.hasUrls) return
-                    drop.acceptProposedAction()
-                    pane.dropped(pane.pathsFromUrls(drop.urls), row.fullPath, drop.proposedAction !== Qt.CopyAction)
-                }
+                onDropped: (drop) => pane.acceptDrop(drop, row.fullPath)
                 Rectangle {
                     anchors.fill: parent
                     visible: parent.containsDrag
@@ -681,9 +682,12 @@ FocusScope {
                         const from = Math.max(0, list.currentIndex)
                         dir.selectRange(from, row.index, true)
                         list.currentIndex = row.index
-                    } else pane.setCursor(row.index)
+                    } else {
+                        pane.setCursor(row.index)
+                        if (Prefs.v.openOnClick === "single") pane.openCurrent(false)
+                    }
                 }
-                onDoubleClicked: pane.openCurrent(false)
+                onDoubleClicked: if (Prefs.v.openOnClick !== "single") pane.openCurrent(false)
             }
         }
 
@@ -843,7 +847,7 @@ FocusScope {
                         list.currentIndex = cell.index
                     } else pane.setCursor(cell.index)
                 }
-                onDoubleClicked: pane.openCurrent(false)
+                onDoubleClicked: if (Prefs.v.openOnClick !== "single") pane.openCurrent(false)
             }
         }
 
