@@ -57,6 +57,9 @@ mod qobject {
         /// Copy or move `paths` (JSON array) into `dest`. Reports through `opDone`.
         #[qinvokable]
         fn paste(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool);
+        /// Make symbolic links to `paths` (JSON array) in `dest`. Reports through `opDone`.
+        #[qinvokable]
+        fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString);
         #[qinvokable]
         fn trash(self: Pin<&mut Self>, paths: &QString);
         /// Permanently delete `paths`. Not undoable.
@@ -411,6 +414,11 @@ impl qobject::Backend {
             let json = work().json();
             let _ = qt_thread.queue(move |backend| backend.op_done(q(&json)));
         }));
+    }
+
+    fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString) {
+        let (paths, dest) = (parse_paths(paths), dest.to_string());
+        self.run_op(move || ops::link(&paths, &dest));
     }
 
     fn paste(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool) {

@@ -45,6 +45,9 @@ Rectangle {
             const p = home + "/" + n
             if (Backend.isDir(p)) out.push({ label: n.toLowerCase(), glyph: Style.pick(icons[n][0], icons[n][1]), path: p })
         }
+        // Dropping files here sends them to the trash.
+        const trash = home + "/.local/share/Trash/files"
+        if (Backend.isDir(trash)) out.push({ label: "trash", glyph: Style.pick("\uf1f8", "✕"), path: trash, trash: true })
         places = out
     }
 
@@ -174,7 +177,7 @@ Rectangle {
         }
         Text {
             id: usage
-            visible: !side.compact && entry.item && entry.item.usage !== undefined && entry.item.usage >= 0
+            visible: !side.compact && !dropHere.containsDrag && entry.item && entry.item.usage !== undefined && entry.item.usage >= 0
             anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
             // Hover shows what is left instead of the percentage.
             text: entry.item && entry.item.usage >= 0
@@ -198,6 +201,31 @@ Rectangle {
                 color: entry.item && entry.item.usage >= 90 ? Style.red : (entry.item && entry.item.usage >= 80 ? Style.yellow : Style.accent)
                 Behavior on width { NumberAnimation { duration: Style.anim(200); easing.type: Easing.OutCubic } }
             }
+        }
+        // Files dropped on a place are copied or moved there (or trashed, for the trash); the row says which.
+        DropArea {
+            id: dropHere
+            anchors.fill: parent
+            enabled: entry.item && entry.item.path !== "" && !entry.item.file
+            property string hint: ""
+            function update(drag) { hint = Dnd.hint(drag, entry.item.path, entry.item.label, entry.item.trash === true) }
+            onEntered: (drag) => update(drag)
+            onPositionChanged: (drag) => update(drag)
+            onDropped: (drop) => Dnd.accept(drop, entry.item.path, entry.item.trash === true)
+            Rectangle {
+                anchors { fill: parent; leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
+                visible: dropHere.containsDrag
+                radius: 5
+                color: Style.alpha(Style.accent, 0.25)
+                border { width: 1; color: Style.accent }
+            }
+        }
+        Text {
+            visible: dropHere.containsDrag && dropHere.hint !== "" && !side.compact
+            anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
+            text: dropHere.hint
+            color: Style.accent
+            font { family: Style.font; pixelSize: Style.smallFont; bold: true }
         }
         MouseArea {
             id: hover

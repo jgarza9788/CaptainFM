@@ -67,7 +67,11 @@ frequently and recently used folders (ranked by frecency), and common places lik
 - Name clashes never overwrite: pasting `a.txt` next to `a.txt` creates `a (copy).txt`.
 - Trash follows the freedesktop spec. **Undo works for copy, move, rename, new items and trash** (permanent
   delete cannot be undone). Undo is per session.
-- **Drag and drop** works between CaptainFM and other apps (tested against Nautilus, Firefox and Chromium, both directions). Drop onto a
+- **Drag and drop** shows what you are carrying (the first name, with a `+N` badge for more) and what releasing will
+  do: the target is outlined and says "Copy to docs", "Move to docs", "Link in docs", "Download to docs" or
+  "Already here". Drop on the **trash** place in the sidebar to trash the files. Drops onto any sidebar place or
+  folder work too. Under Wayland the compositor decides copy or move from your modifier keys, so a link needs
+  Settings > *Dropping files* > *always link (symlink)*. It works between CaptainFM and other apps (tested against Nautilus, Firefox and Chromium, both directions). Drop onto a
   folder row or a pane; the source and your modifier keys decide copy or move (`Ctrl` copies, `Shift` moves) unless
   you fix it in Settings. Dragged files are offered as a `text/uri-list` (file managers, upload fields) and as plain
   paths (editors, terminals). Dropping files from other apps works the same. **Browsers:** files dragged into Firefox

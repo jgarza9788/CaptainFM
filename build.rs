@@ -4,6 +4,8 @@ fn main() {
     let qml_files = [
         QmlFile::from("qml/Style.qml").singleton(true),
         QmlFile::from("qml/Prefs.qml").singleton(true),
+        QmlFile::from("qml/Dnd.qml").singleton(true),
+        QmlFile::from("qml/DragGhost.qml"),
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/Pane.qml"),
         QmlFile::from("qml/TabPage.qml"),

@@ -18,6 +18,7 @@ use crate::state::home;
 enum Step {
     Moved { from: String, to: String },
     Copied { from: String, to: String },
+    Linked { target: String, to: String },
     Trashed { orig: String, stored: String, info: String },
     CreatedFile { path: String },
     CreatedDir { path: String },
@@ -65,6 +66,26 @@ fn record(action: Action) {
     j.redo.clear();
     let excess = j.undo.len().saturating_sub(200);
     j.undo.drain(..excess);
+}
+
+/// Make symbolic links to `paths` in `dest_dir` (named like the originals, `(copy)` when taken). Undoable.
+pub fn link(paths: &[String], dest_dir: &str) -> Outcome {
+    let mut out = Outcome::new("Linked");
+    let mut steps = Vec::new();
+    for src in paths {
+        let dst = unique_dest(Path::new(dest_dir), &base_name(src));
+        match symlink(src, &dst) {
+            Ok(()) => {
+                let to = dst.to_string_lossy().into_owned();
+                out.paths.push(to.clone());
+                steps.push(Step::Linked { target: src.clone(), to });
+                out.ok += 1;
+            }
+            Err(e) => out.errors.push(format!("{}: {e}", base_name(src))),
+        }
+    }
+    record(Action { label: out.label.clone(), steps });
+    out
 }
 
 /// The file name a downloaded URL gets: its last path segment, decoded; `download` when there is none.
@@ -393,6 +414,10 @@ fn undo_step(step: &Step) -> io::Result<Step> {
             trash_one(to, &deletion_date())?;
             Ok(step.clone())
         }
+        Step::Linked { to, .. } => {
+            trash_one(to, &deletion_date())?;
+            Ok(step.clone())
+        }
         Step::Trashed { orig, stored, info } => {
             restore_one(orig, stored, info)?;
             Ok(step.clone())
@@ -414,6 +439,10 @@ fn redo_step(step: &Step) -> io::Result<Step> {
             copy_recursive(Path::new(from), Path::new(to))?;
             Ok(step.clone())
         }
+        Step::Linked { target, to } => {
+            symlink(target, to)?;
+            Ok(step.clone())
+        }
         Step::Trashed { orig, .. } => trash_one(orig, &deletion_date()),
         Step::CreatedFile { path } => {
             fs::OpenOptions::new().write(true).create_new(true).open(path)?;
@@ -429,7 +458,7 @@ fn redo_step(step: &Step) -> io::Result<Step> {
 fn step_paths(step: &Step) -> Vec<String> {
     match step {
         Step::Moved { from, to } => vec![from.clone(), to.clone()],
-        Step::Copied { to, .. } => vec![to.clone()],
+        Step::Copied { to, .. } | Step::Linked { to, .. } => vec![to.clone()],
         Step::Trashed { orig, .. } => vec![orig.clone()],
         Step::CreatedFile { path } | Step::CreatedDir { path } => vec![path.clone()],
     }
@@ -481,6 +510,21 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn linking_makes_undoable_symlinks() {
+        let sb = crate::testutil::Sandbox::new("ops-link");
+        sb.touch("src/a.txt", "A");
+        sb.touch("dst/", "");
+        let out = link(&[sb.path("src/a.txt")], &sb.path("dst"));
+        assert_eq!(out.ok, 1, "{:?}", out.errors);
+        let l = sb.path("dst/a.txt");
+        assert_eq!(fs::read_link(&l).unwrap(), Path::new(&sb.path("src/a.txt")));
+        assert_eq!(fs::read_to_string(&l).unwrap(), "A");
+        // A second link gets a fresh name.
+        link(&[sb.path("src/a.txt")], &sb.path("dst"));
+        assert!(Path::new(&sb.path("dst/a (copy).txt")).exists());
     }
 
     #[test]

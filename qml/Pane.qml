@@ -195,31 +195,6 @@ FocusScope {
         return sel.indexOf(path) >= 0 ? sel : [path]
     }
 
-    // Local paths in a drop (from this app or any other); empty when it carries no local files.
-    function droppedPaths(drop) {
-        const urls = drop.hasUrls ? drop.urls.map(u => String(u)) : []
-        return JSON.parse(Backend.dropPaths(JSON.stringify(urls), drop.hasText ? drop.text : ""))
-    }
-
-    // Copy or move a drop into `destination`: what the source and modifier keys ask for, unless the user fixed it.
-    function acceptDrop(drop, destination) {
-        const paths = droppedPaths(drop)
-        if (paths.length === 0) {
-            // A link or image from a browser: fetch it into the folder.
-            const urls = JSON.parse(Backend.dropUrls(JSON.stringify(drop.hasUrls ? drop.urls.map(u => String(u)) : []), drop.hasText ? drop.text : ""))
-            if (urls.length === 0) return
-            drop.accept(Qt.CopyAction)
-            Backend.downloadUrls(JSON.stringify(urls), destination)
-            return
-        }
-        drop.acceptProposedAction()
-        const fixed = Prefs.v.dropAction
-        const move = fixed === "move" || (fixed === "auto" && drop.proposedAction !== Qt.CopyAction)
-        pane.dropped(paths, destination, move)
-    }
-
-    signal dropped(var paths, string destination, bool move)
-
     Timer { id: restoreTimer; interval: 0; onTriggered: pane.restoreCursor() }
 
     function restoreCursor() {
@@ -275,6 +250,23 @@ FocusScope {
     // Rich text for `name` with the in-order search words in the accent colour.
     function highlighted(name, color) { return Style.highlightHtml(name, searchWords().join(" "), color) }
 
+    DragGhost { id: ghost }
+
+    // "Copy to docs", "Move to Trash", ...: what releasing the drag here would do.
+    component DropChip: Rectangle {
+        property alias text: label.text
+        width: label.implicitWidth + Style.pad * 2.5
+        height: label.implicitHeight + Style.pad
+        radius: height / 2
+        color: Style.accent
+        Text {
+            id: label
+            anchors.centerIn: parent
+            color: Style.bg
+            font { family: Style.font; pixelSize: Style.smallFont; bold: true }
+        }
+    }
+
     // Dragging a pane's grip onto another pane swaps them.
     DropArea {
         id: swapDrop
@@ -294,13 +286,22 @@ FocusScope {
         id: paneDrop
         anchors.fill: parent
         enabled: !pane.deep
-        onDropped: (drop) => pane.acceptDrop(drop, dir.path)
+        property string hint: ""
+        onEntered: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
+        onPositionChanged: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
+        onDropped: (drop) => Dnd.accept(drop, dir.path, false)
         Rectangle {
             anchors.fill: parent
             visible: paneDrop.containsDrag
             color: "transparent"
             border { width: 2; color: Style.accent }
             z: 5
+        }
+        DropChip {
+            visible: paneDrop.containsDrag && paneDrop.hint !== ""
+            text: paneDrop.hint
+            anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: Style.pad * 3 }
+            z: 7
         }
     }
 
@@ -649,7 +650,7 @@ FocusScope {
             }
 
             Drag.dragType: Drag.Automatic
-            Drag.supportedActions: Qt.CopyAction | Qt.MoveAction
+            Drag.supportedActions: Qt.CopyAction | Qt.MoveAction | Qt.LinkAction
             Drag.onDragFinished: row.Drag.active = false
 
             DragHandler {
@@ -660,18 +661,36 @@ FocusScope {
                     const paths = pane.dragPaths(row.index)
                     const payload = JSON.parse(Backend.dragPayload(JSON.stringify(paths)))
                     row.Drag.mimeData = { "text/uri-list": payload.uriList, "text/plain": payload.plain }
-                    row.Drag.active = true
+                    // The picture under the pointer: the first name, "+N" for the rest.
+                    ghost.name = pane.baseName(paths[0])
+                    ghost.count = paths.length
+                    ghost.glyph = Style.glyph(ghost.name, paths[0] === row.fullPath && row.isDir, false)
+                    ghost.grabToImage((result) => {
+                        if (!dragHandler.active) return
+                        row.Drag.imageSource = result.url
+                        row.Drag.hotSpot = Qt.point(Style.pad * 2, ghost.height / 2)
+                        row.Drag.active = true
+                    })
                 }
             }
 
             DropArea {
                 anchors.fill: parent
                 enabled: row.isDir
-                onDropped: (drop) => pane.acceptDrop(drop, row.fullPath)
+                property string hint: ""
+                onEntered: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
+                onPositionChanged: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
+                onDropped: (drop) => Dnd.accept(drop, row.fullPath, false)
                 Rectangle {
                     anchors.fill: parent
                     visible: parent.containsDrag
                     color: Style.alpha(Style.accent, 0.25)
+                }
+                DropChip {
+                    visible: parent.containsDrag && parent.hint !== ""
+                    text: parent.hint
+                    anchors { right: parent.right; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
+                    z: 8
                 }
             }
 

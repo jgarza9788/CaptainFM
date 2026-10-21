@@ -87,7 +87,7 @@ Rectangle {
 
         { section: "Files" },
         Object.assign({ title: "Dropping files", hint: "when files are dropped on a folder or pane" },
-            prefs("dropAction", [["auto", "as the drag asks (Ctrl copies)"], ["copy", "always copy"], ["move", "always move"]])),
+            prefs("dropAction", [["auto", "as the drag asks (Ctrl copies)"], ["copy", "always copy"], ["move", "always move"], ["link", "always link (symlink)"]])),
         Object.assign({ title: "Ask before trashing", hint: "Delete permanently always asks" },
             prefs("confirmTrash", [[true, "yes"], [false, "no"]])),
 

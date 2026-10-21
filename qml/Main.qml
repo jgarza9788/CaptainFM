@@ -941,12 +941,6 @@ Window {
                             onSortRequested: (key) => commands.setSort(key)
                             onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
                             onPickRequested: app.pickEnterFile()
-                            onDropped: (paths, destination, move) => {
-                                // Moving something onto the folder it already lives in does nothing.
-                                const parent = (p) => p.substring(0, Math.max(1, p.lastIndexOf("/")))
-                                if (move && paths.every(p => parent(p) === destination || p === destination)) return
-                                Backend.paste(JSON.stringify(paths), destination, move)
-                            }
                         }
                         onItemAdded: (i, item) => {
                             const a = app.tabPages.slice()
