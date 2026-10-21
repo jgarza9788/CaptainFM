@@ -18,7 +18,7 @@ Contents: [The window](#the-window) · [Moving around](#moving-around) · [Selec
 
 1. **Header** — the sidebar button (top left), a mode badge (`FILES`/`NORMAL`, `SELECT`/`VISUAL`, `SEARCH`), clickable
    breadcrumbs, and the selection and item counts.
-2. **Sidebar** — a global search box, then **PINNED**, **PLACES**, **DRIVES** (with usage) and **REMOTE**. Click a
+2. **Sidebar** — a global search box, then **PINNED**, **PLACES**, **DRIVES** (with a usage bar that turns yellow at 80% and red at 90%; hover for the free space) and **REMOTE**. Click a
    section title to fold it. The button at the top left cycles it: *open → icons only → hidden*.
 3. **Tabs** — numbered; click, or use `Ctrl-1…9`.
 4. **File list** — name, size and modified. Click a column title to sort. Folder sizes fill in as they are computed.

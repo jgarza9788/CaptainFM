@@ -26,6 +26,9 @@ pub struct Device {
     pub removable: bool,
     /// Percent of the filesystem in use, when mounted.
     pub usage: i32,
+    /// Bytes in use and in total (like `df`), 0 when unknown.
+    pub used: u64,
+    pub total: u64,
 }
 
 fn gvfs_dir() -> PathBuf {
@@ -66,6 +69,8 @@ fn collect_block(node: &Value, out: &mut Vec<Device>) {
             uri: String::new(),
             removable,
             usage: -1,
+            used: 0,
+            total: 0,
         });
     }
     if let Some(children) = node.get("children").and_then(Value::as_array) {
@@ -156,19 +161,24 @@ fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
     }
 }
 
-/// Percent of a mounted filesystem that is used (like `df`), or -1.
-pub fn usage_percent(path: &str) -> i32 {
-    let Ok(c) = std::ffi::CString::new(path) else { return -1 };
+/// Bytes used and total of a mounted filesystem (like `df`), or `None`.
+pub fn space(path: &str) -> Option<(u64, u64)> {
+    let c = std::ffi::CString::new(path).ok()?;
     // SAFETY: statvfs only writes into the zeroed struct we pass.
     unsafe {
         let mut st: libc::statvfs = std::mem::zeroed();
         if libc::statvfs(c.as_ptr(), &mut st) != 0 || st.f_blocks == 0 {
-            return -1;
+            return None;
         }
-        let used = st.f_blocks - st.f_bfree;
-        let avail = st.f_bavail;
-        ((used as f64 / (used + avail).max(1) as f64) * 100.0).round() as i32
+        let unit = if st.f_frsize > 0 { st.f_frsize as u64 } else { st.f_bsize as u64 };
+        let used = (st.f_blocks - st.f_bfree) as u64 * unit;
+        Some((used, used + st.f_bavail as u64 * unit))
     }
+}
+
+/// Percent of a mounted filesystem that is used (like `df`), or -1.
+pub fn usage_percent(path: &str) -> i32 {
+    space(path).map_or(-1, |(used, total)| ((used as f64 / total.max(1) as f64) * 100.0).round() as i32)
 }
 
 pub fn list() -> Vec<Device> {
@@ -180,6 +190,10 @@ pub fn list() -> Vec<Device> {
     .unwrap_or_default();
 
     for d in devices.iter_mut().filter(|d| d.mounted) {
+        if let Some((used, total)) = space(&d.path) {
+            d.used = used;
+            d.total = total;
+        }
         d.usage = usage_percent(&d.path);
     }
 
@@ -199,6 +213,8 @@ pub fn list() -> Vec<Device> {
                 uri: gvfs_label(&name),
                 removable: true,
                 usage: -1,
+                used: 0,
+                total: 0,
             });
         }
     }
@@ -219,6 +235,8 @@ pub fn list() -> Vec<Device> {
                 uri,
                 removable: true,
                 usage: -1,
+                used: 0,
+                total: 0,
             });
         }
     }
@@ -449,6 +467,13 @@ mod tests {
 #[cfg(test)]
 mod more_tests {
     use super::*;
+
+    #[test]
+    fn space_reports_used_within_total() {
+        let (used, total) = space("/").unwrap();
+        assert!(total > 0 && used <= total, "{used} of {total}");
+        assert!(space("/definitely/not/here").is_none());
+    }
 
     #[test]
     fn usage_is_a_percentage_or_unknown() {

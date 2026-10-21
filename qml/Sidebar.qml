@@ -88,7 +88,7 @@ Rectangle {
                     const wanted = mp === "/" || mp.indexOf("/mnt") === 0 || mp.indexOf("/media") === 0 || mp.indexOf("/run/media") === 0
                     if (!wanted) continue
                     const label = mp === "/" ? "root" : (x.label || mp.substring(mp.lastIndexOf("/") + 1))
-                    d.push({ label: label.toLowerCase(), glyph: Style.pick("\uf0a0", "■"), path: mp, usage: x.usage })
+                    d.push({ label: label.toLowerCase(), glyph: Style.pick("\uf0a0", "■"), path: mp, usage: x.usage, used: x.used, total: x.total })
                 } else {
                     const u = x.label.replace(/^[a-z0-9+.-]+:\/\//, "").replace(/^.*@/, "")
                     r.push({ label: u.split("/")[0].toLowerCase(), glyph: Style.pick("\uf0ac", "⇅"), path: x.path })
@@ -143,7 +143,11 @@ Rectangle {
         property var item
         property bool dashed: false
         width: side.width - 1
-        height: Math.round(Style.rowHeight * 1.05)
+        // Drives show how full they are as a thin bar under the name.
+        readonly property bool hasBar: item && item.usage !== undefined && item.usage >= 0 && item.total > 0
+        readonly property int barHeight: Math.max(3, Math.round(4 * Style.zoom))
+        readonly property int barShift: hasBar ? Math.round((barHeight + Style.pad / 2) / 2) : 0
+        height: Math.round(Style.rowHeight * 1.05) + (hasBar ? barHeight + Math.round(Style.pad / 2) : 0)
         readonly property bool active: item && item.path !== "" && item.path === side.activePath
         Rectangle {
             anchors { fill: parent; leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
@@ -154,7 +158,7 @@ Rectangle {
             id: glyph
             x: Style.pad * 1.6
             width: Style.fontSize * 1.2
-            anchors.verticalCenter: parent.verticalCenter
+            anchors { verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
             horizontalAlignment: Text.AlignHCenter
             text: entry.item ? entry.item.glyph : ""
             color: entry.active ? Style.accent : Style.fgDim
@@ -162,7 +166,7 @@ Rectangle {
         }
         Text {
             visible: !side.compact
-            anchors { left: glyph.right; leftMargin: Style.pad; right: usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
+            anchors { left: glyph.right; leftMargin: Style.pad; right: usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
             text: entry.item ? entry.item.label : ""
             elide: Text.ElideRight
             color: entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight)
@@ -171,10 +175,29 @@ Rectangle {
         Text {
             id: usage
             visible: !side.compact && entry.item && entry.item.usage !== undefined && entry.item.usage >= 0
-            anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter }
-            text: entry.item && entry.item.usage >= 0 ? entry.item.usage + "%" : ""
+            anchors { right: parent.right; rightMargin: Style.pad * 1.6; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
+            // Hover shows what is left instead of the percentage.
+            text: entry.item && entry.item.usage >= 0
+                  ? (hover.containsMouse && entry.item.total > 0 ? Style.humanSize(entry.item.total - entry.item.used) + " free" : entry.item.usage + "%") : ""
             color: entry.item && entry.item.usage >= 90 ? Style.red : (entry.item && entry.item.usage >= 80 ? Style.yellow : Style.fgDim)
             font { family: Style.font; pixelSize: Style.smallFont }
+        }
+        Rectangle {
+            id: track
+            visible: entry.hasBar
+            x: Style.pad * 1.6
+            width: parent.width - Style.pad * 3.2
+            height: entry.barHeight
+            y: parent.height - height - Style.pad / 2
+            radius: height / 2
+            color: Style.surface
+            Rectangle {
+                width: Math.max(parent.height, parent.width * Math.min(100, Math.max(0, entry.item ? entry.item.usage : 0)) / 100)
+                height: parent.height
+                radius: height / 2
+                color: entry.item && entry.item.usage >= 90 ? Style.red : (entry.item && entry.item.usage >= 80 ? Style.yellow : Style.accent)
+                Behavior on width { NumberAnimation { duration: Style.anim(200); easing.type: Easing.OutCubic } }
+            }
         }
         MouseArea {
             id: hover
