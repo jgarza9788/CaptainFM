@@ -4,12 +4,16 @@ import CaptainFM
 
 // Drag and drop onto folders, panes and sidebar places: what a drop would do, and doing it.
 QtObject {
-    // "copy" | "move" | "link": what the source and modifier keys ask for, unless Settings fixes it.
-    function action(drag) {
+    // "copy" | "move" | "link", the way Windows does it: Ctrl copies, Shift moves, Alt (or Ctrl+Shift) links, and with
+    // no key a drop moves within one drive and copies between drives. The keys reach us as the drag's proposed
+    // action; Settings can fix the action instead.
+    function action(drag, destination) {
         const fixed = Prefs.v.dropAction
         if (fixed !== "auto") return fixed
         if (drag.proposedAction === Qt.LinkAction) return "link"
-        return drag.proposedAction === Qt.CopyAction ? "copy" : "move"
+        if (drag.proposedAction === Qt.CopyAction) return "copy"
+        const list = paths(drag)
+        return list.length > 0 && !Backend.sameDevice(JSON.stringify(list), destination) ? "copy" : "move"
     }
 
     function parentOf(p) { return p.substring(0, Math.max(1, p.lastIndexOf("/"))) }
@@ -46,7 +50,7 @@ QtObject {
         const list = paths(drag)
         if (list.length === 0) return webUrls(drag).length > 0 ? { kind: "download", text: "Download to " + name } : { kind: "", text: "" }
         if (trash) return { kind: "trash", text: "Move to Trash" }
-        const act = action(drag)
+        const act = action(drag, destination)
         if (act === "move" && alreadyThere(list, destination)) return { kind: "none", text: "Already here" }
         return { kind: act, text: (act === "copy" ? "Copy to " : act === "move" ? "Move to " : "Link in ") + name }
     }
@@ -68,7 +72,7 @@ QtObject {
             Backend.trash(json)
             return
         }
-        const act = action(drop)
+        const act = action(drop, destination)
         // Tell the source what really happens, so it only removes its own copy after a move.
         drop.accept(act === "move" ? Qt.MoveAction : Qt.CopyAction)
         if (act === "move") {

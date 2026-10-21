@@ -6,6 +6,7 @@ fn main() {
         QmlFile::from("qml/Prefs.qml").singleton(true),
         QmlFile::from("qml/Dnd.qml").singleton(true),
         QmlFile::from("qml/DragGhost.qml"),
+        QmlFile::from("qml/HoverOpen.qml"),
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/Pane.qml"),
         QmlFile::from("qml/TabPage.qml"),

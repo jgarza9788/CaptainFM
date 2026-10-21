@@ -72,7 +72,7 @@ frequently and recently used folders (ranked by frecency), and common places lik
   "Already here". Drop on the **trash** place in the sidebar to trash the files. Drops onto any sidebar place or
   folder work too. Under Wayland the compositor decides copy or move from your modifier keys, so a link needs
   Settings > *Dropping files* > *always link (symlink)*. It works between CaptainFM and other apps (tested against Nautilus, Firefox and Chromium, both directions). Drop onto a
-  folder row or a pane; the source and your modifier keys decide copy or move (`Ctrl` copies, `Shift` moves) unless
+  folder row or a pane; like Windows: `Ctrl` copies, `Shift` moves, `Alt` (or `Ctrl+Shift`) links, and with no key a drop moves within one drive and copies between drives, unless
   you fix it in Settings. Dragged files are offered as a `text/uri-list` (file managers, upload fields) and as plain
   paths (editors, terminals). Dropping files from other apps works the same. **Browsers:** files dragged into Firefox
   and Chromium arrive as real files, and an image or link dragged out of a browser is downloaded into the folder you
@@ -259,7 +259,7 @@ Press `Ctrl-,` (`Space ,` in Vim, or *Settings…* in the palette). `↑` `↓` 
 | General | on start (restore the last session, home, or a start folder) · key style · default view · single or double click to open · terminal command |
 | Appearance | font family · row spacing · animations · file sizes (1024 or 1000) · date format |
 | Browsing | hidden files · preview pane · sidebar · sort by and order · group by |
-| Files | what a drop does (as the drag asks, always copy, always move) · ask before trashing |
+| Files | what a drop does (like Windows, always copy, always move, always link) · ask before trashing |
 | System | use CaptainFM as the file picker for other apps |
 
 Most of these live in `~/.config/captainfm/settings.json` (only values that differ from the defaults are written);

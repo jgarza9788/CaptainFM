@@ -121,6 +121,11 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "drop_paths"]
         fn dropPaths(&self, urls: &QString, text: &QString) -> QString;
+        /// Whether every path in `paths` (JSON array) lives on the same filesystem as the folder `dest`: a drop
+        /// moves within one drive and copies between drives, like Windows.
+        #[qinvokable]
+        #[rust_name = "same_device"]
+        fn sameDevice(&self, paths: &QString, dest: &QString) -> bool;
         /// `http(s)` URLs (JSON array) in a drop, e.g. a link or image dragged from a browser; same arguments as `dropPaths`.
         #[qinvokable]
         #[rust_name = "drop_urls"]
@@ -310,6 +315,16 @@ fn drag_payload(paths: &[String]) -> serde_json::Value {
 
 /// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
 /// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
+fn same_device(paths: &[String], dest: &str) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let Ok(target) = std::fs::metadata(dest) else { return false };
+    !paths.is_empty()
+        && paths.iter().all(|p| {
+            // A link is judged by the link itself, since that is what a move relocates.
+            std::fs::symlink_metadata(p).is_ok_and(|m| m.dev() == target.dev())
+        })
+}
+
 fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     let local = |s: &str| -> Option<String> {
         let s = s.trim();
@@ -691,6 +706,11 @@ impl qobject::Backend {
         q(&serde_json::json!(drop_paths(&urls, &text.to_string())).to_string())
     }
 
+    fn same_device(&self, paths: &QString, dest: &QString) -> bool {
+        let paths: Vec<String> = serde_json::from_str(&paths.to_string()).unwrap_or_default();
+        same_device(&paths, &dest.to_string())
+    }
+
     fn drop_urls(&self, urls: &QString, text: &QString) -> QString {
         let urls: Vec<String> = serde_json::from_str(&urls.to_string()).unwrap_or_default();
         q(&serde_json::json!(drop_urls(&urls, &text.to_string())).to_string())
@@ -823,6 +843,15 @@ mod tests {
         assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
         assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
         assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
+    }
+
+    #[test]
+    fn same_device_compares_filesystems() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
+        assert!(same_device(&[home.clone()], &home));
+        assert!(!same_device(&[], &home));
+        assert!(!same_device(&["/nonexistent/x".to_owned()], &home));
+        assert!(!same_device(&[home], "/nonexistent"));
     }
 
     #[test]

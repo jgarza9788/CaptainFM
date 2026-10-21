@@ -1,0 +1,14 @@
+# Drag deploy.sh over backups and rest there: it opens; rest on 2025: it opens; drop inside.
+warp 1000 700
+move 800 714 500
+wait 300
+down
+wait 250
+move 900 600 400
+move 1000 326 600
+wait 3600
+wait 3400
+move 800 800 600
+wait 900
+up
+wait 2200

@@ -87,7 +87,9 @@ Rectangle {
 
         { section: "Files" },
         Object.assign({ title: "Dropping files", hint: "when files are dropped on a folder or pane" },
-            prefs("dropAction", [["auto", "as the drag asks (Ctrl copies)"], ["copy", "always copy"], ["move", "always move"], ["link", "always link (symlink)"]])),
+            prefs("dropAction", [["auto", "like Windows (Ctrl copy, Shift move, Alt link)"], ["copy", "always copy"], ["move", "always move"], ["link", "always link (symlink)"]])),
+        Object.assign({ title: "Open folder while dragging", hint: "a drag resting on a folder or place opens it; 0 turns this off" },
+            prefs("dragOpenDelay", [[0, "0 (disabled)"], [1, "after 1 second"], [2, "after 2 seconds"], [3, "after 3 seconds"], [4, "after 4 seconds"], [5, "after 5 seconds"], [6, "after 6 seconds"], [8, "after 8 seconds"]])),
         Object.assign({ title: "Ask before trashing", hint: "Delete permanently always asks" },
             prefs("confirmTrash", [[true, "yes"], [false, "no"]])),
 

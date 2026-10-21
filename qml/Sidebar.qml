@@ -212,6 +212,10 @@ Rectangle {
             onEntered: (drag) => update(drag)
             onPositionChanged: (drag) => update(drag)
             onDropped: (drop) => Dnd.accept(drop, entry.item.path, entry.item.trash === true)
+            HoverOpen {
+                hovering: dropHere.containsDrag && entry.item.trash !== true
+                onOpened: side.navigate(entry.item.path)
+            }
             Rectangle {
                 anchors { fill: parent; leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
                 visible: dropHere.containsDrag

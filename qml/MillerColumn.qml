@@ -9,6 +9,11 @@ Item {
     property string highlightName: ""
     property bool showHidden: false
     clip: true
+    signal dragRequested(string path, bool isDir)
+    signal openRequested(string path)
+
+    function childPath(name) { return col.path === "/" ? "/" + name : col.path + "/" + name }
+    function baseName(p) { return p === "/" ? "/" : p.substring(p.lastIndexOf("/") + 1) }
 
     onPathChanged: if (path !== "") model.load(path)
     onShowHiddenChanged: model.setShowHiddenFiles(showHidden)
@@ -32,6 +37,44 @@ Item {
 
     Rectangle { anchors.fill: parent; color: Style.bgDark }
     Rectangle { anchors { top: parent.top; bottom: parent.bottom; right: parent.right } width: 1; color: Style.surface }
+
+    // Dropping on empty space (or a file) puts the files in this column's folder.
+    DropArea {
+        id: colDrop
+        anchors.fill: parent
+        enabled: col.path !== ""
+        property var hint: ({ kind: "", text: "" })
+        onEntered: (drag) => hint = Dnd.hint(drag, col.path, col.baseName(col.path), false)
+        onPositionChanged: (drag) => hint = Dnd.hint(drag, col.path, col.baseName(col.path), false)
+        onDropped: (drop) => Dnd.accept(drop, col.path, false)
+        Rectangle {
+            anchors.fill: parent
+            visible: colDrop.containsDrag
+            color: "transparent"
+            border { width: 2; color: Style.accent }
+            z: 5
+        }
+        Chip { visible: colDrop.containsDrag && colDrop.hint.kind !== ""; hint: colDrop.hint
+               anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: Style.pad } }
+    }
+
+    component Chip: Rectangle {
+        property var hint: ({ kind: "", text: "" })
+        z: 8
+        width: chipRow.implicitWidth + Style.pad * 2.5
+        height: Math.round(Style.fontSize * 1.9)
+        radius: height / 2
+        color: Style.accent
+        Row {
+            id: chipRow
+            anchors.centerIn: parent
+            spacing: Style.pad / 1.5
+            Text { anchors.verticalCenter: parent.verticalCenter; text: Dnd.glyph(hint.kind); color: Style.bg
+                   font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.15) } }
+            Text { anchors.verticalCenter: parent.verticalCenter; text: hint.text; color: Style.bg
+                   font { family: Style.font; pixelSize: Style.smallFont; bold: true } }
+        }
+    }
 
     ListView {
         id: view
@@ -73,6 +116,35 @@ Item {
                 elide: Text.ElideRight
                 color: row.isDir ? Style.accent : (row.hidden ? Style.fgDim : Style.fgLight)
                 font { family: Style.font; pixelSize: Style.fontSize - 1 }
+            }
+
+            DragHandler {
+                target: null
+                onActiveChanged: if (active) col.dragRequested(col.childPath(row.name), row.isDir)
+            }
+
+            DropArea {
+                anchors.fill: parent
+                enabled: row.isDir
+                z: 2
+                property var hint: ({ kind: "", text: "" })
+                onEntered: (drag) => hint = Dnd.hint(drag, col.childPath(row.name), row.name, false)
+                onPositionChanged: (drag) => hint = Dnd.hint(drag, col.childPath(row.name), row.name, false)
+                onDropped: (drop) => Dnd.accept(drop, col.childPath(row.name), false)
+                HoverOpen {
+                    hovering: parent.containsDrag
+                    onOpened: col.openRequested(col.childPath(row.name))
+                }
+                Rectangle {
+                    anchors.fill: parent
+                    visible: parent.containsDrag
+                    color: Style.alpha(Style.accent, 0.25)
+                }
+                Chip {
+                    visible: parent.containsDrag && parent.hint.kind !== ""
+                    hint: parent.hint
+                    anchors { right: parent.right; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
+                }
             }
         }
     }

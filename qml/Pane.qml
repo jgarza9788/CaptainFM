@@ -265,8 +265,9 @@ FocusScope {
     property int dragToken: 0
     property var ghostResult: null      // keeps the grabbed picture alive for as long as the drag uses it
 
-    function beginDrag(rowIndex, fullPath, isDir) {
-        const paths = dragPaths(rowIndex)
+    function beginDrag(rowIndex, fullPath, isDir) { beginDragOf(dragPaths(rowIndex), fullPath, isDir) }
+
+    function beginDragOf(paths, fullPath, isDir) {
         const payload = JSON.parse(Backend.dragPayload(JSON.stringify(paths)))
         // The picture under the pointer: the first name, "+N" for the rest.
         ghost.name = baseName(paths[0])
@@ -531,6 +532,8 @@ FocusScope {
         path: pane.miller && dir.path !== "/" && !pane.deep ? pane.parentOf(dir.path) : ""
         highlightName: pane.baseName(dir.path)
         showHidden: pane.optHidden
+        onDragRequested: (path, isDir) => { pane.dragToken++; pane.beginDragOf([path], path, isDir) }
+        onOpenRequested: (path) => pane.navigate(path)
         Behavior on width { NumberAnimation { duration: Style.anim(140); easing.type: Easing.OutCubic } }
     }
 
@@ -541,6 +544,8 @@ FocusScope {
         visible: width > 1
         path: pane.miller && pane.currentIsDir ? pane.currentPath : ""
         showHidden: pane.optHidden
+        onDragRequested: (path, isDir) => { pane.dragToken++; pane.beginDragOf([path], path, isDir) }
+        onOpenRequested: (path) => pane.navigate(path)
         Behavior on width { NumberAnimation { duration: Style.anim(140); easing.type: Easing.OutCubic } }
     }
 
@@ -708,6 +713,13 @@ FocusScope {
                 onEntered: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onPositionChanged: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onDropped: (drop) => Dnd.accept(drop, row.fullPath, false)
+                HoverOpen {
+                    hovering: parent.containsDrag
+                    onOpened: {
+                        if (pane.tree) { if (!row.expanded) pane.dir.expandRow(row.index) }
+                        else pane.navigate(row.fullPath)
+                    }
+                }
                 Rectangle {
                     anchors.fill: parent
                     visible: parent.containsDrag

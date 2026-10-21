@@ -1,0 +1,32 @@
+# Drag README.md onto media-stack: Move, then Ctrl copies, Alt links, Shift moves; drop with Ctrl held.
+warp 1000 1000
+move 800 1106 500
+wait 300
+down
+wait 250
+move 900 900 400
+move 1100 405 600
+wait 1400
+key ctrl down
+move 1110 410 200
+move 1100 405 200
+wait 1600
+key ctrl up
+key alt down
+move 1110 410 200
+move 1100 405 200
+wait 1600
+key alt up
+key shift down
+move 1110 410 200
+move 1100 405 200
+wait 1600
+key shift up
+key ctrl down
+move 1110 410 200
+move 1100 405 200
+wait 700
+up
+wait 800
+key ctrl up
+wait 2000

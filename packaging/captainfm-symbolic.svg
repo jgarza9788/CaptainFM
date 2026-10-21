@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <mask id="cut">
+      <rect width="256" height="256" fill="#fff"/>
+      <g stroke="#000" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" fill="none">
+        <circle cx="128" cy="109" r="9"/>
+        <path d="M128 118V196"/>
+        <path d="M108 132H148"/>
+        <path d="M88 164c6 24 20 32 40 32s34-8 40-32"/>
+        <path d="M80 172l8-8 10 8M176 172l-8-8-10 8"/>
+      </g>
+    </mask>
+  </defs>
+  <path mask="url(#cut)" fill="#bebebe" d="M20 68a8 8 0 0 1 8-8h60l20 20h112a8 8 0 0 1 8 8v108a12 12 0 0 1-12 12H32a12 12 0 0 1-12-12z"/>
+</svg>

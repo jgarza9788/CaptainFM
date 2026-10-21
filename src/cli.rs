@@ -9,6 +9,7 @@ use crate::state::{data_dir, home};
 
 const DESKTOP_ID: &str = "captainfm.desktop";
 const ICON_SVG: &str = include_str!("../packaging/captainfm.svg");
+const ICON_SYMBOLIC_SVG: &str = include_str!("../packaging/captainfm-symbolic.svg");
 
 const USAGE: &str = "usage: captainfm [--select <path>] [path...]
        captainfm --tab <path...>  open folders as tabs in the running CaptainFM (starts one if none)
@@ -118,6 +119,10 @@ fn install() -> Result<String, String> {
     fs::create_dir_all(&icons).map_err(|e| e.to_string())?;
     fs::write(apps.join(DESKTOP_ID), desktop_entry(&exe.to_string_lossy())).map_err(|e| e.to_string())?;
     fs::write(icons.join("captainfm.svg"), ICON_SVG).map_err(|e| e.to_string())?;
+    // Panels and docks that recolour symbolic icons look for this one.
+    let symbolic = icons.join("../../symbolic/apps");
+    fs::create_dir_all(&symbolic).map_err(|e| e.to_string())?;
+    fs::write(symbolic.join("captainfm-symbolic.svg"), ICON_SYMBOLIC_SVG).map_err(|e| e.to_string())?;
     // Best effort: refresh the desktop database so launchers notice the new entry.
     let _ = Command::new("update-desktop-database").arg(&apps).status();
     Ok(format!("Installed {} and its icon", apps.join(DESKTOP_ID).display()))
@@ -255,6 +260,7 @@ mod install_tests {
         assert!(entry.contains("MimeType=inode/directory;") && entry.contains("StartupWMClass=captainfm"));
         let icon = fs::read_to_string(sb.root.join(".local/share/icons/hicolor/scalable/apps/captainfm.svg")).unwrap();
         assert!(icon.starts_with("<svg"));
+        assert!(sb.root.join(".local/share/icons/hicolor/symbolic/apps/captainfm-symbolic.svg").exists());
     }
 
     #[test]
