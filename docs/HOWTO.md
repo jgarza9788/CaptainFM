@@ -268,7 +268,9 @@ the view, sort and key settings are saved with the session.
 - **File picker for other apps:** `captainfm --install-portal` (or *File picker for other apps* in Settings) registers
   CaptainFM with xdg-desktop-portal, sets it as the `FileChooser` in your portals.conf and restarts the portal.
   Open, Save and choose-folder dialogs in browsers and other apps then use a CaptainFM window with an Open/Save
-  bar, filters and multi-select. Undo with `captainfm --install-portal off`. Float it with a Hyprland window rule
+  bar, filters and multi-select. In that window `Enter`, double-click or middle-click on a file chooses it (it is
+  never opened in another app), and the dialog closes as soon as you choose; with several files marked, `Enter`
+  returns them all. Undo with `captainfm --install-portal off`. Float it with a Hyprland window rule
   for class `captainfm` and a title that starts with the dialog's title.
 - **"Show in folder"** from browsers and chat apps: while CaptainFM is the folder handler it serves
   `org.freedesktop.FileManager1`. `captainfm --install-dbus` adds D-Bus activation so it also starts on demand.

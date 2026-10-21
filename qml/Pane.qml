@@ -36,6 +36,9 @@ FocusScope {
     readonly property string home: Backend.home()
 
     property int paneIndex: 0
+    // Picker mode (`--pick`, the file chooser portal): activating a file chooses it instead of opening it.
+    readonly property bool pickMode: Qt.application.arguments.indexOf("--pick") >= 0
+    signal pickRequested()
     signal activated()
     signal swapRequested(int from, int to)
     signal contextRequested()
@@ -179,6 +182,7 @@ FocusScope {
         if (currentPath === "") return
         if (currentIsDir && !reveal) { navigate(currentPath); return }
         if (deep && reveal) { navigate(parentOf(currentPath), baseName(currentPath)); return }
+        if (pickMode) { pickRequested(); return }
         Backend.openPath(currentPath)
     }
 

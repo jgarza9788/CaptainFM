@@ -845,7 +845,7 @@ Window {
                     currentPath: app.pane ? app.pane.dir.path : ""
                     onNavigate: (path) => {
                         if (!app.pane) return
-                        if (Backend.isDir(path)) app.pane.navigate(path); else Backend.openPath(path)
+                        if (Backend.isDir(path)) app.pane.navigate(path); else if (!app.pickMode) Backend.openPath(path)
                     }
                     onConnectRequested: app.connectPrompt()
                     onFoldsChanged: app.markDirty()
@@ -940,6 +940,7 @@ Window {
                             onContextRequested: app.contextMenu()
                             onSortRequested: (key) => commands.setSort(key)
                             onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
+                            onPickRequested: app.pickEnterFile()
                             onDropped: (paths, destination, move) => {
                                 // Moving something onto the folder it already lives in does nothing.
                                 const parent = (p) => p.substring(0, Math.max(1, p.lastIndexOf("/")))

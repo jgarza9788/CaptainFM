@@ -32,6 +32,7 @@ Item {
     signal scopeToggled()
     signal zoomRequested(real steps)
     signal dropped(var paths, string destination, bool move)
+    signal pickRequested()
 
     readonly property var layouts: ["columns", "rows", "grid"]
 
@@ -124,6 +125,7 @@ Item {
                 onSwapRequested: (from, to) => page.swapPanes(from, to)
                 onContextRequested: page.contextRequested()
                 onDropped: (paths, destination, move) => page.dropped(paths, destination, move)
+                onPickRequested: page.pickRequested()
             }
             onItemAdded: (i, item) => {
                 const a = page.paneItems.slice()
