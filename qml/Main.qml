@@ -380,7 +380,7 @@ Window {
         return {
             title: c.title,
             category: categories[c.id.split(".")[0]] ?? "",
-            search: c.title + " " + als.join(" "),
+            search: c.title + " " + als.concat(c.words ?? []).join(" "),
             aliasList: als,
             keys: keys,
             bindable: true,

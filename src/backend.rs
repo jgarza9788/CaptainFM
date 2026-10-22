@@ -60,6 +60,9 @@ mod qobject {
         /// Make symbolic links to `paths` (JSON array) in `dest`. Reports through `opDone`.
         #[qinvokable]
         fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString);
+        /// Extract archives (JSON array) next to themselves, into a folder named after each when `into_folder`. Reports through `opDone`.
+        #[qinvokable]
+        fn extract(self: Pin<&mut Self>, paths: &QString, into_folder: bool);
         #[qinvokable]
         fn trash(self: Pin<&mut Self>, paths: &QString);
         /// Permanently delete `paths`. Not undoable.
@@ -434,6 +437,11 @@ impl qobject::Backend {
     fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString) {
         let (paths, dest) = (parse_paths(paths), dest.to_string());
         self.run_op(move || ops::link(&paths, &dest));
+    }
+
+    fn extract(self: Pin<&mut Self>, paths: &QString, into_folder: bool) {
+        let paths = parse_paths(paths);
+        self.run_op(move || ops::extract(&paths, into_folder));
     }
 
     fn paste(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool) {

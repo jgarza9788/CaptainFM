@@ -126,6 +126,57 @@ pub fn download(urls: &[String], dest_dir: &str) -> Outcome {
     out
 }
 
+/// An archive's name without its extension (`a.tar.gz` -> `a`), for the folder it extracts into.
+pub fn archive_stem(name: &str) -> String {
+    let mut stem = name;
+    while let Some((head, ext)) = stem.rsplit_once('.') {
+        let ext = ext.to_lowercase();
+        let known = ["zip", "tar", "tgz", "gz", "xz", "bz2", "zst", "7z", "rar", "iso", "txz", "tbz2", "jar", "apk", "whl"];
+        if head.is_empty() || !known.contains(&ext.as_str()) {
+            break;
+        }
+        stem = head;
+    }
+    stem.to_owned()
+}
+
+/// Extract archives with bsdtar, next to each archive: straight into its folder, or into a new
+/// folder named after it. Existing files are kept. Not journaled: undo cannot tell what was new.
+pub fn extract(paths: &[String], into_folder: bool) -> Outcome {
+    let mut out = Outcome::new("Extracted");
+    for src in paths {
+        let name = base_name(src);
+        let parent = Path::new(src).parent().unwrap_or(Path::new("/"));
+        let dest = if into_folder { unique_dest(parent, &archive_stem(&name)) } else { parent.to_path_buf() };
+        if into_folder && let Err(e) = fs::create_dir(&dest) {
+            out.errors.push(format!("{name}: {e}"));
+            continue;
+        }
+        let result = Command::new("bsdtar")
+            .args(["-xkf", src, "-C"])
+            .arg(&dest)
+            .stdin(std::process::Stdio::null())
+            .output();
+        match result {
+            Ok(o) if o.status.success() => {
+                if into_folder {
+                    out.paths.push(dest.to_string_lossy().into_owned());
+                }
+                out.ok += 1;
+            }
+            Ok(o) => {
+                if into_folder {
+                    let _ = fs::remove_dir(&dest);
+                }
+                let msg = String::from_utf8_lossy(&o.stderr);
+                out.errors.push(format!("{name}: {}", msg.lines().next().unwrap_or("not an archive")));
+            }
+            Err(e) => out.errors.push(format!("bsdtar: {e}")),
+        }
+    }
+    out
+}
+
 // ---- helpers ---------------------------------------------------------------------------
 
 fn base_name(p: &str) -> String {
@@ -533,6 +584,42 @@ mod tests {
         assert_eq!(url_file_name("https://example.com/"), "download");
         assert_eq!(url_file_name("https://example.com"), "download");
         assert_eq!(url_file_name("http://h/dir/.."), "download");
+    }
+
+    #[test]
+    fn archive_stems() {
+        assert_eq!(archive_stem("a.tar.gz"), "a");
+        assert_eq!(archive_stem("photos.ZIP"), "photos");
+        assert_eq!(archive_stem("v1.2.zip"), "v1.2");
+        assert_eq!(archive_stem(".zip"), ".zip");
+    }
+
+    #[test]
+    fn extract_here_and_into_folder() {
+        let d = tmp("extract");
+        fs::create_dir_all(d.join("src")).unwrap();
+        fs::write(d.join("src/f.txt"), "hi").unwrap();
+        let zip = d.join("pack.zip").to_string_lossy().into_owned();
+        let made = Command::new("bsdtar")
+            .args(["--format", "zip", "-cf", &zip, "-C"])
+            .arg(d.join("src"))
+            .arg("f.txt")
+            .status();
+        if made.is_err() {
+            return;
+        }
+        let o = extract(&[zip.clone()], true);
+        assert_eq!(o.errors.len(), 0, "{:?}", o.errors);
+        assert!(d.join("pack/f.txt").exists());
+        let o = extract(&[zip.clone()], true);
+        assert!(d.join("pack (copy)/f.txt").exists(), "{:?}", o.errors);
+        fs::remove_file(d.join("pack/f.txt")).unwrap();
+        fs::remove_dir(d.join("pack")).unwrap();
+        extract(&[zip], false);
+        assert!(d.join("f.txt").exists());
+        let bad = d.join("src/f.txt").to_string_lossy().into_owned();
+        assert_eq!(extract(&[bad], true).errors.len(), 1);
+        assert!(!d.join("src/f (copy)").exists() && !d.join("src/f").exists());
     }
 
     #[test]

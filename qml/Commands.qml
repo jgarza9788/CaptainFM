@@ -2,7 +2,7 @@ import QtQuick
 import CaptainFM
 
 // Every user-facing action. `keys` are the default bindings (space-separated sequences);
-// users override them in ~/.config/captainfm/keys.json or from the command palette.
+// `words` are extra palette search terms; users override them in ~/.config/captainfm/keys.json or from the command palette.
 QtObject {
     id: cmds
 
@@ -95,6 +95,13 @@ QtObject {
             accept: () => { pane().endVisual(); Backend.remove(JSON.stringify(paths)) },
             cancel: () => app.refocus()
         })
+    }
+
+    function extract(intoFolder) {
+        const paths = targets().filter(p => Style.kind(pane().baseName(p), false, false) === "archive")
+        if (paths.length === 0) { app.toast("No archive selected", "warn"); return }
+        pane().endVisual()
+        Backend.extract(JSON.stringify(paths), intoFolder)
     }
 
     function rename() {
@@ -298,6 +305,8 @@ QtObject {
         { id: "file.rename", title: "Rename", fp: ["<F2>"], keys: ["r", "<F2>", "c w"], run: () => rename() },
         { id: "file.newFile", title: "New file", fp: ["<C-n>"], keys: ["a"], run: () => create(false) },
         { id: "file.newDir", title: "New folder", fp: ["<C-S-n>"], keys: ["A", "<F7>"], run: () => create(true) },
+        { id: "file.extractHere", title: "Extract archive here", words: ["unzip", "uncompress", "unpack", "untar"], run: () => extract(false) },
+        { id: "file.extractFolder", title: "Extract archive to ./<name>/", words: ["unzip", "uncompress", "unpack", "untar"], run: () => extract(true) },
         { id: "file.undo", title: "Undo last file operation", fp: ["<C-z>"], keys: ["u", "<C-z>"], run: () => Backend.undo() },
         { id: "file.redo", title: "Redo file operation", fp: ["<C-y>", "<C-S-z>"], keys: ["<C-r>", "<C-S-z>", "U"], run: () => Backend.redo() },
         { id: "file.copyPath", title: "Copy path to clipboard", fp: ["<C-S-c>"], keys: ["y p"],
