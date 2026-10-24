@@ -79,24 +79,66 @@ Window {
         try { return JSON.parse(Backend.bookmarks()).indexOf(path) >= 0 } catch (e) { return false }
     }
 
-    // Pin a folder or item. Unpinning takes two presses in a row (Ctrl+D twice, or right-click twice on the
-    // sidebar entry): the first only marks the pin, which shows in the sidebar; the second removes it.
-    property string armedPin: ""
-    Timer { id: armTimer; interval: 3000; onTriggered: app.armedPin = "" }
+    // Two presses in a row for anything that is hard to undo: the first only marks the target (red in the sidebar and
+    // tab strip) and says in a toast what the second will do; the second, within 3 seconds, does it. A right-click twice
+    // does this on a pinned entry (unpin), a drive (unmount), a remote (disconnect), a tab (close) and a file or folder
+    // (delete, which goes to the trash); Ctrl+D or Ctrl+B twice unpins.
+    property string armedKey: ""
+    property var armedAction: null
+    Timer { id: armTimer; interval: 3000; onTriggered: { app.armedKey = ""; app.armedAction = null } }
+
+    // Returns true when this was the second press and the action ran. `done` is the toast after it (empty: the action reports).
+    function armTwice(key, ask, done, action) {
+        if (armedKey === key) { runArmed(); return true }
+        armedKey = key
+        armedAction = () => { action(); if (done) toast(done) }
+        armTimer.restart()
+        toast(ask, "warn")
+        return false
+    }
+    function runArmed() {
+        const act = armedAction
+        armTimer.stop()
+        armedKey = ""
+        armedAction = null
+        if (act) act()
+    }
 
     function togglePinned(path, name) {
         if (!isPinned(path)) { Backend.toggleBookmark(path); toast("Pinned " + name); pinsChanged(); return }
-        if (armedPin === path) {
-            armTimer.stop()
-            armedPin = ""
-            Backend.toggleBookmark(path)
-            toast("Unpinned " + name)
-            pinsChanged()
-            return
-        }
-        armedPin = path
-        armTimer.restart()
-        toast("Again to unpin “" + name + "”", "warn")
+        armTwice("pin:" + path, "Again to unpin “" + name + "”", "Unpinned " + name, () => { Backend.toggleBookmark(path); pinsChanged() })
+    }
+
+    // Right-click twice on a sidebar drive or remote.
+    function deviceRightClicked(item) {
+        const d = item.dev
+        if (!d) return
+        if (d.kind === "disk" && item.path === "/") { toast("The system drive can’t be unmounted", "warn"); return }
+        const remote = d.kind !== "disk"
+        const verb = remote ? "disconnect" : "unmount"
+        armTwice("drive:" + item.path, "Again to " + verb + " “" + item.label + "”", (remote ? "Disconnecting " : "Unmounting ") + item.label + "…",
+                 () => Backend.ejectDevice(JSON.stringify(d)))
+    }
+
+    // Right-click twice on a tab.
+    function tabRightClicked(i, title) {
+        if (tabsModel.count <= 1) { toast("That is the last tab (Ctrl+Q quits)", "warn"); return }
+        armTwice("tab:" + i, "Again to close tab “" + title + "”", "Closed tab “" + title + "”", () => closeTab(i))
+    }
+
+    // A right-click on a file or folder opens its menu, as before, and arms the delete; a second right-click on the same
+    // item (or on the menu) within 3 seconds sends it to the trash (undo with Ctrl+Z).
+    function rowRightClicked() {
+        const p = pane
+        if (!p || p.currentPath === "") { contextMenu(); return }
+        const many = p.dir.selectedCount > 1
+        const paths = many ? JSON.parse(p.dir.selectedPaths()) : [p.currentPath]
+        const name = many ? paths.length + " items" : p.baseName(p.currentPath)
+        const kind = many ? "" : (p.currentIsDir ? "folder " : "file ")
+        const key = "item:" + JSON.stringify(paths)
+        if (armedKey === key) { pickerBox.close(); runArmed(); return }
+        contextMenu()
+        armTwice(key, "Right-click again to delete " + kind + "“" + name + "”", "", () => Backend.trash(JSON.stringify(paths)))
     }
 
     // The sidebar's global search box drives a whole-drive search in the active pane.
@@ -1042,8 +1084,9 @@ Window {
                         if (Backend.isDir(path)) app.pane.navigate(path); else if (!app.pickMode) Backend.openPath(path)
                     }
                     onConnectRequested: app.connectPrompt()
-                    armedPath: app.armedPin
+                    armedKey: app.armedKey
                     onUnpinRequested: (path, name) => app.togglePinned(path, name)
+                    onDeviceRightClicked: (item) => app.deviceRightClicked(item)
                     onFoldsChanged: app.markDirty()
                     searchValue: app.pane && app.pane.deep ? app.pane.searchText : ""
                     onSearchChanged: (text) => app.sidebarSearch(text)
@@ -1075,6 +1118,7 @@ Window {
                                     id: chip
                                     required property int index
                                     readonly property bool current: index === app.tabIndex
+                                    readonly property bool armed: app.armedKey === "tab:" + index
                                     readonly property Item page: app.tabPages.length > index ? app.tabPages[index] : null
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: parent.height - 8
@@ -1085,14 +1129,22 @@ Window {
                                         id: label
                                         anchors.centerIn: parent
                                         textFormat: Text.RichText
-                                        text: "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + (chip.index + 1) + "</font> "
-                                              + (chip.page ? chip.page.title.replace(/&/g, "&amp;").replace(/</g, "&lt;") : "")
+                                        text: chip.armed ? "<font color=\"" + Style.red + "\">close tab " + (chip.index + 1) + "?</font>"
+                                              : "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + (chip.index + 1) + "</font> "
+                                                + (chip.page ? chip.page.title.replace(/&/g, "&amp;").replace(/</g, "&lt;") : "")
                                         color: chip.current ? Style.fg : Style.fgDim
                                         elide: Text.ElideRight
                                         width: Math.min(implicitWidth, chip.width - Style.pad)
                                         font { family: Style.font; pixelSize: Style.fontSize }
                                     }
-                                    MouseArea { anchors.fill: parent; onClicked: app.selectTab(chip.index) }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onClicked: (m) => {
+                                            if (m.button === Qt.RightButton) app.tabRightClicked(chip.index, chip.page ? chip.page.title : String(chip.index + 1))
+                                            else app.selectTab(chip.index)
+                                        }
+                                    }
                                     // Drag a tab sideways to reorder; it drops where its centre lands.
                                     DragHandler {
                                         yAxis.enabled: false
@@ -1133,7 +1185,7 @@ Window {
                             optSortKey: app.sortKey
                             optSortDesc: app.sortDesc
                             onZoomRequested: (s) => commands.zoom(0.1 * s)
-                            onContextRequested: app.contextMenu()
+                            onContextRequested: app.rowRightClicked()
                             onSortRequested: (key) => commands.setSort(key)
                             onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
                             onPickRequested: app.pickEnterFile()
@@ -1332,6 +1384,8 @@ Window {
         Picker {
             id: pickerBox
             onClosed: app.refocus()
+            // The second right-click of a file or folder delete can land on the menu itself.
+            onRightClicked: if (app.armedKey.indexOf("item:") === 0) { close(); app.runArmed() }
         }
 
         Loader {
@@ -1436,6 +1490,25 @@ Window {
             else if (t.indexOf("!clash:") === 0) clashBox.press(t.substring(7))
             else if (t.indexOf("!set:") === 0) lazySettings().press(t.substring(5))
             else if (t.indexOf("!conn:") === 0) lazyConnect().press(t.substring(6))
+            else if (t.indexOf("!rclick:") === 0) {
+                // Test automation for the double right-click: !rclick:row, !rclick:tab:N, !rclick:pin:/path, !rclick:fake-remote, !rclick:root
+                const w = t.substring(8)
+                if (w === "row") rowRightClicked()
+                else if (w.indexOf("tab:") === 0) tabRightClicked(parseInt(w.substring(4)), "tab " + w.substring(4))
+                else if (w.indexOf("pin:") === 0) togglePinned(w.substring(4), "pin")
+                else if (w.indexOf("side:") === 0) {
+                    // a real sidebar drive or remote whose name contains the text
+                    const found = sidebar.drives.concat(sidebar.remotes).find(x => x.label.indexOf(w.substring(5)) >= 0 || (x.path || "").indexOf(w.substring(5)) >= 0)
+                    if (found) deviceRightClicked(found); else toast("No sidebar entry “" + w.substring(5) + "”", "error")
+                }
+                else if (w === "root") deviceRightClicked({ label: "root", path: "/", dev: { kind: "disk" }, verb: "unmount" })
+                else deviceRightClicked({ label: w, path: "/fake/" + w, dev: { kind: "smb", path: "/fake/" + w }, verb: "disconnect" })
+            }
+            else if (t.indexOf("!space:") === 0) {
+                // Test automation for the remote capacity lookup (a hover cannot be sent): !space:<part of the name>
+                const found = sidebar.remotes.find(x => x.label.indexOf(t.substring(7)) >= 0 || (x.path || "").indexOf(t.substring(7)) >= 0)
+                if (found) sidebar.askSpace(found); else toast("No remote “" + t.substring(7) + "”", "error")
+            }
             else if (t === "!play") inspectorPane.togglePlayback()
             else if (t === "!clear") { const f = app.activeFocusItem; if (f && f.text !== undefined) f.text = "" }
             else if (t === "!next") lazyBatch().nextField(false)

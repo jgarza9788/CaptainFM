@@ -112,7 +112,7 @@ Pin the things you use all the time and they appear under **PINNED** in the side
 
 - `Ctrl-B` (Vim `Space p f`) pins or unpins the current folder.
 - `Ctrl-D` (Vim `Space p i`) pins or unpins the item under the cursor, a file or a folder. Clicking a pinned file opens it.
-- Right-click a pinned entry to unpin it. Pins made in another CaptainFM window show up immediately.
+- Pins made in another CaptainFM window show up immediately. To unpin, right-click the entry twice (see below).
 - Pins also lead the **Go to** list and the palette's folder results.
 
 ## Tabs, panes and layouts
@@ -246,7 +246,7 @@ In Vim keys, pressing `Space`, `g`, `y`, `d`, `z` or `Ctrl-w` and pausing shows 
   gnome-keyring or KWallet) and never into a file. With no keyring it is not saved, and you are told. S3 secret keys travel the
   same way. Google Drive, Dropbox, OneDrive and Box sign in through your browser; rclone keeps the resulting sign-in token in
   `~/.config/captainfm/rclone.conf` (mode 600, not encrypted), and forgetting the connection removes it.
-- Cloud drives need `rclone` and `fuse3` installed. They mount under `~/.local/share/captainfm/mounts/<name>`.
+- Cloud drives need `rclone` and `fuse3` installed. rclone is a separate package, not bundled: https://rclone.org/install/ (Arch: `pacman -S rclone`). They mount under `~/.local/share/captainfm/mounts/<name>`.
 
 ## Themes and look
 
@@ -287,6 +287,28 @@ the view, sort and key settings are saved with the session.
 - **"Show in folder"** from browsers and chat apps: while CaptainFM is the folder handler it serves
   `org.freedesktop.FileManager1`. `captainfm --install-dbus` adds D-Bus activation so it also starts on demand.
 - **Open folders in the running window:** `captainfm --tab <path…>`; open a file's folder with `--select <path>`.
+
+## How full is a remote?
+
+Rest the pointer on a remote or cloud drive in the sidebar (or open it) and it shows a bar, the percent used, and on hover
+how much is free, like a local drive. It is looked up only then, one drive at a time, and kept for a minute, so a long list of
+remotes costs nothing until you look at one. Servers that do not report a size simply show no bar.
+
+## Right-click twice
+
+Anything that is hard to undo takes two right-clicks within 3 seconds. The first only marks the target (it turns red, or
+a toast says what is about to happen); the second does it:
+
+| Right-click twice on | What happens | Toast |
+| --- | --- | --- |
+| a pinned entry | unpins it | "Again to unpin “name”" |
+| a drive in the sidebar | unmounts or ejects it (the system drive is refused) | "Again to unmount “name”" |
+| a remote or cloud drive | disconnects it | "Again to disconnect “name”" |
+| a tab | closes it (never the last one) | "Again to close tab “name”" |
+| a file or folder (or the selection) | moves it to the trash; `Ctrl-Z` undoes | "Right-click again to delete file “name”" |
+
+On a file or folder the first right-click still opens the context menu; the second, on the same item or on the menu, does
+the delete. Waiting 3 seconds cancels it. `Ctrl-D` or `Ctrl-B` twice unpins from the keyboard.
 
 ## Plugins
 

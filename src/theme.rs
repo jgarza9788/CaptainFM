@@ -7,9 +7,9 @@ use std::process::Command;
 use std::sync::{OnceLock, RwLock};
 use std::time::Duration;
 
+use crate::watch::{Watch, watch};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
-use crate::watch::{Watch, watch};
 
 pub type Palette = BTreeMap<String, String>;
 
@@ -170,7 +170,9 @@ mod tests {
 
     #[test]
     fn parses_flat_toml_with_quotes_and_comments() {
-        let p = parse_colors("mode = \"dark\"\n# a comment\naccent = \"#89b4fa\"\nmuted = #585b70 # trailing\n\nnot a pair\n");
+        let p = parse_colors(
+            "mode = \"dark\"\n# a comment\naccent = \"#89b4fa\"\nmuted = #585b70 # trailing\n\nnot a pair\n",
+        );
         assert_eq!(p["mode"], "dark");
         assert_eq!(p["accent"], "#89b4fa");
         assert_eq!(p["muted"], "#585b70");
@@ -179,7 +181,16 @@ mod tests {
 
     #[test]
     fn fallback_defines_every_role_the_ui_uses() {
-        for role in ["accent", "selection", "background", "foreground", "red", "green", "yellow", "blue"] {
+        for role in [
+            "accent",
+            "selection",
+            "background",
+            "foreground",
+            "red",
+            "green",
+            "yellow",
+            "blue",
+        ] {
             assert!(fallback().contains_key(role), "missing {role}");
         }
     }
@@ -187,7 +198,10 @@ mod tests {
     #[test]
     fn active_theme_overrides_the_fallback() {
         let sb = Sandbox::new("theme");
-        sb.touch(".local/state/omarchy/current/theme/colors.toml", "accent = \"#123456\"\n");
+        sb.touch(
+            ".local/state/omarchy/current/theme/colors.toml",
+            "accent = \"#123456\"\n",
+        );
         let p = load_palette();
         assert_eq!(p["accent"], "#123456");
         // Roles the theme lacks keep their fallback value.

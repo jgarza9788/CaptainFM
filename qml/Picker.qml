@@ -37,6 +37,7 @@ Rectangle {
     readonly property bool hasCategories: items.length > 0 && items[0].category !== undefined
 
     signal closed()
+    signal rightClicked()           // a right-click anywhere on the picker (the context menu uses it for the second press)
 
     function open(opts) {
         placeholder = opts.placeholder ?? "Type to search"
@@ -307,5 +308,13 @@ Rectangle {
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont + 1 }
         }
+    }
+
+    // Only right-clicks: everything else still reaches the rows and the input below.
+    MouseArea {
+        anchors.fill: parent
+        z: 10
+        acceptedButtons: Qt.RightButton
+        onClicked: picker.rightClicked()
     }
 }

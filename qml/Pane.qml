@@ -768,6 +768,32 @@ FocusScope {
             onWheel: (e) => pane.zoomRequested(e.angleDelta.y > 0 ? 1 : -1)
         }
 
+        // Slow folders (cloud and network drives) say so: only after 300 ms, so local folders never flash it.
+        Timer {
+            id: slowTimer
+            interval: 300
+            running: dir.loading && !pane.deep
+        }
+        Row {
+            anchors.centerIn: parent
+            spacing: Style.pad
+            visible: list.count === 0 && dir.loading && !pane.deep && !slowTimer.running
+            Rectangle {
+                width: 9; height: 9; radius: 5; anchors.verticalCenter: parent.verticalCenter
+                color: Style.yellow
+                SequentialAnimation on opacity {
+                    running: parent.visible; loops: Animation.Infinite
+                    NumberAnimation { to: 0.2; duration: 450 }
+                    NumberAnimation { to: 1.0; duration: 450 }
+                }
+            }
+            Text {
+                color: Style.fgDim
+                font { family: Style.font; pixelSize: Style.fontSize }
+                text: "Loading…"
+            }
+        }
+
         Text {
             anchors.centerIn: parent
             visible: list.count === 0 && !dir.loading

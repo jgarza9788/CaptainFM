@@ -69,7 +69,7 @@ Every color comes from the active Omarchy theme:
 
 Needs Rust, Qt 6 (`qt6-declarative`, `qt6-multimedia`) and a C++ toolchain. Optional helpers unlock more previews
 and features: `ffmpeg`, `imagemagick`, `poppler`, `libarchive` (`bsdtar`), `sqlite`, `openssl`, `wl-clipboard`,
-`gvfs`, `udisks2`, and `rclone` + `libsecret` for cloud drives and remembered passwords.
+`gvfs`, `udisks2`, and `rclone` (a separate package, see https://rclone.org/install/) + `libsecret` for cloud drives and remembered passwords.
 
 ```sh
 git clone https://github.com/jgarza9788/CaptainFM.git

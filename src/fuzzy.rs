@@ -26,7 +26,9 @@ fn fold(c: char) -> char {
 /// Cheap allocation-free check that `needle` is a subsequence of `text`.
 fn is_subsequence(needle: &[char], case_sensitive: bool, text: &str) -> bool {
     let mut it = needle.iter();
-    let Some(mut want) = it.next() else { return true };
+    let Some(mut want) = it.next() else {
+        return true;
+    };
     for c in text.chars() {
         let c = if case_sensitive { c } else { fold(c) };
         if c == *want {
@@ -137,7 +139,8 @@ pub struct Query {
 /// Whether `name` ends in one of `exts` (`rs` matches `main.rs`, `tar.gz` matches `a.tar.gz`).
 pub fn matches_ext(exts: &[String], name: &str) -> bool {
     let lower = name.to_lowercase();
-    exts.iter().any(|e| lower.len() > e.len() + 1 && lower.ends_with(&format!(".{e}")))
+    exts.iter()
+        .any(|e| lower.len() > e.len() + 1 && lower.ends_with(&format!(".{e}")))
 }
 
 fn parse_duration(s: &str) -> Option<i64> {
@@ -181,7 +184,10 @@ impl Query {
         if let Some(pattern) = input.trim_start().strip_prefix("re:") {
             // Smart case, like the plain terms. An unfinished pattern matches nothing.
             let insensitive = !pattern.chars().any(char::is_uppercase);
-            match regex::RegexBuilder::new(pattern).case_insensitive(insensitive).build() {
+            match regex::RegexBuilder::new(pattern)
+                .case_insensitive(insensitive)
+                .build()
+            {
                 Ok(re) if !pattern.is_empty() => q.regex = Some(re),
                 Ok(_) => {}
                 Err(_) => q.bad_regex = true,
@@ -230,26 +236,32 @@ impl Query {
 
     /// Whether the query filters on size or date, which needs the file's metadata.
     pub fn needs_meta(&self) -> bool {
-        self.newer.is_some() || self.older.is_some() || self.min_size.is_some() || self.max_size.is_some()
+        self.newer.is_some()
+            || self.older.is_some()
+            || self.min_size.is_some()
+            || self.max_size.is_some()
     }
 
     /// Check the non-fuzzy filters. Unknown values (`size < 0`) never fail a filter.
     pub fn accepts(&self, name: &str, is_dir: bool, size: i64, mtime: i64) -> bool {
         if let Some(d) = self.only_dirs
-            && d != is_dir {
-                return false;
-            }
+            && d != is_dir
+        {
+            return false;
+        }
         if !self.ext.is_empty() && !matches_ext(&self.ext, name) {
             return false;
         }
         if mtime > 0
-            && (self.newer.is_some_and(|t| mtime < t) || self.older.is_some_and(|t| mtime > t)) {
-                return false;
-            }
+            && (self.newer.is_some_and(|t| mtime < t) || self.older.is_some_and(|t| mtime > t))
+        {
+            return false;
+        }
         if size >= 0
-            && (self.min_size.is_some_and(|m| size < m) || self.max_size.is_some_and(|m| size > m)) {
-                return false;
-            }
+            && (self.min_size.is_some_and(|m| size < m) || self.max_size.is_some_and(|m| size > m))
+        {
+            return false;
+        }
         true
     }
 
@@ -275,9 +287,10 @@ impl Query {
         }
         // zoxide-style: all words as in-order substrings of the name beats a scattered fuzzy match.
         if (self.words.len() > 1 || self.words.first().is_some_and(|w| w.len() > 1))
-            && let Some(ordered) = ordered_terms_score(&self.words.join(" "), name) {
-                total += 100 + ordered;
-            }
+            && let Some(ordered) = ordered_terms_score(&self.words.join(" "), name)
+        {
+            total += 100 + ordered;
+        }
         Some(total)
     }
 }
@@ -294,14 +307,22 @@ pub fn ordered_terms_score(query: &str, text: &str) -> Option<i32> {
     let mut total = 0;
     for term in terms {
         let sensitive = term.chars().any(char::is_uppercase);
-        let (hay, needle) = if sensitive { (text, term.to_owned()) } else { (lower.as_str(), term.to_lowercase()) };
+        let (hay, needle) = if sensitive {
+            (text, term.to_owned())
+        } else {
+            (lower.as_str(), term.to_lowercase())
+        };
         // Byte offsets can differ between `text` and `lower` for exotic Unicode; stay in range.
         let start = from.min(hay.len());
         if !hay.is_char_boundary(start) {
             return None;
         }
         let pos = start + hay[start..].find(&needle)?;
-        let boundary = pos == 0 || !hay[..pos].chars().next_back().is_some_and(char::is_alphanumeric);
+        let boundary = pos == 0
+            || !hay[..pos]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric);
         total += 20 + if boundary { 15 } else { 0 } - (pos as i32).min(30);
         from = pos + needle.len();
     }
@@ -359,8 +380,11 @@ mod tests {
         assert!(ordered_terms_score("new tab", "New tab").is_some());
         assert!(ordered_terms_score("tab new", "New tab").is_none());
         assert!(ordered_terms_score("Tab", "New tab").is_none());
-        assert!(ordered_terms_score("sp pan", "Split: add pane beside") .is_some());
-        assert!(ordered_terms_score("tab", "Tab one") > ordered_terms_score("tab", "Cycle pane layout table"));
+        assert!(ordered_terms_score("sp pan", "Split: add pane beside").is_some());
+        assert!(
+            ordered_terms_score("tab", "Tab one")
+                > ordered_terms_score("tab", "Cycle pane layout table")
+        );
     }
 
     #[test]
@@ -370,7 +394,11 @@ mod tests {
         assert!(q.score("main.rs", "src/main.rs").is_some());
         assert!(q.score("domain.rs", "src/domain.rs").is_none());
         // Smart case, and unfinished patterns match nothing.
-        assert!(Query::parse("re:Main").score("main.rs", "main.rs").is_none());
+        assert!(
+            Query::parse("re:Main")
+                .score("main.rs", "main.rs")
+                .is_none()
+        );
         assert!(Query::parse("re:(").score("main.rs", "main.rs").is_none());
     }
 
@@ -395,7 +423,10 @@ mod tests {
 /// Words that mean the same thing to someone typing into the palette. A query word also matches the
 /// other words of any group it is in, a little less well than itself.
 const SYNONYMS: &[&[&str]] = &[
-    &["delete", "remove", "erase", "trash", "bin", "rm", "destroy", "discard", "shred", "recycle", "rubbish", "garbage"],
+    &[
+        "delete", "remove", "erase", "trash", "bin", "rm", "destroy", "discard", "shred",
+        "recycle", "rubbish", "garbage",
+    ],
     &["copy", "duplicate", "clone", "yank"],
     &["move", "relocate", "cut", "mv", "transfer"],
     &["rename", "retitle"],
@@ -403,9 +434,23 @@ const SYNONYMS: &[&[&str]] = &[
     &["folder", "directory", "dir"],
     &["hidden", "dotfiles", "invisible"],
     &["open", "launch", "run", "start"],
-    &["unmount", "disconnect", "eject", "umount", "detach", "unplug"],
+    &[
+        "unmount",
+        "disconnect",
+        "eject",
+        "umount",
+        "detach",
+        "unplug",
+    ],
     &["connect", "login", "mount"],
-    &["settings", "preferences", "options", "config", "configure", "setup"],
+    &[
+        "settings",
+        "preferences",
+        "options",
+        "config",
+        "configure",
+        "setup",
+    ],
     &["preview", "inspector", "info", "details"],
     &["find", "search", "locate", "grep", "lookup"],
     &["refresh", "reload", "rescan", "update"],
@@ -457,7 +502,10 @@ pub fn stem(word: &str) -> String {
                     // "running" -> "runn" -> "run"
                     let b = r.as_bytes();
                     if suf == "ing" || suf == "ed" || suf == "er" {
-                        if b.len() >= 4 && b[b.len() - 1] == b[b.len() - 2] && !b"lsz".contains(&b[b.len() - 1]) {
+                        if b.len() >= 4
+                            && b[b.len() - 1] == b[b.len() - 2]
+                            && !b"lsz".contains(&b[b.len() - 1])
+                        {
                             r.pop();
                         }
                     }
@@ -491,7 +539,9 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     for i in 1..=a.len() {
         for j in 1..=b.len() {
             let cost = usize::from(a[i - 1] != b[j - 1]);
-            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            d[i][j] = (d[i - 1][j] + 1)
+                .min(d[i][j - 1] + 1)
+                .min(d[i - 1][j - 1] + cost);
             if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
                 d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
             }
@@ -501,7 +551,10 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 fn text_words(text: &str) -> Vec<String> {
-    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+    text.split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 /// Every word that shares a group with `word` (or with its word form).
@@ -526,7 +579,10 @@ fn word_tier(q: &str, words: &[String], stems: &[String]) -> u8 {
     if stems.iter().any(|s| *s == stem(q)) {
         return 3;
     }
-    if synonyms_of(q).iter().any(|m| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m))) {
+    if synonyms_of(q)
+        .iter()
+        .any(|m| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m)))
+    {
         return 2;
     }
     let len = q.chars().count();
@@ -542,8 +598,12 @@ fn word_tier(q: &str, words: &[String], stems: &[String]) -> u8 {
         return 1;
     }
     // A misspelt synonym ("prefrences" for settings): correct it against the known words first.
-    let matches_text = |m: &str| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m));
-    let known = SYNONYMS.iter().flat_map(|g| g.iter().copied()).filter(|m| near(m));
+    let matches_text =
+        |m: &str| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m));
+    let known = SYNONYMS
+        .iter()
+        .flat_map(|g| g.iter().copied())
+        .filter(|m| near(m));
     for m in known {
         if matches_text(m) || synonyms_of(m).iter().any(|s| matches_text(s)) {
             return 1;
@@ -574,10 +634,20 @@ pub fn predict_score(query: &str, text: &str) -> Option<(u8, i32)> {
 /// Order palette `items` (with command `ids`) for `query`: literal matches first; when there are none, the
 /// best-guessed ones (word forms, synonyms, typos). Commands chosen for this query before come first,
 /// and an empty query lists the most used commands first.
-pub fn predict_rank(items: &[String], ids: &[String], query: &str, usage: &crate::state::Usage) -> Vec<usize> {
+pub fn predict_rank(
+    items: &[String],
+    ids: &[String],
+    query: &str,
+    usage: &crate::state::Usage,
+) -> Vec<usize> {
     let q = query.trim();
     let ql = q.to_lowercase();
-    let count = |i: usize| ids.get(i).and_then(|id| usage.counts.get(id)).copied().unwrap_or(0) as i32;
+    let count = |i: usize| {
+        ids.get(i)
+            .and_then(|id| usage.counts.get(id))
+            .copied()
+            .unwrap_or(0) as i32
+    };
     if q.is_empty() {
         let mut order: Vec<usize> = (0..items.len()).collect();
         order.sort_by(|&a, &b| count(b).cmp(&count(a)).then(a.cmp(&b)));
@@ -585,7 +655,9 @@ pub fn predict_rank(items: &[String], ids: &[String], query: &str, usage: &crate
     }
     // Learned: (is it an exact repeat of a query, bonus).
     let learned = |i: usize| -> (bool, i32) {
-        let Some(id) = ids.get(i) else { return (false, 0) };
+        let Some(id) = ids.get(i) else {
+            return (false, 0);
+        };
         let mut best = (false, 0);
         for p in usage.picks.iter().filter(|p| &p.id == id) {
             let cand = if p.q == ql {
@@ -616,10 +688,19 @@ pub fn predict_rank(items: &[String], ids: &[String], query: &str, usage: &crate
     if literal == 0 {
         // Nothing literal: the best-matching tier of guesses, typos only as a last resort.
         let best = guesses.iter().map(|g| g.1).max().unwrap_or(0);
-        scored = guesses.into_iter().filter(|g| g.1 == best).map(|(i, _, sc)| (sc + learned(i).1, i)).collect();
+        scored = guesses
+            .into_iter()
+            .filter(|g| g.1 == best)
+            .map(|(i, _, sc)| (sc + learned(i).1, i))
+            .collect();
     } else {
         // Literal hits first; synonyms and word forms of what was typed follow them.
-        scored.extend(guesses.into_iter().filter(|g| g.1 >= 2).map(|(i, _, sc)| (sc - 1000 + learned(i).1, i)));
+        scored.extend(
+            guesses
+                .into_iter()
+                .filter(|g| g.1 >= 2)
+                .map(|(i, _, sc)| (sc - 1000 + learned(i).1, i)),
+        );
     }
     // A command picked for this query (or one it is the start of) shows up even when the words don't match.
     for i in 0..items.len() {
@@ -661,15 +742,32 @@ mod predict_tests {
 
     #[test]
     fn guesses_find_the_command() {
-        let list = items(&["Close pane", "Move to trash", "Delete permanently…", "Unmount / disconnect / eject device…", "Settings…", "Pin / unpin this folder"]);
+        let list = items(&[
+            "Close pane",
+            "Move to trash",
+            "Delete permanently…",
+            "Unmount / disconnect / eject device…",
+            "Settings…",
+            "Pin / unpin this folder",
+        ]);
         let ids: Vec<String> = (0..list.len()).map(|i| format!("c{i}")).collect();
         let u = Usage::default();
-        let first = |q: &str| predict_rank(&list, &ids, q, &u).first().map(|&i| list[i].clone());
+        let first = |q: &str| {
+            predict_rank(&list, &ids, q, &u)
+                .first()
+                .map(|&i| list[i].clone())
+        };
         assert_eq!(first("deleting").as_deref(), Some("Delete permanently…"));
         assert_eq!(first("preferences").as_deref(), Some("Settings…"));
         assert_eq!(first("prefrences").as_deref(), Some("Settings…"));
-        assert_eq!(first("bookmark").as_deref(), Some("Pin / unpin this folder"));
-        assert_eq!(first("disconect").as_deref(), Some("Unmount / disconnect / eject device…"));
+        assert_eq!(
+            first("bookmark").as_deref(),
+            Some("Pin / unpin this folder")
+        );
+        assert_eq!(
+            first("disconect").as_deref(),
+            Some("Unmount / disconnect / eject device…")
+        );
         assert_eq!(first("zzzz"), None);
     }
 
@@ -685,8 +783,14 @@ mod predict_tests {
         let list = items(&["Remove this", "Delete permanently…"]);
         let ids = vec!["a".to_owned(), "b".to_owned()];
         // The literal hit comes first; the synonym follows it.
-        assert_eq!(predict_rank(&list, &ids, "remove", &Usage::default()), vec![0, 1]);
-        assert_eq!(predict_rank(&list, &ids, "delete", &Usage::default()), vec![1, 0]);
+        assert_eq!(
+            predict_rank(&list, &ids, "remove", &Usage::default()),
+            vec![0, 1]
+        );
+        assert_eq!(
+            predict_rank(&list, &ids, "delete", &Usage::default()),
+            vec![1, 0]
+        );
     }
 
     #[test]

@@ -312,11 +312,17 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
     }
     if opts.group != "none" && opts.tree_root.is_none() && !query.has_terms() {
         let now = crate::state::now();
-        let mut idx: Vec<u32> =
-            all.iter().enumerate().filter(|(i, e)| visible(*i, e)).map(|(i, _)| i as u32).collect();
+        let mut idx: Vec<u32> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| visible(*i, e))
+            .map(|(i, _)| i as u32)
+            .collect();
         listing::sort_indices(all, meta, &mut idx, opts.key, opts.desc);
         // Stable: within a group the chosen sort order is kept.
-        idx.sort_by_key(|&i| listing::group_of(&all[i as usize], meta[i as usize], opts.group, now).0);
+        idx.sort_by_key(|&i| {
+            listing::group_of(&all[i as usize], meta[i as usize], opts.group, now).0
+        });
         return idx;
     }
     if query.has_terms() {
@@ -327,13 +333,18 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
             .filter_map(|(i, e)| query.score(&e.name, &e.name).map(|s| (s, i as u32)))
             .collect();
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| listing::natural_cmp_ci(&all[a.1 as usize].lname, &all[b.1 as usize].lname))
+            b.0.cmp(&a.0).then_with(|| {
+                listing::natural_cmp_ci(&all[a.1 as usize].lname, &all[b.1 as usize].lname)
+            })
         });
         scored.into_iter().map(|(_, i)| i).collect()
     } else {
-        let mut idx: Vec<u32> =
-            all.iter().enumerate().filter(|(i, e)| visible(*i, e)).map(|(i, _)| i as u32).collect();
+        let mut idx: Vec<u32> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| visible(*i, e))
+            .map(|(i, _)| i as u32)
+            .collect();
         listing::sort_indices(all, meta, &mut idx, opts.key, opts.desc);
         idx
     }
@@ -365,7 +376,11 @@ impl DirModelRust {
         if self.is_deep() {
             return (0..all.len() as u32).collect();
         }
-        let (filter, key, root) = (self.filter.to_string(), self.sort_key.to_string(), self.path.to_string());
+        let (filter, key, root) = (
+            self.filter.to_string(),
+            self.sort_key.to_string(),
+            self.path.to_string(),
+        );
         let group = self.group_by.to_string();
         let opts = ViewOpts {
             show_hidden: self.show_hidden,
@@ -413,7 +428,8 @@ impl qobject::DirModel {
             DirRoles::Expanded => QVariant::from(&self.expanded.contains(&e.path)),
             DirRoles::GroupName => {
                 let group = self.group_by.to_string();
-                let (_, label) = listing::group_of(e, self.meta_at(index.row()), &group, crate::state::now());
+                let (_, label) =
+                    listing::group_of(e, self.meta_at(index.row()), &group, crate::state::now());
                 s(label)
             }
             _ => QVariant::default(),
@@ -445,7 +461,11 @@ impl qobject::DirModel {
 
     fn load(mut self: Pin<&mut Self>, path: &QString) {
         let dir = path.to_string();
-        let dir = if dir.len() > 1 { dir.trim_end_matches('/').to_owned() } else { dir };
+        let dir = if dir.len() > 1 {
+            dir.trim_end_matches('/').to_owned()
+        } else {
+            dir
+        };
         let changed = self.path().to_string() != dir || self.is_deep();
         self.as_mut().set_mode(QString::from("folder"));
         self.as_mut().rust_mut().deep_index = None;
@@ -519,7 +539,10 @@ impl qobject::DirModel {
             return false;
         }
         let prefix = format!("{path}/");
-        self.as_mut().rust_mut().expanded.retain(|p| p != &path && !p.starts_with(&prefix));
+        self.as_mut()
+            .rust_mut()
+            .expanded
+            .retain(|p| p != &path && !p.starts_with(&prefix));
         self.as_mut().rewatch();
         self.refresh(true);
         true
@@ -528,7 +551,9 @@ impl qobject::DirModel {
     fn parent_row(&self, row: i32) -> i32 {
         let Some(e) = self.entry(row) else { return -1 };
         let parent = e.path.rsplit_once('/').map_or("", |p| p.0);
-        self.shown().position(|p| p.path == parent).map_or(-1, |i| i as i32)
+        self.shown()
+            .position(|p| p.path == parent)
+            .map_or(-1, |i| i as i32)
     }
 
     fn reload(self: Pin<&mut Self>) {
@@ -544,7 +569,9 @@ impl qobject::DirModel {
 
     fn index_of(&self, name: &QString) -> i32 {
         let name = name.to_string();
-        self.shown().position(|e| e.name == name).map_or(-1, |i| i as i32)
+        self.shown()
+            .position(|e| e.name == name)
+            .map_or(-1, |i| i as i32)
     }
 
     fn find_prefix(&self, prefix: &QString, from: i32) -> i32 {
@@ -556,17 +583,24 @@ impl qobject::DirModel {
         let start = usize::try_from(from).unwrap_or(0) % n;
         (0..n)
             .map(|k| (start + k) % n)
-            .find(|&row| self.all[self.order[row] as usize].lname.starts_with(&prefix))
+            .find(|&row| {
+                self.all[self.order[row] as usize]
+                    .lname
+                    .starts_with(&prefix)
+            })
             .map_or(-1, |r| r as i32)
     }
 
     fn row_of_path(&self, path: &QString) -> i32 {
         let path = path.to_string();
-        self.shown().position(|e| e.path == path).map_or(-1, |i| i as i32)
+        self.shown()
+            .position(|e| e.path == path)
+            .map_or(-1, |i| i as i32)
     }
 
     fn path_at(&self, row: i32) -> QString {
-        self.entry(row).map_or_else(QString::default, |e| QString::from(e.path.as_str()))
+        self.entry(row)
+            .map_or_else(QString::default, |e| QString::from(e.path.as_str()))
     }
 
     fn is_dir_at(&self, row: i32) -> bool {
@@ -588,8 +622,10 @@ impl qobject::DirModel {
 
     fn set_ext_filter(mut self: Pin<&mut Self>, extensions: &QString) {
         let exts: Vec<String> = serde_json::from_str(&extensions.to_string()).unwrap_or_default();
-        self.as_mut().rust_mut().ext_filter =
-            exts.into_iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect();
+        self.as_mut().rust_mut().ext_filter = exts
+            .into_iter()
+            .map(|e| e.trim_start_matches('.').to_lowercase())
+            .collect();
         self.rederive();
     }
 
@@ -696,7 +732,10 @@ impl qobject::DirModel {
 
     fn deep_stop(mut self: Pin<&mut Self>) {
         let path = self.path().clone();
-        self.as_mut().rust_mut().generation.fetch_add(1, Ordering::SeqCst);
+        self.as_mut()
+            .rust_mut()
+            .generation
+            .fetch_add(1, Ordering::SeqCst);
         self.load(&path);
     }
 
@@ -710,7 +749,8 @@ impl qobject::DirModel {
         let query = self.deep_query.clone();
         let show_hidden = *self.show_hidden();
         let qt_thread = self.qt_thread();
-        self.as_mut().set_loading(!index.done.load(Ordering::SeqCst));
+        self.as_mut()
+            .set_loading(!index.done.load(Ordering::SeqCst));
 
         std::thread::spawn(move || {
             let cancel_gen = Arc::clone(&generation);
@@ -770,7 +810,11 @@ impl qobject::DirModel {
                 listing::list_dir(&path)
             });
             if std::env::var_os("CFM_DEBUG").is_some() {
-                eprintln!("[timing] list_dir {} entries: {:?}", entries.len(), t0.elapsed());
+                eprintln!(
+                    "[timing] list_dir {} entries: {:?}",
+                    entries.len(),
+                    t0.elapsed()
+                );
             }
 
             let (g, shared) = (Arc::clone(&generation), Arc::clone(&entries));
@@ -922,7 +966,8 @@ impl qobject::DirModel {
         }
         let top = self.index(0, 0, &QModelIndex::default());
         let bottom = self.index(last, 0, &QModelIndex::default());
-        self.as_mut().data_changed(&top, &bottom, &QVector::<i32>::default());
+        self.as_mut()
+            .data_changed(&top, &bottom, &QVector::<i32>::default());
     }
 
     /// Recompute the display order from `all` after a view option changed.
@@ -934,7 +979,12 @@ impl qobject::DirModel {
 
     /// Adopt `order`. Same rows in the same order: refresh cells in place (no flicker, the cursor
     /// stays); otherwise reset the model.
-    fn install_order(mut self: Pin<&mut Self>, order: Vec<u32>, same_rows: bool, force_signal: bool) {
+    fn install_order(
+        mut self: Pin<&mut Self>,
+        order: Vec<u32>,
+        same_rows: bool,
+        force_signal: bool,
+    ) {
         if same_rows {
             self.as_mut().rust_mut().order = order;
             self.as_mut().cells_changed();
@@ -944,8 +994,12 @@ impl qobject::DirModel {
             self.as_mut().end_reset_model();
             // Drop selections that no longer exist.
             let present: HashSet<&str> = self.all.iter().map(|e| e.path.as_str()).collect();
-            let kept: HashSet<String> =
-                self.selected.iter().filter(|p| present.contains(p.as_str())).cloned().collect();
+            let kept: HashSet<String> = self
+                .selected
+                .iter()
+                .filter(|p| present.contains(p.as_str()))
+                .cloned()
+                .collect();
             self.as_mut().rust_mut().selected = kept;
         }
         let (count, selected) = (self.order.len() as i32, self.selected.len() as i32);

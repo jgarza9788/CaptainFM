@@ -59,20 +59,41 @@ There is no usage data to go on: a web search found no real survey of file manag
 - [x] The rarely used previews are now five built-in plugins, and their Rust code is gone: `preview-torrent`, `preview-calendar-contacts`, `preview-sqlite`, `preview-system` (programs, certificates, SSH keys, packages) and `preview-documents` (RTF, DjVu, e-book and comic covers). Their tests run the Lua.
 - [x] The Connect dialog shows SFTP, SMB, FTP, WebDAV, NFS and Google Drive; Dropbox, OneDrive, Box, Google Cloud Storage and S3 come after "More cloud services…" (still reachable from the palette).
 - [x] Plugins can be switched with build flags (`./build.sh --no-plugins`, `--without torrent,sqlite`, `--only sqlite,system`, or cargo features `plugin-torrent` and so on), and at run time from the palette ("Plugins: turn off …", "turn all on/off"), from the command line (`captainfm --plugins`, `captainfm --plugin torrent off`) and in Settings.
-- [ ] After 4 weeks of counts, read "Show feature use…" and decide per feature: switch off by default, or compile out behind a cargo feature if it also costs build time. All plugins are on by default for now, so nothing seems to disappear.
-- [ ] Likely under 5%: Lua plugins themselves (vendored Lua adds build time and size), batch rename templates and regex, the learned palette history. Not changed without numbers.
-- Keep, even though not everyone uses them: the folder-handler D-Bus service and portal file chooser (they make it the default file manager), and trash and undo. Font previews stay built in because they need the font drawn, not just text.
 
-## 11. Eject drives with a double right click
-- [ ] Right-clicking a removable drive twice in a row ejects it (like the two-press unpin).
+## 11. Double right-click: eject, disconnect, close, delete
+- [x] Right-clicking twice within 3 seconds does the hard-to-undo thing under the pointer, and says so in a toast both times: unpin a pinned entry, unmount a drive (the system drive is refused), disconnect a remote or cloud drive, close a tab (never the last one), and move a file, folder or selection to the trash (`Ctrl-Z` undoes). The first press marks the target in red (sidebar rows and the tab) (`Main.armTwice`, `rowRightClicked`, `deviceRightClicked`, `tabRightClicked`).
+- [x] On files and folders the first right-click still opens the context menu; the second, on the same item or on the menu, deletes (`Picker.rightClicked`).
+- Deliberately left out: Miller columns, the breadcrumb bar and the places list (documents, downloads...) do nothing on a double right-click, since there is nothing there to remove.
+- [x] Checked against real mounts through the double right-click (two `!rclick:side:<name>` presses in a headless run): a real gvfs mount (`gio mount localtest:///`) was disconnected and gone from `gio mount -l`, and a real udisks mount (a 24 MB ext4 image through `udisksctl loop-setup`, mounted under `/run/media`) was unmounted. Your three SMB shares were left alone (their passwords are not saved, so they could not be re-mounted).
+- [x] A physical USB stick (a 116 GB Ventoy stick) was unmounted and powered off by the second right-click: it left `lsblk` and `udisksctl status` at once, and is safe to unplug (`devices::eject_disk`).
 
-## 12. Remote drive capacity (plugin)
-- [ ] Show how full a remote drive is, as the sidebar does for local drives.
+## 12. Remote drive capacity
+Core, not a plugin: the sidebar already drew a usage bar, percentage and "N free" for any entry with numbers, and plugins cannot reach the sidebar. Remote and cloud entries just had none.
+- [x] Looked up only when wanted, so people with many remotes are not slowed down: when the pointer rests on a remote's row (about 300 ms) or it is opened. Nothing is fetched while the sidebar lists (checked: no `gio` process while the sidebar is up; only the hovered or opened row gets a bar).
+- [x] One remote at a time on its own thread with a 4 s limit: `gio info -f <mount>` for gvfs mounts (`filesystem::size` and `filesystem::free`), `statvfs` for rclone mounts. No numbers means no bar. Checked live on a real SMB share (49% used).
+- [x] Each answer, including "nothing reported", is cached for 60 s and never asked twice at once; the `spaceReady` signal fills `used`, `total` and `usage` for that row, so the existing bar and colours show (`devices::remote_space`, `SpaceCache`, `Backend::request_space`, `Sidebar.askSpace`).
+- [x] Tests: `gio info -f` parsing (size and free, missing keys, zero size, free above size), the 60 s cache, and giving up on a slow program.
+- [x] rclone stays a separate package, not bundled. When it is missing the Connect dialog says so and points to https://rclone.org/install/ (also in README and HOWTO). Cloud capacity (`statvfs` on the mount) is the same code path as local drives.
+- [x] A pulsing dot and "Loading…" show in an empty folder that is still being read, but only after 300 ms so local folders never flash it (`Pane.qml`, `slowTimer`). The small dot beside the item count already showed while file details load. Not seen mid-load: the QML loads and a Google Drive folder opens, but the headless screenshot fires after the listing is back.
+
+## 12.5 **inserted**
+- [x] The release steps are written down in `docs/RELEASING.md`: Arch package, `.deb`, `.rpm`, AppImage and Flatpak, built from one optimised binary, with what goes in each, the checks and the publish step (asks first).
+- [ ] Actually make the packaging files and run the first release by following that document (none exist yet; only `makepkg` is installed here, the rest need containers).
+
+## 12.6 spacebar
+- [ ] the space bar is used to preview the item in other FMs, let's have the space bar open the inspector
+
 
 ## 13. Performance test
 - [ ] Create a performance test.
 - [ ] Standardise it, so runs on different days can be compared.
 - [ ] Write a small report for each run.
+
+## 50. Features few people use: decide with the numbers
+Counting began on 2026-10-24 (section 10), so the earliest sensible review is about 2026-11-21.
+- [ ] After 4 weeks of counts, read "Show feature use…" and decide per feature: switch off by default, or compile out behind a cargo feature if it also costs build time. All plugins are on by default for now, so nothing seems to disappear.
+- [ ] Likely under 5%: Lua plugins themselves (vendored Lua adds build time and size), batch rename templates and regex, the learned palette history. Not changed without numbers.
+- Keep, even though not everyone uses them: the folder-handler D-Bus service and portal file chooser (they make it the default file manager), and trash and undo. Font previews stay built in because they need the font drawn, not just text.
 
 ## 100. Draggable tabs
 - [ ] Drop a file onto a tab to put it in that tab's folder.

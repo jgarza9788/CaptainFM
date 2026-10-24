@@ -15,15 +15,26 @@ Rectangle {
     property string searchValue: ""
     signal connectRequested()
     signal unpinRequested(string path, string name)
+    signal deviceRightClicked(var item)
 
     color: Style.bgDark
     clip: true
 
     property var places: []
     property var pinned: []
-    property string armedPath: ""     // a pin that the next unpin press removes
+    property string armedKey: ""      // what the next press does: "pin:<path>" or "drive:<path>" (see Main.armTwice)
     property var drives: []
     property var remotes: []
+    // How full each remote is, asked for only when its row is hovered or opened: { path: {used, total, usage} }.
+    property var spaces: ({})
+
+    function withSpace(item) {
+        const s = spaces[item.path]
+        return s ? Object.assign({}, item, s) : item
+    }
+    function askSpace(item) {
+        if (item && item.dev && item.dev.kind !== "disk") Backend.requestSpace(item.path)
+    }
 
     readonly property string home: Backend.home()
 
@@ -102,18 +113,26 @@ Rectangle {
                     const wanted = mp === "/" || mp.indexOf("/mnt") === 0 || mp.indexOf("/media") === 0 || mp.indexOf("/run/media") === 0
                     if (!wanted) continue
                     const label = mp === "/" ? "root" : (x.label || mp.substring(mp.lastIndexOf("/") + 1))
-                    d.push({ label: label.toLowerCase(), glyph: Style.pick("\uf0a0", "■"), path: mp, usage: x.usage, used: x.used, total: x.total })
+                    d.push({ label: label.toLowerCase(), glyph: Style.pick("\uf0a0", "■"), path: mp, usage: x.usage, used: x.used, total: x.total, dev: x, verb: "unmount" })
                 } else if (x.kind === "cloud") {
-                    r.push({ label: x.label, glyph: Style.pick("\uf0c2", "☁"), path: x.path })
+                    r.push({ label: x.label, glyph: Style.pick("\uf0c2", "☁"), path: x.path, dev: x, verb: "disconnect" })
                 } else {
                     // A saved connection's name is shown as it is; a bare URI is cut down to its host.
                     const named = x.label.indexOf("://") < 0
                     const u = named ? x.label : x.label.replace(/^[a-z0-9+.-]+:\/\//, "").replace(/^.*@/, "").split("/")[0].toLowerCase()
-                    r.push({ label: u, glyph: Style.pick("\uf0ac", "⇅"), path: x.path })
+                    r.push({ label: u, glyph: Style.pick("\uf0ac", "⇅"), path: x.path, dev: x, verb: "disconnect" })
                 }
             }
             drives = d
-            remotes = r
+            remotes = r.map(withSpace)
+        }
+        function onSpaceReady(path, json) {
+            let s = null
+            try { s = json === "" ? null : JSON.parse(json) } catch (e) { s = null }
+            const next = Object.assign({}, spaces)
+            if (s) next[path] = s; else delete next[path]
+            spaces = next
+            remotes = remotes.map(x => x.path === path ? withSpace(Object.assign({}, x, { usage: undefined, used: undefined, total: undefined })) : x)
         }
     }
 
@@ -167,6 +186,7 @@ Rectangle {
         readonly property int barShift: hasBar ? Math.round((barHeight + Style.pad / 2) / 2) : 0
         height: Math.round(Style.rowHeight * 1.05) + (hasBar ? barHeight + Math.round(Style.pad / 2) : 0)
         readonly property bool active: item && item.path !== "" && item.path === side.activePath
+        Timer { id: askTimer; interval: 300; onTriggered: side.askSpace(entry.item) }
         Rectangle {
             anchors { fill: parent; leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
             radius: 5
@@ -185,8 +205,9 @@ Rectangle {
         Text {
             visible: !side.compact
             anchors { left: glyph.right; leftMargin: Style.pad; right: dropIcon.visible ? dropIcon.left : usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
-            readonly property bool armed: entry.item && entry.item.pin === true && entry.item.path === side.armedPath
-            text: entry.item ? (armed ? "unpin " + entry.item.label + "?" : entry.item.label) : ""
+            readonly property bool armed: entry.item && ((entry.item.pin === true && side.armedKey === "pin:" + entry.item.path)
+                                                         || (entry.item.dev !== undefined && side.armedKey === "drive:" + entry.item.path))
+            text: entry.item ? (armed ? (entry.item.pin === true ? "unpin" : entry.item.verb) + " " + entry.item.label + "?" : entry.item.label) : ""
             textFormat: Text.PlainText      // connection names are typed by the user
             elide: Text.ElideRight
             color: armed ? Style.red : (entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight))
@@ -260,12 +281,17 @@ Rectangle {
             hoverEnabled: true
             cursorShape: Qt.PointingHandCursor
             acceptedButtons: Qt.LeftButton | Qt.RightButton
+            // Resting on a remote asks how full it is (one lookup, cached for a minute); passing over it does not.
+            onContainsMouseChanged: if (containsMouse) askTimer.restart(); else askTimer.stop()
             onClicked: (m) => {
                 if (m.button === Qt.RightButton) {
-                    // Right-click a pinned entry to unpin it.
-                    if (entry.item && entry.item.pin) side.unpinRequested(entry.item.path, entry.item.label)
+                    // Right-click twice: unpin a pinned entry, unmount a drive, disconnect a remote.
+                    if (!entry.item) return
+                    if (entry.item.pin) side.unpinRequested(entry.item.path, entry.item.label)
+                    else if (entry.item.dev) side.deviceRightClicked(entry.item)
                     return
                 }
+                side.askSpace(entry.item)
                 entry.item.path === "" ? side.connectRequested() : side.navigate(entry.item.path)
             }
         }

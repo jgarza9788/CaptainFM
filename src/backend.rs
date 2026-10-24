@@ -70,7 +70,13 @@ mod qobject {
         /// Copy or move, answering name clashes with `policy`: "replace", "skip" or "both".
         #[qinvokable]
         #[rust_name = "paste_with"]
-        fn pasteWith(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString);
+        fn pasteWith(
+            self: Pin<&mut Self>,
+            paths: &QString,
+            dest: &QString,
+            cut: bool,
+            policy: &QString,
+        );
         /// Every copy and move, as a JSON array with progress, speed and time left.
         #[qinvokable]
         fn transfers(&self) -> QString;
@@ -140,7 +146,13 @@ mod qobject {
         /// chosen before for this query first. `items` and `ids` are parallel JSON arrays.
         #[qinvokable]
         #[rust_name = "rank_commands"]
-        fn rankCommands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString;
+        fn rankCommands(
+            &self,
+            items: &QString,
+            ids: &QString,
+            query: &QString,
+            learn: bool,
+        ) -> QString;
         /// Forget what the palette learned from your picks.
         #[qinvokable]
         #[rust_name = "forget_palette_history"]
@@ -252,7 +264,13 @@ mod qobject {
         /// Run a plugin's Lua action; answered by `pluginResult` (JSON array of effects).
         #[qinvokable]
         #[rust_name = "run_plugin"]
-        fn runPlugin(self: Pin<&mut Self>, plugin: &QString, action: &QString, ctx: &QString, call_id: i32);
+        fn runPlugin(
+            self: Pin<&mut Self>,
+            plugin: &QString,
+            action: &QString,
+            ctx: &QString,
+            call_id: i32,
+        );
 
         #[qsignal]
         #[cxx_name = "pluginResult"]
@@ -271,6 +289,15 @@ mod qobject {
         #[rust_name = "list_sidebar_devices"]
         fn listSidebarDevices(self: Pin<&mut Self>);
 
+        /// Look up how full one remote or cloud drive is (called when its row is hovered or opened). Answers a minute-old
+        /// result at once; otherwise asks on a thread. Reports through `spaceReady`.
+        #[qinvokable]
+        #[rust_name = "request_space"]
+        fn requestSpace(self: Pin<&mut Self>, path: &QString);
+        /// `{used, total, usage}` for the mount at `path` (JSON), or an empty string when it reports nothing.
+        #[qsignal]
+        #[cxx_name = "spaceReady"]
+        fn space_ready(self: Pin<&mut Self>, path: QString, json: QString);
         /// A copy or move was queued, so the transfer list should start refreshing.
         #[qsignal]
         #[cxx_name = "transferStarted"]
@@ -374,11 +401,19 @@ fn rank_items(items: &[String], query: &str, fuzzy_fallback: bool) -> Vec<usize>
     if let Some(pattern) = pattern {
         let insensitive = !pattern.chars().any(char::is_uppercase);
         // An unfinished pattern matches nothing rather than everything.
-        let Ok(re) = regex::RegexBuilder::new(pattern).case_insensitive(insensitive).build() else {
+        let Ok(re) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(insensitive)
+            .build()
+        else {
             return Vec::new();
         };
         // Regex results keep the list's own order.
-        return items.iter().enumerate().filter(|(_, s)| re.is_match(s)).map(|(i, _)| i).collect();
+        return items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| re.is_match(s))
+            .map(|(i, _)| i)
+            .collect();
     }
     let mut scored: Vec<(i32, usize)> = items
         .iter()
@@ -387,7 +422,11 @@ fn rank_items(items: &[String], query: &str, fuzzy_fallback: bool) -> Vec<usize>
         .collect();
     if scored.is_empty() && fuzzy_fallback {
         let fuzzy = crate::fuzzy::Query::parse(query);
-        scored = items.iter().enumerate().filter_map(|(i, s)| fuzzy.score(s, s).map(|sc| (sc, i))).collect();
+        scored = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| fuzzy.score(s, s).map(|sc| (sc, i)))
+            .collect();
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, i)| i).collect()
@@ -400,7 +439,10 @@ fn file_url(path: &str) -> String {
 /// The drag payload for `paths`: an RFC 2483 `text/uri-list` for file managers and upload fields, and the
 /// plain paths (one per line) for editors and terminals.
 fn drag_payload(paths: &[String]) -> serde_json::Value {
-    let uri_list: String = paths.iter().map(|p| format!("{}\r\n", file_url(p))).collect();
+    let uri_list: String = paths
+        .iter()
+        .map(|p| format!("{}\r\n", file_url(p)))
+        .collect();
     serde_json::json!({"uriList": uri_list, "plain": paths.join("\n")})
 }
 
@@ -408,7 +450,9 @@ fn drag_payload(paths: &[String]) -> serde_json::Value {
 /// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
 fn same_device(paths: &[String], dest: &str) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Ok(target) = std::fs::metadata(dest) else { return false };
+    let Ok(target) = std::fs::metadata(dest) else {
+        return false;
+    };
     !paths.is_empty()
         && paths.iter().all(|p| {
             // A link is judged by the link itself, since that is what a move relocates.
@@ -419,7 +463,9 @@ fn same_device(paths: &[String], dest: &str) -> bool {
 fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     let local = |s: &str| -> Option<String> {
         let s = s.trim();
-        let rest = s.strip_prefix("file://localhost").or_else(|| s.strip_prefix("file://"));
+        let rest = s
+            .strip_prefix("file://localhost")
+            .or_else(|| s.strip_prefix("file://"));
         match rest {
             Some(r) if r.starts_with('/') => Some(percent_decode(r)),
             Some(_) => None,
@@ -428,7 +474,11 @@ fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = urls.iter().filter_map(|u| local(u)).collect();
     if out.is_empty() {
-        out = text.lines().filter_map(local).filter(|p| std::path::Path::new(p).exists()).collect();
+        out = text
+            .lines()
+            .filter_map(local)
+            .filter(|p| std::path::Path::new(p).exists())
+            .collect();
     }
     out.dedup();
     out
@@ -443,7 +493,11 @@ fn drop_urls(urls: &[String], text: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = urls.iter().filter_map(|u| web(u)).collect();
     if out.is_empty() {
-        let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         // Only when every line is an address: selected text that merely contains one is not a download.
         if !lines.is_empty() && lines.iter().all(|l| web(l).is_some() && !l.contains(' ')) {
             out = lines.iter().filter_map(|l| web(l)).collect();
@@ -478,7 +532,9 @@ impl qobject::Backend {
     }
 
     fn since_start_ms(&self) -> i32 {
-        crate::START.get().map_or(0, |t| t.elapsed().as_millis() as i32)
+        crate::START
+            .get()
+            .map_or(0, |t| t.elapsed().as_millis() as i32)
     }
 
     fn env(&self, name: &QString) -> QString {
@@ -527,7 +583,13 @@ impl qobject::Backend {
     }
 
     /// Queue a copy or move that shows up in the transfer list.
-    fn start_paste(mut self: Pin<&mut Self>, paths: Vec<String>, dest: String, cut: bool, policy: Policy) {
+    fn start_paste(
+        mut self: Pin<&mut Self>,
+        paths: Vec<String>,
+        dest: String,
+        cut: bool,
+        policy: Policy,
+    ) {
         let ctl = Ctl::register(if cut { "Moved" } else { "Copied" }, &dest, paths.len());
         self.as_mut().transfer_started();
         self.run_op(move || ops::paste_tracked(&ctl, &paths, &dest, cut, policy));
@@ -554,8 +616,19 @@ impl qobject::Backend {
         }
     }
 
-    fn paste_with(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString) {
-        self.start_paste(parse_paths(paths), dest.to_string(), cut, Policy::parse(&policy.to_string()));
+    fn paste_with(
+        self: Pin<&mut Self>,
+        paths: &QString,
+        dest: &QString,
+        cut: bool,
+        policy: &QString,
+    ) {
+        self.start_paste(
+            parse_paths(paths),
+            dest.to_string(),
+            cut,
+            Policy::parse(&policy.to_string()),
+        );
     }
 
     fn transfers(&self) -> QString {
@@ -603,7 +676,8 @@ impl qobject::Backend {
     }
 
     fn rename_many(self: Pin<&mut Self>, pairs: &QString) {
-        let pairs: Vec<(String, String)> = serde_json::from_str(&pairs.to_string()).unwrap_or_default();
+        let pairs: Vec<(String, String)> =
+            serde_json::from_str(&pairs.to_string()).unwrap_or_default();
         self.run_op(move || ops::rename_many(&pairs));
     }
 
@@ -619,16 +693,23 @@ impl qobject::Backend {
 
     fn start_services(mut self: Pin<&mut Self>) {
         // Follow bookmark changes made by other windows: watch the state file's folder.
-        let state_dir = state::store_file().parent().map(std::path::Path::to_path_buf);
+        let state_dir = state::store_file()
+            .parent()
+            .map(std::path::Path::to_path_buf);
         if let Some(dir) = state_dir {
             let _ = std::fs::create_dir_all(&dir);
             let qt = self.qt_thread();
-            let watcher = crate::watch::watch(&dir, false, std::time::Duration::from_millis(150), move || {
-                let _ = qt.queue(|b| {
-                    state::reset_store();
-                    b.bookmarks_changed();
-                });
-            });
+            let watcher = crate::watch::watch(
+                &dir,
+                false,
+                std::time::Duration::from_millis(150),
+                move || {
+                    let _ = qt.queue(|b| {
+                        state::reset_store();
+                        b.bookmarks_changed();
+                    });
+                },
+            );
             self.as_mut().rust_mut().state_watch = watcher;
         }
         // Only own org.freedesktop.FileManager1 when CaptainFM is the folder handler (or when
@@ -681,7 +762,13 @@ impl qobject::Backend {
         q(&plugins::list().to_string())
     }
 
-    fn run_plugin(self: Pin<&mut Self>, plugin: &QString, action: &QString, ctx: &QString, call_id: i32) {
+    fn run_plugin(
+        self: Pin<&mut Self>,
+        plugin: &QString,
+        action: &QString,
+        ctx: &QString,
+        call_id: i32,
+    ) {
         let (plugin, action) = (plugin.to_string(), action.to_string());
         let ctx: serde_json::Value = serde_json::from_str(&ctx.to_string()).unwrap_or_default();
         let qt_thread = self.qt_thread();
@@ -719,6 +806,54 @@ impl qobject::Backend {
         });
     }
 
+    fn request_space(mut self: Pin<&mut Self>, path: &QString) {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Instant;
+        static CACHE: Mutex<Option<devices::SpaceCache>> = Mutex::new(None);
+        static ASKING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+        let path = path.to_string();
+        let json = |v: Option<(u64, u64)>| {
+            match v {
+            Some((used, total)) if total > 0 => serde_json::json!({"used": used, "total": total, "usage": (used as f64 * 100.0 / total as f64).round() as i64}).to_string(),
+            _ => String::new(),
+        }
+        };
+        let cached = CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .get(&path, Instant::now());
+        if let Some(found) = cached {
+            self.as_mut().space_ready(q(&path), q(&json(found)));
+            return;
+        }
+        // One question per remote at a time; a hung server must not collect threads.
+        if !ASKING
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .insert(path.clone())
+        {
+            return;
+        }
+        let qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let found = devices::remote_space(&path);
+            CACHE
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .put(&path, Instant::now(), found);
+            ASKING
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .remove(&path);
+            let _ = qt_thread.queue(move |b| b.space_ready(q(&path), q(&json(found))));
+        });
+    }
+
     fn watch_devices(self: Pin<&mut Self>) {
         static STARTED: std::sync::Once = std::sync::Once::new();
         let qt_thread = self.qt_thread();
@@ -752,8 +887,14 @@ impl qobject::Backend {
     fn eject_device(self: Pin<&mut Self>, device: &QString) {
         let dev: serde_json::Value = serde_json::from_str(&device.to_string()).unwrap_or_default();
         let field = |k: &str| dev.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let (kind, device_path, path, removable) =
-            (field("kind"), field("device"), field("path"), dev.get("removable").and_then(|v| v.as_bool()).unwrap_or(false));
+        let (kind, device_path, path, removable) = (
+            field("kind"),
+            field("device"),
+            field("path"),
+            dev.get("removable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        );
         if kind == "disk" {
             self.report_mount(move || devices::eject_disk(&device_path, removable));
         } else {
@@ -770,7 +911,11 @@ impl qobject::Backend {
     fn connect_profile(self: Pin<&mut Self>, json: &QString) {
         let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
         let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
-        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        let password = v
+            .get("password")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_owned();
         let save = v.get("save").and_then(|p| p.as_bool()).unwrap_or(false);
         self.connect_job(move |ask| remotes::connect(profile, password, save, ask));
     }
@@ -792,7 +937,11 @@ impl qobject::Backend {
     fn update_connection(self: Pin<&mut Self>, json: &QString) {
         let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
         let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
-        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        let password = v
+            .get("password")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_owned();
         self.report_mount(move || remotes::update(profile, &password));
     }
 
@@ -801,7 +950,10 @@ impl qobject::Backend {
     }
 
     /// Run a mount-like job on a thread and report it through `mountDone`.
-    fn report_mount(self: Pin<&mut Self>, work: impl FnOnce() -> devices::MountResult + Send + 'static) {
+    fn report_mount(
+        self: Pin<&mut Self>,
+        work: impl FnOnce() -> devices::MountResult + Send + 'static,
+    ) {
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
             let json = serde_json::to_string(&work()).unwrap_or_default();
@@ -826,7 +978,10 @@ impl qobject::Backend {
             let result = work(&|prompt: &str| {
                 let prompt = prompt.to_owned();
                 let _ = asker.queue(move |b| b.credentials_needed(q(&prompt)));
-                answers.recv_timeout(std::time::Duration::from_secs(180)).ok().flatten()
+                answers
+                    .recv_timeout(std::time::Duration::from_secs(180))
+                    .ok()
+                    .flatten()
             });
             let json = serde_json::to_string(&result).unwrap_or_default();
             let _ = qt_thread.queue(move |b| b.mount_done(q(&json)));
@@ -862,16 +1017,28 @@ impl qobject::Backend {
         unsafe { cfm_held_modifiers() }
     }
 
-    fn rank_commands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString {
+    fn rank_commands(
+        &self,
+        items: &QString,
+        ids: &QString,
+        query: &QString,
+        learn: bool,
+    ) -> QString {
         let items: Vec<String> = serde_json::from_str(&items.to_string()).unwrap_or_default();
         let ids: Vec<String> = serde_json::from_str(&ids.to_string()).unwrap_or_default();
         let query = query.to_string();
         let query = query.trim();
         // Regular expressions keep the plain ranking.
-        let order = if query.starts_with("re:") || (query.len() > 1 && query.starts_with('/') && query.ends_with('/')) {
+        let order = if query.starts_with("re:")
+            || (query.len() > 1 && query.starts_with('/') && query.ends_with('/'))
+        {
             rank_items(&items, query, false)
         } else {
-            let usage = if learn { state::Usage::load() } else { state::Usage::default() };
+            let usage = if learn {
+                state::Usage::load()
+            } else {
+                state::Usage::default()
+            };
             crate::fuzzy::predict_rank(&items, &ids, query, &usage)
         };
         q(&serde_json::to_string(&order).unwrap_or_else(|_| "[]".into()))
@@ -923,8 +1090,14 @@ impl qobject::Backend {
     fn open_terminal(&self, dir: &QString) {
         let dir = dir.to_string();
         // `terminal` in settings.json is a command line (`kitty --single-instance`); default xdg-terminal-exec.
-        let settings: serde_json::Value = serde_json::from_str(&state::read_config("settings")).unwrap_or_default();
-        let custom = settings.get("terminal").and_then(|t| t.as_str()).unwrap_or("").trim().to_owned();
+        let settings: serde_json::Value =
+            serde_json::from_str(&state::read_config("settings")).unwrap_or_default();
+        let custom = settings
+            .get("terminal")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
         let mut words = custom.split_whitespace();
         match words.next() {
             Some(program) => {
@@ -1054,7 +1227,10 @@ fn op_queue(job: Job) {
 /// Start a program that outlives this call, reaping it in the background.
 fn spawn_detached(program: &str, args: &[&str], cwd: Option<&str>) {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -1078,7 +1254,12 @@ mod tests {
 
     #[test]
     fn drops_accept_local_urls_and_ignore_remote_ones() {
-        let urls = ["file:///a%20b".to_owned(), "file://localhost/x".to_owned(), "https://example.com/f".to_owned(), "smb://nas/s".to_owned()];
+        let urls = [
+            "file:///a%20b".to_owned(),
+            "file://localhost/x".to_owned(),
+            "https://example.com/f".to_owned(),
+            "smb://nas/s".to_owned(),
+        ];
         assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
         assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
         assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
@@ -1095,7 +1276,10 @@ mod tests {
 
     #[test]
     fn web_drops_become_downloads() {
-        assert_eq!(drop_urls(&["https://a/b.png".to_owned(), "file:///x".to_owned()], ""), ["https://a/b.png"]);
+        assert_eq!(
+            drop_urls(&["https://a/b.png".to_owned(), "file:///x".to_owned()], ""),
+            ["https://a/b.png"]
+        );
         assert_eq!(drop_urls(&[], "https://a/b.png\r\n"), ["https://a/b.png"]);
         assert!(drop_urls(&[], "see https://a/b.png for details").is_empty());
         assert!(drop_urls(&[], "plain words").is_empty());
@@ -1111,7 +1295,9 @@ mod tests {
 
     #[test]
     fn palette_ranking_modes() {
-        let items: Vec<String> = ["Close tab", "New tab", "Next tab", "Open terminal"].map(String::from).to_vec();
+        let items: Vec<String> = ["Close tab", "New tab", "Next tab", "Open terminal"]
+            .map(String::from)
+            .to_vec();
         assert_eq!(rank_items(&items, "new tab", true), [1]);
         // A single term ranks word-start matches first ("New tab" and "Next tab" start with n/t words).
         let r = rank_items(&items, "t", true);

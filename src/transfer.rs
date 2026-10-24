@@ -88,7 +88,11 @@ impl Ctl {
             pause: AtomicBool::new(false),
             state: Mutex::new(State::Queued),
             current: Mutex::new(String::new()),
-            speed: Mutex::new(Speed { at: Instant::now(), bytes: 0, per_sec: 0.0 }),
+            speed: Mutex::new(Speed {
+                at: Instant::now(),
+                bytes: 0,
+                per_sec: 0.0,
+            }),
         }
     }
 
@@ -99,7 +103,12 @@ impl Ctl {
 
     /// Register a queued transfer of `items` top-level items into `dest`.
     pub fn register(label: &str, dest: &str, items: usize) -> Arc<Ctl> {
-        let ctl = Arc::new(Ctl::build(NEXT_ID.fetch_add(1, Ordering::Relaxed), label, dest, items as u64));
+        let ctl = Arc::new(Ctl::build(
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            label,
+            dest,
+            items as u64,
+        ));
         let mut reg = REGISTRY.lock().unwrap();
         // Finished jobs stay listed for a while, but not forever.
         let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
@@ -140,7 +149,11 @@ impl Ctl {
         while self.pause.load(Ordering::Relaxed) && !self.cancelled() {
             std::thread::sleep(Duration::from_millis(80));
         }
-        if self.cancelled() { Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled")) } else { Ok(()) }
+        if self.cancelled() {
+            Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+        } else {
+            Ok(())
+        }
     }
 
     fn snapshot(&self) -> serde_json::Value {
@@ -157,7 +170,11 @@ impl Ctl {
                 s.bytes = done;
             } else if dt >= 0.4 {
                 let inst = done.saturating_sub(s.bytes) as f64 / dt;
-                s.per_sec = if s.per_sec == 0.0 { inst } else { s.per_sec * 0.6 + inst * 0.4 };
+                s.per_sec = if s.per_sec == 0.0 {
+                    inst
+                } else {
+                    s.per_sec * 0.6 + inst * 0.4
+                };
                 s.at = Instant::now();
                 s.bytes = done;
             }
@@ -172,7 +189,11 @@ impl Ctl {
         } else {
             0.0
         };
-        let eta = if per_sec > 1.0 && total > done { ((total - done) as f64 / per_sec).ceil() as i64 } else { -1 };
+        let eta = if per_sec > 1.0 && total > done {
+            ((total - done) as f64 / per_sec).ceil() as i64
+        } else {
+            -1
+        };
         json!({
             "id": self.id,
             "label": self.label,
@@ -204,7 +225,12 @@ pub fn snapshot() -> String {
 }
 
 fn find(id: i32) -> Option<Arc<Ctl>> {
-    REGISTRY.lock().unwrap().iter().find(|c| c.id == id).cloned()
+    REGISTRY
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
 }
 
 pub fn cancel(id: i32) {
@@ -243,7 +269,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
             cancel(id);
         });
-        assert_eq!(c.checkpoint().unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            c.checkpoint().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
         t.join().unwrap();
     }
 
@@ -254,7 +283,12 @@ mod tests {
         c.bytes_total.store(200, Ordering::Relaxed);
         c.add_bytes(50);
         let v: serde_json::Value = serde_json::from_str(&snapshot()).unwrap();
-        let mine = v.as_array().unwrap().iter().find(|e| e["id"] == c.id).unwrap();
+        let mine = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == c.id)
+            .unwrap();
         assert_eq!(mine["state"], "running");
         assert_eq!(mine["fraction"], 0.25);
         c.set_state(State::Done);

@@ -10,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use crate::fuzzy::{Query, natural_cmp_pub};
 
 pub fn home() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("/"))
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/"))
 }
 
 fn xdg(var: &str, fallback: &str) -> PathBuf {
@@ -32,16 +34,21 @@ pub fn cache_dir() -> PathBuf {
 }
 
 pub fn now() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Read a named JSON config blob (`settings`, `keys`, `session`, `layouts`); `{}` when absent.
 pub fn read_config(name: &str) -> String {
-    fs::read_to_string(config_dir().join(format!("{}.json", safe_name(name)))).unwrap_or_else(|_| "{}".into())
+    fs::read_to_string(config_dir().join(format!("{}.json", safe_name(name))))
+        .unwrap_or_else(|_| "{}".into())
 }
 
 fn safe_name(name: &str) -> String {
-    name.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').collect()
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect()
 }
 
 pub fn write_config(name: &str, json: &str) -> bool {
@@ -85,7 +92,12 @@ fn locked<T>(lock_name: &str, f: impl FnOnce() -> T) -> T {
     use std::os::fd::AsRawFd;
     let dir = config_dir();
     let _ = fs::create_dir_all(&dir);
-    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(lock_name)).ok();
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(dir.join(lock_name))
+        .ok();
     if let Some(file) = &lock {
         // SAFETY: flock only takes the descriptor; the lock is released when `lock` is dropped.
         unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
@@ -112,7 +124,10 @@ impl FeatureUse {
     }
 
     fn save(&self) {
-        write_config("feature_usage", &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()));
+        write_config(
+            "feature_usage",
+            &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()),
+        );
     }
 
     fn enabled() -> bool {
@@ -159,13 +174,20 @@ impl FeatureUse {
     pub fn report(today: u32) -> serde_json::Value {
         let all = FeatureUse::load();
         let since = today.saturating_sub(WINDOW_DAYS - 1);
-        let opened = all.used.get("app.opened").map_or(0, |d| d.iter().filter(|x| **x >= since).count());
+        let opened = all
+            .used
+            .get("app.opened")
+            .map_or(0, |d| d.iter().filter(|x| **x >= since).count());
         let mut rows: Vec<(String, usize, u32)> = all
             .used
             .iter()
             .filter(|(id, _)| id.as_str() != "app.opened")
             .map(|(id, days)| {
-                (id.clone(), days.iter().filter(|d| **d >= since).count(), today.saturating_sub(days.last().copied().unwrap_or(0)))
+                (
+                    id.clone(),
+                    days.iter().filter(|d| **d >= since).count(),
+                    today.saturating_sub(days.last().copied().unwrap_or(0)),
+                )
             })
             .collect();
         rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
@@ -187,7 +209,10 @@ impl Usage {
     }
 
     pub fn save(&self) {
-        write_config("palette_usage", &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()));
+        write_config(
+            "palette_usage",
+            &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()),
+        );
     }
 
     /// Load, change and save the usage file while holding a lock, so two copies of the app don't lose each
@@ -217,7 +242,12 @@ impl Usage {
                 p.n += 1;
                 p.t = now;
             }
-            None => self.picks.push(Pick { q, id: id.to_owned(), n: 1, t: now }),
+            None => self.picks.push(Pick {
+                q,
+                id: id.to_owned(),
+                n: 1,
+                t: now,
+            }),
         }
         if self.picks.len() > MAX_PICKS {
             self.picks.sort_by(|a, b| b.t.cmp(&a.t));
@@ -286,11 +316,16 @@ pub fn record_visit(path: &str) {
                 r.visits += 1;
                 r.last = now;
             }
-            None => s.recents.push(Recent { path: path.to_owned(), visits: 1, last: now }),
+            None => s.recents.push(Recent {
+                path: path.to_owned(),
+                visits: 1,
+                last: now,
+            }),
         }
         // Keep the list bounded: drop the lowest-ranked entries.
         if s.recents.len() > 500 {
-            s.recents.sort_by(|a, b| frecency(b, now).total_cmp(&frecency(a, now)));
+            s.recents
+                .sort_by(|a, b| frecency(b, now).total_cmp(&frecency(a, now)));
             s.recents.truncate(400);
         }
         save(s);
@@ -351,26 +386,47 @@ fn complete_path(query: &str) -> Vec<Candidate> {
         .flatten()
         .filter(|e| e.path().is_dir())
         .map(|e| e.file_name().to_string_lossy().into_owned())
-        .filter(|n| (prefix.starts_with('.') || !n.starts_with('.')) && n.to_lowercase().starts_with(&lower))
+        .filter(|n| {
+            (prefix.starts_with('.') || !n.starts_with('.')) && n.to_lowercase().starts_with(&lower)
+        })
         .collect();
     names.sort_by(|a, b| natural_cmp_pub(a, b));
     names
         .into_iter()
         .take(60)
-        .map(|n| Candidate { path: format!("{dir}{n}"), kind: "path" })
+        .map(|n| Candidate {
+            path: format!("{dir}{n}"),
+            kind: "path",
+        })
         .collect()
 }
 
 /// Well-known folders offered by the jump bar (only those that exist).
 fn places() -> Vec<String> {
     let h = home();
-    let mut out: Vec<String> = ["", "Desktop", "Documents", "Downloads", "Music", "Pictures", "Videos", "Projects", ".config", ".local/share/Trash/files"]
-        .iter()
-        .map(|d| if d.is_empty() { h.clone() } else { h.join(d) })
-        .filter(|p| p.is_dir())
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    out.extend(["/", "/tmp", "/etc", "/usr", "/var"].iter().filter(|p| std::path::Path::new(p).is_dir()).map(|p| (*p).to_owned()));
+    let mut out: Vec<String> = [
+        "",
+        "Desktop",
+        "Documents",
+        "Downloads",
+        "Music",
+        "Pictures",
+        "Videos",
+        "Projects",
+        ".config",
+        ".local/share/Trash/files",
+    ]
+    .iter()
+    .map(|d| if d.is_empty() { h.clone() } else { h.join(d) })
+    .filter(|p| p.is_dir())
+    .map(|p| p.to_string_lossy().into_owned())
+    .collect();
+    out.extend(
+        ["/", "/tmp", "/etc", "/usr", "/var"]
+            .iter()
+            .filter(|p| std::path::Path::new(p).is_dir())
+            .map(|p| (*p).to_owned()),
+    );
     out
 }
 
@@ -389,7 +445,13 @@ pub fn jump_candidates(query: &str) -> Vec<Candidate> {
     for b in &bookmarks {
         let name = b.rsplit('/').next().unwrap_or(b);
         if let Some(s) = q.score(name, b) {
-            scored.push((1_000_000.0 + s as f64, Candidate { path: b.clone(), kind: "pinned" }));
+            scored.push((
+                1_000_000.0 + s as f64,
+                Candidate {
+                    path: b.clone(),
+                    kind: "pinned",
+                },
+            ));
         }
     }
     for r in &recents {
@@ -398,17 +460,33 @@ pub fn jump_candidates(query: &str) -> Vec<Candidate> {
         }
         let name = r.path.rsplit('/').next().unwrap_or(&r.path);
         if let Some(s) = q.score(name, &r.path) {
-            scored.push((frecency(r, now) + s as f64 * 4.0, Candidate { path: r.path.clone(), kind: "recent" }));
+            scored.push((
+                frecency(r, now) + s as f64 * 4.0,
+                Candidate {
+                    path: r.path.clone(),
+                    kind: "recent",
+                },
+            ));
         }
     }
     for place in places() {
         if bookmarks.contains(&place) || scored.iter().any(|(_, c)| c.path == place) {
             continue;
         }
-        let name = place.rsplit('/').next().filter(|n| !n.is_empty()).unwrap_or("/");
+        let name = place
+            .rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty())
+            .unwrap_or("/");
         // Places rank below frecent folders for the same query, but are always reachable.
         if let Some(s) = q.score(name, &place) {
-            scored.push((s as f64 * 0.5, Candidate { path: place, kind: "place" }));
+            scored.push((
+                s as f64 * 0.5,
+                Candidate {
+                    path: place,
+                    kind: "place",
+                },
+            ));
         }
     }
     scored.sort_by(|a, b| b.0.total_cmp(&a.0));
@@ -440,8 +518,16 @@ mod tests {
     #[test]
     fn frecency_prefers_recent() {
         let now = 1_000_000;
-        let fresh = Recent { path: "a".into(), visits: 2, last: now - 10 };
-        let stale = Recent { path: "b".into(), visits: 2, last: now - 90 * 86_400 };
+        let fresh = Recent {
+            path: "a".into(),
+            visits: 2,
+            last: now - 10,
+        };
+        let stale = Recent {
+            path: "b".into(),
+            visits: 2,
+            last: now - 90 * 86_400,
+        };
         assert!(frecency(&fresh, now) > frecency(&stale, now));
     }
 
@@ -480,7 +566,10 @@ mod store_tests {
     fn visits_rank_frequent_folders_first() {
         let sb = Sandbox::new("visits");
         let (a, b) = (sb.touch("alpha/", ""), sb.touch("beta/", ""));
-        let (a, b) = (a.to_string_lossy().into_owned(), b.to_string_lossy().into_owned());
+        let (a, b) = (
+            a.to_string_lossy().into_owned(),
+            b.to_string_lossy().into_owned(),
+        );
         record_visit(&a);
         for _ in 0..3 {
             record_visit(&b);
@@ -499,9 +588,16 @@ mod store_tests {
         toggle_bookmark(&docs.to_string_lossy());
         let hits = jump_candidates("");
         assert_eq!(hits[0].kind, "pinned");
-        assert!(hits.iter().any(|c| c.kind == "place" && c.path.ends_with("Downloads")));
+        assert!(
+            hits.iter()
+                .any(|c| c.kind == "place" && c.path.ends_with("Downloads"))
+        );
         // Names are matched fuzzily and by ordered words.
-        assert!(jump_candidates("down").iter().any(|c| c.path.ends_with("Downloads")));
+        assert!(
+            jump_candidates("down")
+                .iter()
+                .any(|c| c.path.ends_with("Downloads"))
+        );
     }
 
     #[test]
@@ -512,11 +608,22 @@ mod store_tests {
         sb.touch("Music/", "");
         sb.touch(".hidden/", "");
         let prefix = sb.path("P");
-        let names: Vec<String> = jump_candidates(&prefix).into_iter().map(|c| c.path).collect();
+        let names: Vec<String> = jump_candidates(&prefix)
+            .into_iter()
+            .map(|c| c.path)
+            .collect();
         assert_eq!(names, [sb.path("Pictures"), sb.path("Projects")]);
         // Hidden folders only show up when asked for.
-        assert!(jump_candidates(&format!("{}/", sb.root.display())).iter().all(|c| !c.path.contains("/.hidden")));
-        assert!(jump_candidates(&sb.path(".h")).iter().any(|c| c.path.ends_with(".hidden")));
+        assert!(
+            jump_candidates(&format!("{}/", sb.root.display()))
+                .iter()
+                .all(|c| !c.path.contains("/.hidden"))
+        );
+        assert!(
+            jump_candidates(&sb.path(".h"))
+                .iter()
+                .any(|c| c.path.ends_with(".hidden"))
+        );
     }
 
     #[test]
@@ -548,7 +655,14 @@ mod store_tests {
         assert_eq!(report["opened"], 1);
         let rows = report["rows"].as_array().unwrap();
         // beta was last used 105 days ago, outside the four weeks; alpha twice, the last time 2 days ago.
-        assert_eq!((rows[0]["id"].clone(), rows[0]["days"].clone(), rows[0]["last"].clone()), ("test.alpha".into(), 2.into(), 2.into()));
+        assert_eq!(
+            (
+                rows[0]["id"].clone(),
+                rows[0]["days"].clone(),
+                rows[0]["last"].clone()
+            ),
+            ("test.alpha".into(), 2.into(), 2.into())
+        );
         assert_eq!(rows[1]["days"], 0);
         // Nothing but ids and days is stored.
         assert!(!read_config("feature_usage").contains('/'));
@@ -557,6 +671,9 @@ mod store_tests {
         FeatureUse::mark_on("test.gamma", 20_005);
         assert!(!read_config("feature_usage").contains("gamma"));
         FeatureUse::forget();
-        assert_eq!(FeatureUse::report(20_005)["rows"].as_array().unwrap().len(), 0);
+        assert_eq!(
+            FeatureUse::report(20_005)["rows"].as_array().unwrap().len(),
+            0
+        );
     }
 }

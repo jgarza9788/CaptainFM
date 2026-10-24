@@ -20,7 +20,10 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub const UNKNOWN: Meta = Meta { size: UNKNOWN, mtime: UNKNOWN };
+    pub const UNKNOWN: Meta = Meta {
+        size: UNKNOWN,
+        mtime: UNKNOWN,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +80,11 @@ pub fn list_dir(dir: &str) -> Vec<Entry> {
         out.push(Entry {
             path,
             hidden: name.starts_with('.'),
-            lname: if name.is_ascii() { name.to_ascii_lowercase() } else { name.to_lowercase() },
+            lname: if name.is_ascii() {
+                name.to_ascii_lowercase()
+            } else {
+                name.to_lowercase()
+            },
             name,
             rel: String::new(),
             is_dir,
@@ -91,7 +98,12 @@ pub fn list_dir(dir: &str) -> Vec<Entry> {
 /// A folder listing with the given folders expanded in place (tree view). Entries come back in
 /// read order with `depth` set; [`tree_order`] arranges them.
 pub fn list_tree(root: &str, expanded: &std::collections::HashSet<String>) -> Vec<Entry> {
-    fn walk(dir: &str, depth: u16, expanded: &std::collections::HashSet<String>, out: &mut Vec<Entry>) {
+    fn walk(
+        dir: &str,
+        depth: u16,
+        expanded: &std::collections::HashSet<String>,
+        out: &mut Vec<Entry>,
+    ) {
         let mut entries = list_dir(dir);
         for e in &mut entries {
             e.depth = depth;
@@ -133,7 +145,11 @@ pub fn tree_order(
     for group in children.values_mut() {
         sort_indices(all, meta, group, key, desc);
     }
-    let root = if root.len() > 1 { root.trim_end_matches('/') } else { "" };
+    let root = if root.len() > 1 {
+        root.trim_end_matches('/')
+    } else {
+        ""
+    };
     let mut out = Vec::with_capacity(all.len());
     // Explicit stack of (children list, next position) so deep trees can't overflow the call stack.
     let mut stack: Vec<(&[u32], usize)> = Vec::new();
@@ -157,10 +173,7 @@ pub fn tree_order(
 /// `(size, mtime)` of a path without following symlinks. Directories report size `UNKNOWN`.
 pub fn stat(path: &str) -> (i64, i64) {
     match fs::symlink_metadata(path) {
-        Ok(m) => (
-            if m.is_dir() { UNKNOWN } else { m.len() as i64 },
-            m.mtime(),
-        ),
+        Ok(m) => (if m.is_dir() { UNKNOWN } else { m.len() as i64 }, m.mtime()),
         Err(_) => (UNKNOWN, UNKNOWN),
     }
 }
@@ -168,14 +181,20 @@ pub fn stat(path: &str) -> (i64, i64) {
 /// Recursive size on disk of everything under `path`; `cancel` aborts early.
 pub fn dir_size(path: &str, cancel: &dyn Fn() -> bool) -> i64 {
     let mut total = 0u64;
-    for (i, e) in WalkDir::new(path).follow_links(false).into_iter().flatten().enumerate() {
+    for (i, e) in WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         if i % 512 == 0 && cancel() {
             break;
         }
         if e.file_type().is_file()
-            && let Ok(m) = e.metadata() {
-                total += m.len();
-            }
+            && let Ok(m) = e.metadata()
+        {
+            total += m.len();
+        }
     }
     total as i64
 }
@@ -278,13 +297,18 @@ pub fn group_of(e: &Entry, m: Meta, group_by: &str, now: i64) -> (u8, &'static s
             }
             let ext = e.lname.rsplit_once('.').map_or("", |x| x.1);
             match ext {
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" | "tif" | "tiff" => (1, "Images"),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif"
+                | "tif" | "tiff" => (1, "Images"),
                 "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" => (2, "Video"),
                 "mp3" | "flac" | "ogg" | "opus" | "wav" | "m4a" | "aac" => (3, "Audio"),
-                "pdf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ppt" | "pptx" | "md" | "txt" | "epub" | "csv" => (4, "Documents"),
-                "zip" | "tar" | "gz" | "xz" | "zst" | "7z" | "rar" | "bz2" | "iso" => (5, "Archives"),
-                "rs" | "py" | "js" | "ts" | "c" | "h" | "cpp" | "hpp" | "go" | "lua" | "sh" | "java" | "rb" | "qml" | "html" | "css"
-                | "json" | "toml" | "yml" | "yaml" | "nix" => (6, "Code and config"),
+                "pdf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ppt" | "pptx" | "md" | "txt"
+                | "epub" | "csv" => (4, "Documents"),
+                "zip" | "tar" | "gz" | "xz" | "zst" | "7z" | "rar" | "bz2" | "iso" => {
+                    (5, "Archives")
+                }
+                "rs" | "py" | "js" | "ts" | "c" | "h" | "cpp" | "hpp" | "go" | "lua" | "sh"
+                | "java" | "rb" | "qml" | "html" | "css" | "json" | "toml" | "yml" | "yaml"
+                | "nix" => (6, "Code and config"),
                 _ => (7, "Other"),
             }
         }
@@ -356,7 +380,10 @@ pub fn sort_entries(entries: &mut Vec<Entry>, key: &str, desc: bool) {
     let meta = vec![Meta::UNKNOWN; entries.len()];
     sort_indices(entries, &meta, &mut idx, key, desc);
     let mut taken: Vec<Option<Entry>> = std::mem::take(entries).into_iter().map(Some).collect();
-    *entries = idx.into_iter().filter_map(|i| taken[i as usize].take()).collect();
+    *entries = idx
+        .into_iter()
+        .filter_map(|i| taken[i as usize].take())
+        .collect();
 }
 
 #[cfg(test)]
@@ -385,10 +412,19 @@ mod tests {
                 depth: path.matches('/').count() as u16 - 2,
             }
         };
-        let all = vec![mk("/r/b.txt", false), mk("/r/a", true), mk("/r/a/z", false), mk("/r/a/y", false), mk("/r/c", true)];
+        let all = vec![
+            mk("/r/b.txt", false),
+            mk("/r/a", true),
+            mk("/r/a/z", false),
+            mk("/r/a/y", false),
+            mk("/r/c", true),
+        ];
         let meta = vec![Meta::UNKNOWN; all.len()];
         let order = tree_order(&all, &meta, "/r", &|_, _| true, "name", false);
-        let paths: Vec<_> = order.iter().map(|&i| all[i as usize].path.as_str()).collect();
+        let paths: Vec<_> = order
+            .iter()
+            .map(|&i| all[i as usize].path.as_str())
+            .collect();
         assert_eq!(paths, ["/r/a", "/r/a/y", "/r/a/z", "/r/c", "/r/b.txt"]);
     }
 
@@ -408,9 +444,15 @@ mod tests {
         let unk = Meta::UNKNOWN;
         assert_eq!(group_of(&mk("d", true), unk, "type", now), (0, "Folders"));
         assert_eq!(group_of(&mk("a.PNG", false), unk, "type", now).1, "Images");
-        assert_eq!(group_of(&mk("main.rs", false), unk, "type", now).1, "Code and config");
+        assert_eq!(
+            group_of(&mk("main.rs", false), unk, "type", now).1,
+            "Code and config"
+        );
         assert_eq!(group_of(&mk("blob", false), unk, "type", now).1, "Other");
-        let at = |ago| Meta { size: 0, mtime: now - ago };
+        let at = |ago| Meta {
+            size: 0,
+            mtime: now - ago,
+        };
         let f = mk("f", false);
         assert_eq!(group_of(&f, at(60), "date", now).1, "Today");
         assert_eq!(group_of(&f, at(100_000), "date", now).1, "Yesterday");
@@ -420,8 +462,14 @@ mod tests {
         let sz = |size| Meta { size, mtime: 0 };
         assert_eq!(group_of(&f, sz(0), "size", now).1, "Empty");
         assert_eq!(group_of(&f, sz(5_000), "size", now).1, "Tiny (under 10K)");
-        assert_eq!(group_of(&f, sz(5_000_000), "size", now).1, "Medium (under 100M)");
-        assert_eq!(group_of(&f, sz(2_000_000_000), "size", now).1, "Huge (1G and up)");
+        assert_eq!(
+            group_of(&f, sz(5_000_000), "size", now).1,
+            "Medium (under 100M)"
+        );
+        assert_eq!(
+            group_of(&f, sz(2_000_000_000), "size", now).1,
+            "Huge (1G and up)"
+        );
         assert_eq!(group_of(&f, sz(1), "none", now), (0, ""));
         // Ranks put earlier groups first.
         assert!(group_of(&f, at(60), "date", now).0 < group_of(&f, at(40_000_000), "date", now).0);
@@ -461,7 +509,12 @@ mod fs_tests {
         std::os::unix::fs::symlink(sb.path("sub"), sb.path("to-sub")).unwrap();
         std::os::unix::fs::symlink(sb.path("file.txt"), sb.path("to-file")).unwrap();
         let entries = list_dir(&sb.root.to_string_lossy());
-        let by = |n: &str| entries.iter().find(|e| e.name == n).unwrap_or_else(|| panic!("no {n}"));
+        let by = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("no {n}"))
+        };
         assert!(by("sub").is_dir && !by("sub").is_link);
         assert!(!by("file.txt").is_dir);
         assert!(by(".dot").hidden && !by("file.txt").hidden);
@@ -507,7 +560,12 @@ mod fs_tests {
             dirs.push((i, sb.path(&format!("d{i}"))));
         }
         let got = std::sync::Mutex::new(Vec::new());
-        dir_sizes_parallel(dirs, Duration::from_millis(1), || false, |batch| got.lock().unwrap().extend(batch));
+        dir_sizes_parallel(
+            dirs,
+            Duration::from_millis(1),
+            || false,
+            |batch| got.lock().unwrap().extend(batch),
+        );
         let mut got = got.into_inner().unwrap();
         got.sort();
         assert_eq!(got, (0..8).map(|i| (i, i as i64 + 1)).collect::<Vec<_>>());
@@ -525,7 +583,11 @@ mod fs_tests {
         assert!(names.contains(&("a", 0)) && names.contains(&("b", 0)));
         assert!(names.contains(&("inner", 1)) && names.contains(&("top.txt", 1)));
         // `inner` was not expanded and `b` neither.
-        assert!(!names.iter().any(|(n, _)| *n == "deep.txt" || *n == "other.txt"));
+        assert!(
+            !names
+                .iter()
+                .any(|(n, _)| *n == "deep.txt" || *n == "other.txt")
+        );
     }
 
     #[test]
@@ -541,11 +603,17 @@ mod fs_tests {
             depth: 0,
         };
         let all = vec![mk("b.txt"), mk("a.rs"), mk("c.md")];
-        let meta = vec![Meta { size: 30, mtime: 1 }, Meta { size: 10, mtime: 3 }, Meta { size: 20, mtime: 2 }];
+        let meta = vec![
+            Meta { size: 30, mtime: 1 },
+            Meta { size: 10, mtime: 3 },
+            Meta { size: 20, mtime: 2 },
+        ];
         let order = |key: &str, desc: bool| {
             let mut idx: Vec<u32> = (0..3).collect();
             sort_indices(&all, &meta, &mut idx, key, desc);
-            idx.into_iter().map(|i| all[i as usize].name.clone()).collect::<Vec<_>>()
+            idx.into_iter()
+                .map(|i| all[i as usize].name.clone())
+                .collect::<Vec<_>>()
         };
         assert_eq!(order("size", false), ["a.rs", "c.md", "b.txt"]);
         assert_eq!(order("size", true), ["b.txt", "c.md", "a.rs"]);

@@ -73,10 +73,11 @@ fn mtime_of(m: &fs::Metadata) -> (i64, i64) {
 
 /// Total number of paths in all cached indexes (shown in the status bar).
 pub fn total_paths() -> usize {
-    CACHE
-        .get()
-        .and_then(|c| c.lock().ok())
-        .map_or(0, |g| g.values().map(|i| i.store.read().map_or(0, |s| s.entries.len())).sum())
+    CACHE.get().and_then(|c| c.lock().ok()).map_or(0, |g| {
+        g.values()
+            .map(|i| i.store.read().map_or(0, |s| s.entries.len()))
+            .sum()
+    })
 }
 
 /// Get the cached index for `root` or start building one. `on_progress` fires as it fills.
@@ -87,7 +88,10 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
         let index = Arc::clone(existing);
         drop(guard);
         let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER;
-        if stale && index.done.load(Ordering::SeqCst) && !index.refreshing.swap(true, Ordering::SeqCst) {
+        if stale
+            && index.done.load(Ordering::SeqCst)
+            && !index.refreshing.swap(true, Ordering::SeqCst)
+        {
             let refresh = Arc::clone(&index);
             std::thread::spawn(move || {
                 if changed(&refresh) {
@@ -103,9 +107,13 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
         return index;
     }
     if guard.len() >= 3
-        && let Some(oldest) = guard.iter().min_by_key(|(_, i)| *i.checked.lock().unwrap()).map(|(k, _)| k.clone()) {
-            guard.remove(&oldest);
-        }
+        && let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, i)| *i.checked.lock().unwrap())
+            .map(|(k, _)| k.clone())
+    {
+        guard.remove(&oldest);
+    }
     let index = Arc::new(Index {
         root: root.to_owned(),
         store: RwLock::new(Store::default()),
@@ -123,7 +131,12 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
         *building.checked.lock().unwrap() = Instant::now();
         building.done.store(true, Ordering::SeqCst);
         if std::env::var_os("CFM_DEBUG").is_some() {
-            eprintln!("[timing] indexed {} entries under {} in {:?}", building.store.read().unwrap().entries.len(), building.root, t0.elapsed());
+            eprintln!(
+                "[timing] indexed {} entries under {} in {:?}",
+                building.store.read().unwrap().entries.len(),
+                building.root,
+                t0.elapsed()
+            );
         }
         on_progress();
     });
@@ -134,7 +147,10 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
 /// time changes when something inside it is created, deleted or renamed.
 fn changed(index: &Index) -> bool {
     let store = index.store.read().unwrap();
-    store.dirs.iter().any(|d| fs::symlink_metadata(&*d.abs).ok().map(|m| mtime_of(&m)) != Some(d.mtime))
+    store
+        .dirs
+        .iter()
+        .any(|d| fs::symlink_metadata(&*d.abs).ok().map(|m| mtime_of(&m)) != Some(d.mtime))
 }
 
 struct Job {
@@ -152,14 +168,33 @@ struct Queue {
 /// Walk `root` on several threads, adding what it finds to `store` as it goes.
 fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync)) {
     let Ok(meta) = fs::metadata(root) else { return };
-    store.write().unwrap().dirs.push(DirInfo { abs: root.into(), mtime: mtime_of(&meta) });
-    let queue = Mutex::new(Queue { stack: vec![Job { dir: 0, path: PathBuf::from(root), hidden: false }], active: 0 });
+    store.write().unwrap().dirs.push(DirInfo {
+        abs: root.into(),
+        mtime: mtime_of(&meta),
+    });
+    let queue = Mutex::new(Queue {
+        stack: vec![Job {
+            dir: 0,
+            path: PathBuf::from(root),
+            hidden: false,
+        }],
+        active: 0,
+    });
     let wake = Condvar::new();
     let last_progress = Mutex::new(Instant::now());
     let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     std::thread::scope(|scope| {
         for _ in 0..threads {
-            scope.spawn(|| worker(&queue, &wake, store, meta.dev(), &last_progress, on_progress));
+            scope.spawn(|| {
+                worker(
+                    &queue,
+                    &wake,
+                    store,
+                    meta.dev(),
+                    &last_progress,
+                    on_progress,
+                )
+            });
         }
     });
 }
@@ -214,7 +249,13 @@ fn worker(
                 {
                     subdirs.push((e.path(), hidden, mtime_of(&m)));
                 }
-                batch.push(IEntry { dir: job.dir, name_off: names.len() as u32, name_len: name.len() as u16, is_dir, hidden });
+                batch.push(IEntry {
+                    dir: job.dir,
+                    name_off: names.len() as u32,
+                    name_len: name.len() as u16,
+                    is_dir,
+                    hidden,
+                });
                 names.push_str(&name);
             }
         }
@@ -230,8 +271,15 @@ fn worker(
             subdirs
                 .into_iter()
                 .map(|(path, hidden, mtime)| {
-                    s.dirs.push(DirInfo { abs: path.to_string_lossy().into(), mtime });
-                    Job { dir: s.dirs.len() as u32 - 1, path, hidden }
+                    s.dirs.push(DirInfo {
+                        abs: path.to_string_lossy().into(),
+                        mtime,
+                    });
+                    Job {
+                        dir: s.dirs.len() as u32 - 1,
+                        path,
+                        hidden,
+                    }
                 })
                 .collect::<Vec<_>>()
         };
@@ -254,8 +302,14 @@ fn worker(
 /// Size and modified time of `path` itself (a link is not followed), `-1` where unknown or not a file.
 fn meta_of(path: &Path) -> Meta {
     match fs::symlink_metadata(path) {
-        Ok(m) => Meta { size: if m.is_file() { m.len() as i64 } else { -1 }, mtime: m.mtime() },
-        Err(_) => Meta { size: -1, mtime: -1 },
+        Ok(m) => Meta {
+            size: if m.is_file() { m.len() as i64 } else { -1 },
+            mtime: m.mtime(),
+        },
+        Err(_) => Meta {
+            size: -1,
+            mtime: -1,
+        },
     }
 }
 
@@ -305,7 +359,9 @@ pub fn search(
                             rel.push('/');
                         }
                         rel.push_str(name);
-                        let Some(s) = query.score(name, &rel) else { continue };
+                        let Some(s) = query.score(name, &rel) else {
+                            continue;
+                        };
                         if needs_meta {
                             let m = meta_of(&store.path(e));
                             if !query.accepts(name, e.is_dir, m.size, m.mtime) {
@@ -323,7 +379,10 @@ pub fn search(
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
     });
 
     // Equal scores come out in path order: the walk order differs from run to run.
@@ -334,7 +393,12 @@ pub fn search(
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| order(a.1).cmp(&order(b.1))));
     scored.truncate(MAX_RESULTS);
     if std::env::var_os("CFM_DEBUG").is_some() {
-        eprintln!("[timing] search {:?} over {} entries: {:?}", query_text, all.len(), t0.elapsed());
+        eprintln!(
+            "[timing] search {:?} over {} entries: {:?}",
+            query_text,
+            all.len(),
+            t0.elapsed()
+        );
     }
     scored
         .into_iter()
@@ -399,7 +463,11 @@ mod tests {
         assert!(!rs.contains(&"readme.md".to_string()));
         // Noise folders are never indexed; hidden files appear only on request.
         assert!(search("index.js", false).is_empty());
-        assert!(search("config", true).iter().all(|e| !e.path.contains("/.git/")));
+        assert!(
+            search("config", true)
+                .iter()
+                .all(|e| !e.path.contains("/.git/"))
+        );
         assert!(search("token", false).is_empty());
         assert_eq!(names(&search("token", true)), ["token.rs"]);
         // Folders only.
