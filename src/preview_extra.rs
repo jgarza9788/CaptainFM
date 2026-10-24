@@ -128,33 +128,6 @@ fn read_member(path: &str, member: &str) -> Option<Vec<u8>> {
     output(Command::new("bsdtar").args(["-xOf", path, member]))
 }
 
-const IMG_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
-
-/// Pick the cover image member: something called "cover" first, else the first image by name.
-pub fn pick_cover(members: &[String]) -> Option<&String> {
-    let is_img = |m: &&String| {
-        m.rsplit_once('.').is_some_and(|(_, e)| IMG_EXT.contains(&e.to_lowercase().as_str()))
-    };
-    let mut images: Vec<&String> = members.iter().filter(is_img).collect();
-    images.sort();
-    images
-        .iter()
-        .find(|m| m.to_lowercase().contains("cover"))
-        .copied()
-        .or_else(|| images.first().copied())
-}
-
-/// Cover of an EPUB / comic archive (CBZ, CBR) as a file URL.
-pub fn archive_cover(path: &str, mtime: i64) -> Option<String> {
-    let members = archive_members(path);
-    let member = pick_cover(&members)?.clone();
-    let ext = member.rsplit_once('.').map_or("png", |x| x.1).to_lowercase();
-    cached(path, mtime, "cover-member", &ext, |out| {
-        read_member(path, &member).is_some_and(|bytes| fs::write(out, bytes).is_ok())
-    })
-    .map(|p| file_url(&p.to_string_lossy()))
-}
-
 fn decode_entities(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
 }
@@ -223,6 +196,8 @@ pub fn office_text(path: &str, ext: &str) -> Option<String> {
     };
     (!text.trim().is_empty()).then_some(text)
 }
+
+// ---- torrents, RTF, executables, DjVu --------------------------------------------------------
 
 // ---- tables, hex, json, sqlite, certificates, fonts -----------------------------------------
 
@@ -296,32 +271,6 @@ pub fn pretty_json(text: &str) -> Option<String> {
     serde_json::to_string_pretty(&v).ok()
 }
 
-/// Tables and row counts (plus the schema) of a SQLite database, via the `sqlite3` CLI.
-pub fn sqlite_summary(path: &str) -> Option<String> {
-    let tables = String::from_utf8_lossy(&output(Command::new("sqlite3").args(["-readonly", path, ".tables"]))?).into_owned();
-    let names: Vec<&str> = tables.split_whitespace().take(40).collect();
-    let mut out = String::new();
-    for t in &names {
-        let q = format!("select count(*) from \"{}\"", t.replace('"', ""));
-        let count = output(Command::new("sqlite3").args(["-readonly", path, &q]))
-            .map(|b| String::from_utf8_lossy(&b).trim().to_owned())
-            .unwrap_or_else(|| "?".into());
-        out.push_str(&format!("-- {t}: {count} rows\n"));
-    }
-    if let Some(schema) = output(Command::new("sqlite3").args(["-readonly", path, ".schema"])) {
-        let schema = String::from_utf8_lossy(&schema);
-        out.push('\n');
-        out.push_str(&schema.chars().take(6000).collect::<String>());
-    }
-    (!out.is_empty()).then_some(out)
-}
-
-/// Subject, issuer, validity and fingerprint of an X.509 certificate, via `openssl`.
-pub fn certificate_summary(path: &str) -> Option<String> {
-    let out = output(Command::new("openssl").args(["x509", "-in", path, "-noout", "-subject", "-issuer", "-dates", "-fingerprint", "-sha256"]))?;
-    Some(String::from_utf8_lossy(&out).replace('=', " = "))
-}
-
 /// Family, style and file info of a font via `fc-scan`.
 pub fn font_info(path: &str) -> Vec<String> {
     output(Command::new("fc-scan").args(["--format", "%{family[0]}\n%{style[0]}\n%{fullname[0]}\n%{fontformat}\n", path]))
@@ -374,17 +323,9 @@ mod tests {
     }
 
     #[test]
-    fn cover_prefers_a_file_called_cover() {
-        let m = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        let a = m(&["OEBPS/ch1.xhtml", "OEBPS/images/b.jpg", "OEBPS/images/Cover.PNG", "OEBPS/images/a.jpg"]);
-        assert_eq!(pick_cover(&a).unwrap(), "OEBPS/images/Cover.PNG");
-        let b = m(&["pages/02.jpg", "pages/01.jpg", "info.txt"]);
-        assert_eq!(pick_cover(&b).unwrap(), "pages/01.jpg");
-        assert!(pick_cover(&m(&["a.txt"])).is_none());
-    }
-
-    #[test]
     fn urls_are_percent_encoded() {
         assert_eq!(file_url("/a b/c#d.png"), "file:///a%20b/c%23d.png");
     }
+
 }
+

@@ -7,12 +7,23 @@ QtObject {
     // "copy" | "move" | "link", the way Windows does it: Ctrl copies, Shift moves, Alt (or Ctrl+Shift) links, and with
     // no key a drop moves within one drive and copies between drives. The keys reach us as the drag's proposed
     // action; Settings can fix the action instead.
-    function action(drag, destination) {
+    //
+    // The held keys are read directly (`mods`), because the proposed action cannot tell a plain drop from a Shift
+    // one: both come as a move. Keys win over the proposed action; without them it decides, as before.
+    property int mods: 0                    // Qt.KeyboardModifier flags held now
+    property var seen: ({ list: [], web: [], proposed: Qt.MoveAction })    // the drag last asked about
+
+    function sample() { const m = Backend.heldModifiers(); if (m !== mods) mods = m }
+
+    function action(proposed, list, destination) {
         const fixed = Prefs.v.dropAction
         if (fixed !== "auto") return fixed
-        if (drag.proposedAction === Qt.LinkAction) return "link"
-        if (drag.proposedAction === Qt.CopyAction) return "copy"
-        const list = paths(drag)
+        const ctrl = (mods & Qt.ControlModifier) !== 0, shift = (mods & Qt.ShiftModifier) !== 0, alt = (mods & Qt.AltModifier) !== 0
+        if (alt || (ctrl && shift)) return "link"
+        if (ctrl) return "copy"
+        if (shift) return "move"        // a move even between drives
+        if (proposed === Qt.LinkAction) return "link"
+        if (proposed === Qt.CopyAction) return "copy"
         return list.length > 0 && !Backend.sameDevice(JSON.stringify(list), destination) ? "copy" : "move"
     }
 
@@ -47,10 +58,17 @@ QtObject {
 
     // What the drop target says while dragging over it: `{ kind, text }`, kind "" when a drop would do nothing useful.
     function hint(drag, destination, name, trash) {
-        const list = paths(drag)
-        if (list.length === 0) return webUrls(drag).length > 0 ? { kind: "download", text: "Download to " + name } : { kind: "", text: "" }
+        sample()
+        seen = { list: paths(drag), web: webUrls(drag), proposed: drag.proposedAction }
+        return again(destination, name, trash)
+    }
+
+    // The hint for the drag last seen, with the keys held now.
+    function again(destination, name, trash) {
+        const list = seen.list
+        if (list.length === 0) return seen.web.length > 0 ? { kind: "download", text: "Download to " + name } : { kind: "", text: "" }
         if (trash) return { kind: "trash", text: "Move to Trash" }
-        const act = action(drag, destination)
+        const act = action(seen.proposed, list, destination)
         if (act === "move" && alreadyThere(list, destination)) return { kind: "none", text: "Already here" }
         return { kind: act, text: (act === "copy" ? "Copy to " : act === "move" ? "Move to " : "Link in ") + name }
     }
@@ -72,7 +90,8 @@ QtObject {
             Backend.trash(json)
             return
         }
-        const act = action(drop, destination)
+        sample()
+        const act = action(drop.proposedAction, list, destination)
         // Tell the source what really happens, so it only removes its own copy after a move.
         drop.accept(act === "move" ? Qt.MoveAction : Qt.CopyAction)
         if (act === "move") {

@@ -13,6 +13,9 @@ QtObject {
         dropAction: "auto",        // auto (what the source and modifier keys ask for) | copy | move
         dragOpenDelay: 5,          // seconds a drag rests on a folder before it opens; 0 = disabled
         confirmTrash: false,
+        disabledPlugins: [],       // plugin ids switched off (Settings > Plugins)
+        countUsage: true,          // keep which features you use (ids and days, on this computer only)
+        learnPalette: true,        // the command palette ranks the commands you pick first
         terminal: "",              // command line; empty = xdg-terminal-exec
         fontFamily: "",            // empty = the system font
         sizeUnits: "binary",       // binary (1024) | decimal (1000)

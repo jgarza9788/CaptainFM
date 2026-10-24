@@ -23,6 +23,7 @@ Rectangle {
     property string hintRight: "actions"
     property var items: []          // [{title, hint, tag, category, keys, bindable, search}]
     property var baseItems: []
+    property bool predict: false    // rank with guesses (word forms, synonyms, typos) and learned picks
     property var fallback: null     // (query) => items shown when nothing in baseItems matches
     property bool fallbackActive: false
     property var shown: []
@@ -44,6 +45,7 @@ Rectangle {
         baseItems = opts.items ?? []
         items = baseItems
         fallback = opts.fallback ?? null
+        predict = opts.predict ?? false
         fallbackActive = false
         onChoose = opts.choose ?? null
         onRebind = opts.rebind ?? null
@@ -65,8 +67,9 @@ Rectangle {
         fallbackActive = false
         // Path-like input is about folders, not commands.
         const pathLike = fallback && (q.charAt(0) === "/" || q.charAt(0) === "~" || q.indexOf("/") > 0)
-        if (q === "") { shown = items.map((_, i) => i) }
-        else if (pathLike) shown = []
+        if (pathLike) shown = []
+        else if (predict) shown = JSON.parse(Backend.rankCommands(JSON.stringify(items.map(i => i.search ?? i.title)), JSON.stringify(items.map(i => typeof i.tag === "string" ? i.tag : "")), q, Prefs.v.learnPalette))
+        else if (q === "") { shown = items.map((_, i) => i) }
         else {
             const texts = JSON.stringify(items.map(i => i.search ?? i.title))
             // With a folder fallback a miss must be a real miss, so skip the scattered-letters match.
@@ -85,8 +88,9 @@ Rectangle {
     function choose() {
         if (list.currentIndex < 0 || list.currentIndex >= shown.length) return
         const item = items[shown[list.currentIndex]]
+        const typed = input.text.trim()
         close()
-        if (onChoose) onChoose(item)
+        if (onChoose) onChoose(item, typed)
     }
 
     function startCapture() {

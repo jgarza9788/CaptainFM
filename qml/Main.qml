@@ -46,9 +46,14 @@ Window {
     readonly property alias prompt: promptBar
     readonly property alias jump: jumpBar
     readonly property alias picker: pickerBox
-    readonly property alias batchRename: batch
-    function openSettings() { settingsBox.open() }
-    readonly property bool overlayOpen: promptBar.visible || jumpBar.visible || pickerBox.visible || batch.visible || settingsBox.visible
+    // Big dialogs are built the first time they are opened, which keeps them out of startup.
+    function lazyBatch() { batchLoader.active = true; return batchLoader.item.dlg }
+    function lazySettings() { settingsLoader.active = true; return settingsLoader.item.dlg }
+    function lazyConnect() { connectLoader.active = true; return connectLoader.item.dlg }
+    readonly property var batchRename: ({ open: (...args) => lazyBatch().open(...args) })
+    function openSettings() { lazySettings().open() }
+    readonly property alias transfers: transferBox
+    readonly property bool overlayOpen: promptBar.visible || jumpBar.visible || pickerBox.visible || (batchLoader.item !== null && batchLoader.item.dlg.visible) || (settingsLoader.item !== null && settingsLoader.item.dlg.visible) || (connectLoader.item !== null && connectLoader.item.dlg.visible) || clashBox.visible
 
     ListModel { id: tabsModel }
 
@@ -69,6 +74,30 @@ Window {
                 part("media.mute", "mute"), part("media.loop", "loop")].filter(x => x !== "").join(" · ")
     }
     function pinsChanged() { sidebar.refreshPinned() }
+
+    function isPinned(path) {
+        try { return JSON.parse(Backend.bookmarks()).indexOf(path) >= 0 } catch (e) { return false }
+    }
+
+    // Pin a folder or item. Unpinning takes two presses in a row (Ctrl+D twice, or right-click twice on the
+    // sidebar entry): the first only marks the pin, which shows in the sidebar; the second removes it.
+    property string armedPin: ""
+    Timer { id: armTimer; interval: 3000; onTriggered: app.armedPin = "" }
+
+    function togglePinned(path, name) {
+        if (!isPinned(path)) { Backend.toggleBookmark(path); toast("Pinned " + name); pinsChanged(); return }
+        if (armedPin === path) {
+            armTimer.stop()
+            armedPin = ""
+            Backend.toggleBookmark(path)
+            toast("Unpinned " + name)
+            pinsChanged()
+            return
+        }
+        armedPin = path
+        armTimer.restart()
+        toast("Again to unpin “" + name + "”", "warn")
+    }
 
     // The sidebar's global search box drives a whole-drive search in the active pane.
     function sidebarSearch(text) {
@@ -277,7 +306,7 @@ Window {
         pickerBox.open({
             placeholder: devicesMode === "eject" ? "Unmount or eject…" : "Open a device or remote",
             items: list.map(d => ({
-                title: d.label + (d.kind === "remote" ? "" : "  " + d.detail),
+                title: d.label + (d.kind === "remote" || d.kind === "cloud" ? "" : "  " + d.detail),
                 hint: d.mounted ? (d.path || d.uri) : "not mounted",
                 tag: d
             })),
@@ -303,7 +332,98 @@ Window {
         pendingMount = false
     }
 
-    function connectPrompt() {
+    // Saved connections first, then a new connection or a plain URL. `kinds` (service ids) limits the list
+    // to one service, e.g. ["sftp"]; without it everything is offered.
+    function connectPicker(kinds) {
+        const only = kinds && kinds.length > 0
+        const label = only ? lazyConnect().kinds.find(k => k.id === kinds[0]).label : ""
+        const items = [{
+            title: only ? "New " + label + " connection…" : "New connection…",
+            hint: only ? "" : "SFTP, SMB, FTP, WebDAV, Google Drive and other clouds",
+            tag: { make: "new" }
+        }]
+        for (const c of JSON.parse(Backend.savedConnections())) {
+            if (only && kinds.indexOf(c.kind) < 0) continue
+            items.push({ title: c.name, hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host : "") + (c.remember ? "  ·  password in keyring" : ""), tag: c })
+        }
+        if (!only) items.push({ title: "Connect to a URL…", hint: "smb://, sftp://, ftp://, davs://", tag: { make: "url" } })
+        pickerBox.open({
+            placeholder: only ? "Connect: " + label + "…" : "Connect to…",
+            hintRight: "ctrl+e edits · ctrl+d forgets",
+            items: items,
+            choose: (item) => {
+                const c = item.tag
+                if (c.make === "new") { lazyConnect().open({}, only ? kinds[0] : undefined); return }
+                if (c.make === "url") { connectUrlPrompt(); return }
+                refocus()
+                pendingMount = true
+                toast("Connecting to " + c.name + "…")
+                Backend.connectSaved(c.id)
+            },
+            keyHook: (e, item) => {
+                if (!(e.modifiers & Qt.ControlModifier) || item.tag.id === undefined) return false
+                if (e.key === Qt.Key_D) {
+                    pickerBox.close()
+                    Backend.deleteConnection(item.tag.id)
+                    return true
+                }
+                if (e.key === Qt.Key_E) {
+                    pickerBox.close()
+                    lazyConnect().edit(item.tag)
+                    return true
+                }
+                return false
+            }
+        })
+    }
+
+    // How often each command, preview kind and plugin was used over the last four weeks, least used first.
+    function showFeatureUse() {
+        const r = JSON.parse(Backend.featureReport())
+        if (r.rows.length === 0) { toast("Nothing counted yet", "warn"); return }
+        const title = (id) => {
+            if (id.indexOf("preview:") === 0) return "Preview: " + id.substring(8)
+            if (id.indexOf("plugin:") === 0) return "Plugin: " + id.substring(7)
+            const c = commands.byId(id)
+            return c ? c.title : id
+        }
+        const pct = (d) => r.opened > 0 ? Math.round(Math.min(d, r.opened) * 100 / r.opened) : 0
+        pickerBox.open({
+            placeholder: "Used on " + r.opened + " of the last " + r.window + " days · least used first",
+            items: r.rows.slice().reverse().map(x => ({
+                title: title(x.id),
+                hint: x.days + (x.days === 1 ? " day" : " days") + " (" + pct(x.days) + "%) · " + (x.last === 0 ? "today" : x.last + " days ago"),
+                tag: x
+            })),
+            choose: (item) => refocus()
+        })
+    }
+
+    // Saved connections: Enter edits (name, host, user, password…), ctrl+d forgets.
+    function manageConnections() {
+        const saved = JSON.parse(Backend.savedConnections())
+        if (saved.length === 0) { toast("No saved connections", "warn"); return }
+        pickerBox.open({
+            placeholder: "Edit connection…",
+            hintRight: "enter edits · ctrl+d forgets",
+            items: saved.map(c => ({
+                title: c.name,
+                hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host + (c.path ? "/" + c.path.replace(/^\//, "") : "") : "") + (c.remember ? "  ·  password in keyring" : ""),
+                tag: c
+            })),
+            choose: (item) => lazyConnect().edit(item.tag),
+            keyHook: (e, item) => {
+                if ((e.modifiers & Qt.ControlModifier) && e.key === Qt.Key_D) {
+                    pickerBox.close()
+                    Backend.deleteConnection(item.tag.id)
+                    return true
+                }
+                return false
+            }
+        })
+    }
+
+    function connectUrlPrompt() {
         promptBar.open({
             label: "Connect to server:",
             text: "sftp://",
@@ -314,6 +434,19 @@ Window {
                 Backend.connectRemote(url)
             }
         })
+    }
+
+    function connectPrompt() { connectPicker() }
+
+    // The edit form was filled in: save it, no connecting.
+    function runUpdate(req) { Backend.updateConnection(JSON.stringify(req)) }
+
+    // The form was filled in; sign-in for cloud drives happens in the browser and can take a while.
+    function runConnect(req) {
+        pendingMount = true
+        toast(req.kind === "gdrive" || req.kind === "dropbox" || req.kind === "onedrive" || req.kind === "box"
+              ? "Signing in… check your browser" : "Connecting…")
+        Backend.connectProfile(JSON.stringify(req))
     }
 
     // Another program asked us to show folders or items (org.freedesktop.FileManager1).
@@ -348,10 +481,12 @@ Window {
             placeholder: "type a command, or a folder name",
             items: items,
             tokenFor: engine.tokenFor,
+            predict: true,
             fallback: (q) => folderItems(q),
-            choose: (item) => {
+            choose: (item, typed) => {
                 refocus()
                 if (typeof item.tag === "object" && item.tag.folder !== undefined) { if (pane) pane.navigate(item.tag.folder); return }
+                if (Prefs.v.learnPalette) Backend.recordChoice(typed ?? "", item.tag)
                 commands.run(item.tag, 1, false)
             },
             rebind: (item, seq) => bindKey(item.tag, seq),
@@ -536,8 +671,10 @@ Window {
 
     function handleOp(json) {
         const r = JSON.parse(json)
-        if (r.errors && r.errors.length > 0) toast(r.errors[0] + (r.errors.length > 1 ? "  (+" + (r.errors.length - 1) + " more)" : ""), "error")
-        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.label === "Trashed" ? "  (u to undo)" : ""))
+        if (r.cancelled) toast("Cancelled" + (r.ok > 0 ? "  (" + commands.plural(r.ok, "item") + " already " + r.label.toLowerCase() + ")" : ""), "warn")
+        else if (r.errors && r.errors.length > 0) toast(r.errors[0] + (r.errors.length > 1 ? "  (+" + (r.errors.length - 1) + " more)" : ""), "error")
+        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.skipped > 0 ? ", skipped " + r.skipped : "") + (r.label === "Trashed" ? "  (u to undo)" : ""))
+        else if (r.skipped > 0) toast("Skipped " + commands.plural(r.skipped, "item"), "warn")
         const p = pane
         if (p && r.paths && r.paths.length > 0 && r.label !== "Trashed" && r.label !== "Deleted") {
             p.pendingPath = r.paths[r.paths.length - 1]
@@ -558,7 +695,17 @@ Window {
         try { plugins = JSON.parse(Backend.listPlugins()) } catch (e) { return }
         const cmds = []
         const panels = []
+        pluginInfo = plugins
         for (const pl of plugins) {
+            // Every plugin gets a switch command, so it can be turned back on from the palette.
+            cmds.push({
+                id: "plugin." + pl.id + ".switch",
+                title: "Plugins: turn " + (pl.enabled === false ? "on " : "off ") + pl.name,
+                words: ["enable plugin", "disable plugin", pl.id],
+                keys: [],
+                run: () => setPluginEnabled(pl.id, pl.enabled === false)
+            })
+            if (pl.enabled === false) continue
             for (const a of pl.actions) {
                 cmds.push({
                     id: "plugin." + pl.id + "." + a.id,
@@ -581,6 +728,37 @@ Window {
         commands.pluginCommands = cmds
         panelList = panels
         engine.rebuild(userKeys)
+    }
+
+    property var pluginInfo: []
+
+    // Switch plugins on or off (Settings > Plugins, the palette, `captainfm --plugin`). Previews follow at once;
+    // actions and panels are reloaded here.
+    function setPluginsEnabled(ids, on) {
+        let off = Prefs.v.disabledPlugins.filter(id => ids.indexOf(id) < 0)
+        if (!on) off = off.concat(ids)
+        Prefs.set("disabledPlugins", off)
+        loadPlugins()
+    }
+    function setPluginEnabled(id, on) {
+        setPluginsEnabled([id], on)
+        const pl = pluginInfo.find(p => p.id === id)
+        toast((pl ? pl.name : id) + (on ? " on" : " off"))
+    }
+    function setAllPlugins(on) {
+        setPluginsEnabled(pluginInfo.map(p => p.id), on)
+        toast("All plugins " + (on ? "on" : "off"))
+    }
+
+    // `captainfm --plugin` changes settings.json from outside: pick that up when the window is used again.
+    Connections {
+        target: Qt.application
+        function onStateChanged() {
+            if (Qt.application.state !== Qt.ApplicationActive) return
+            const before = JSON.stringify(Prefs.v.disabledPlugins)
+            Prefs.load()
+            if (JSON.stringify(Prefs.v.disabledPlugins) !== before) app.loadPlugins()
+        }
     }
 
     function togglePanel(key) {
@@ -636,6 +814,8 @@ Window {
     Connections {
         target: Backend
         function onOpDone(result) { app.handleOp(result) }
+        function onTransferStarted() { transferBox.refresh() }
+        function onPasteConflicts(json) { clashBox.ask(JSON.parse(json)) }
         function onDevicesListed(json) { app.showDevices(json) }
         function onMountDone(json) { app.handleMount(json) }
         function onCredentialsNeeded(prompt) { app.askCredentials(prompt) }
@@ -649,12 +829,15 @@ Window {
     onInspectorOnChanged: markDirty()
     onClosing: saveSession()
 
+    // The index only changes while a deep search is open, so count it only then (and once more when it closes).
+    function updateIndexText() {
+        const n = Backend.indexPaths()
+        indexText = n <= 0 ? "" : (n >= 1000000 ? (n / 1000000).toFixed(2) + "M" : (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n)))
+    }
     Timer {
-        interval: 2000; running: true; repeat: true; triggeredOnStart: true
-        onTriggered: {
-            const n = Backend.indexPaths()
-            indexText = n <= 0 ? "" : (n >= 1000000 ? (n / 1000000).toFixed(2) + "M" : (n >= 1000 ? (n / 1000).toFixed(1) + "k" : String(n)))
-        }
+        interval: 1000; running: app.pane !== null && app.pane.deep; repeat: true; triggeredOnStart: true
+        onTriggered: app.updateIndexText()
+        onRunningChanged: if (!running) app.updateIndexText()
     }
     onSidebarModeChanged: markDirty()
     onKeymapChanged: engine.rebuild(userKeys)
@@ -662,7 +845,18 @@ Window {
 
     Timer { id: saveTimer; interval: 1500; onTriggered: app.saveSession() }
 
+    // CFM_DEBUG=1 prints how long startup took: until the interface was built, and until the first frame.
+    readonly property bool debugStartup: Backend.env("CFM_DEBUG") !== ""
+    property bool firstFrameSeen: false
+    onFrameSwapped: {
+        if (firstFrameSeen) return
+        firstFrameSeen = true
+        if (debugStartup) console.log("[timing] first frame " + Backend.sinceStartMs() + " ms after start")
+    }
+
     Component.onCompleted: {
+        Backend.markFeature("app.opened")
+        if (debugStartup) console.log("[timing] interface built " + Backend.sinceStartMs() + " ms after start")
         Prefs.load()
         Theme.start()
         try { userKeys = JSON.parse(Backend.readConfig("keys")) } catch (e) { userKeys = ({}) }
@@ -848,6 +1042,8 @@ Window {
                         if (Backend.isDir(path)) app.pane.navigate(path); else if (!app.pickMode) Backend.openPath(path)
                     }
                     onConnectRequested: app.connectPrompt()
+                    armedPath: app.armedPin
+                    onUnpinRequested: (path, name) => app.togglePinned(path, name)
                     onFoldsChanged: app.markDirty()
                     searchValue: app.pane && app.pane.deep ? app.pane.searchText : ""
                     onSearchChanged: (text) => app.sidebarSearch(text)
@@ -1138,16 +1334,51 @@ Window {
             onClosed: app.refocus()
         }
 
-        BatchRename {
-            id: batch
-            app: app
+        Loader {
+            id: batchLoader
+            anchors.fill: parent
+            active: false
+            // A Loader resizes what it loads, so the dialog sits in a full-size holder and keeps its own size.
+            sourceComponent: Item {
+                property alias dlg: dialog
+                property var owner: app
+                BatchRename { id: dialog; app: owner; onClosed: app.refocus() }
+            }
+        }
+
+        Loader {
+            id: settingsLoader
+            anchors.fill: parent
+            active: false
+            // A Loader resizes what it loads, so the dialog sits in a full-size holder and keeps its own size.
+            sourceComponent: Item {
+                property alias dlg: dialog
+                property var owner: app
+                Settings { id: dialog; app: owner; onClosed: app.refocus() }
+            }
+        }
+
+        Loader {
+            id: connectLoader
+            anchors.fill: parent
+            active: false
+            // A Loader resizes what it loads, so the dialog sits in a full-size holder and keeps its own size.
+            sourceComponent: Item {
+                property alias dlg: dialog
+                property var owner: app
+                ConnectDialog { id: dialog; app: owner; onClosed: app.refocus() }
+            }
+        }
+
+        ConflictDialog {
+            id: clashBox
             onClosed: app.refocus()
         }
 
-        Settings {
-            id: settingsBox
+        TransferPanel {
+            id: transferBox
             app: app
-            onClosed: app.refocus()
+            anchors { left: parent.left; bottom: parent.bottom; leftMargin: Style.pad * 2; bottomMargin: Math.round(48 * Style.zoom) }
         }
 
         Toast {
@@ -1188,6 +1419,8 @@ Window {
                 return
             }
             const t = queue.shift()
+            // CFM_DEBUG=1 logs when each key was fed, so a recording can be matched to the keys (see scripts/record-demo03.sh).
+            if (debugStartup && t !== "<F9>") console.log("[keys] " + Backend.sinceStartMs() + " " + t)
             if (t[0] === "@") commands.run(t.substring(1), 1, false)
             else if (t[0] === "=") {
                 const f = app.activeFocusItem
@@ -1198,12 +1431,14 @@ Window {
             } else if (t.indexOf("!bind:") === 0) {
                 const [cid, seq] = t.substring(6).split("=")
                 bindKey(cid, seq.replace(/_/g, " "))
-            } else if (t.indexOf("!mode:") === 0) batch.setMode(t.substring(6))
+            } else if (t.indexOf("!mode:") === 0) lazyBatch().setMode(t.substring(6))
             else if (t.indexOf("!fold:") === 0) sidebar.toggleFold(t.substring(6))
-            else if (t.indexOf("!set:") === 0) settingsBox.press(t.substring(5))
+            else if (t.indexOf("!clash:") === 0) clashBox.press(t.substring(7))
+            else if (t.indexOf("!set:") === 0) lazySettings().press(t.substring(5))
+            else if (t.indexOf("!conn:") === 0) lazyConnect().press(t.substring(6))
             else if (t === "!play") inspectorPane.togglePlayback()
             else if (t === "!clear") { const f = app.activeFocusItem; if (f && f.text !== undefined) f.text = "" }
-            else if (t === "!next") batch.nextField(false)
+            else if (t === "!next") lazyBatch().nextField(false)
             else if (t === "!zoom") Style.zoomTarget = 1.4
             else engine.feedToken(t)
         }

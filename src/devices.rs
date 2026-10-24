@@ -31,6 +31,38 @@ pub struct Device {
     pub total: u64,
 }
 
+/// Call `on_change` (from a helper thread) whenever a disk or share is mounted or unmounted, so the
+/// sidebar updates when it happens instead of on a timer. The kernel wakes us when `/proc/self/mountinfo`
+/// changes; gvfs mounts live inside their own folder, which is watched separately.
+pub fn watch_changes(on_change: impl Fn() + Send + Sync + 'static) {
+    use std::io::{Read, Seek};
+    use std::os::fd::AsRawFd;
+    let on_change = std::sync::Arc::new(on_change);
+    let gvfs = {
+        let on_change = on_change.clone();
+        crate::watch::watch(&gvfs_dir(), false, std::time::Duration::from_millis(300), move || on_change())
+    };
+    std::thread::spawn(move || {
+        let _keep_watching = gvfs;
+        let Ok(mut file) = fs::File::open("/proc/self/mountinfo") else { return };
+        let mut text = String::new();
+        loop {
+            // Reading it all re-arms the notification.
+            let _ = file.rewind();
+            text.clear();
+            let _ = file.read_to_string(&mut text);
+            let mut poll = libc::pollfd { fd: file.as_raw_fd(), events: libc::POLLPRI, revents: 0 };
+            // SAFETY: one valid pollfd, and the descriptor stays open for the whole call.
+            if unsafe { libc::poll(&mut poll, 1, -1) } < 0 {
+                return;
+            }
+            // A mount often comes with several changes in a burst.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            on_change();
+        }
+    });
+}
+
 fn gvfs_dir() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -139,6 +171,19 @@ pub fn parse_gio_volumes(text: &str) -> Vec<(String, String)> {
     out
 }
 
+/// Parse `gio mount -l` for mounts gvfs knows about (name, uri), skipping local `file://` ones.
+pub fn parse_gio_mounts(text: &str) -> Vec<(String, String)> {
+    text.lines()
+        .filter_map(|line| {
+            let rest = line.trim_start().strip_prefix("Mount(")?;
+            let (_, rest) = rest.split_once("): ")?;
+            let (name, uri) = rest.rsplit_once(" -> ")?;
+            let uri = uri.trim();
+            (uri.contains("://") && !uri.starts_with("file://")).then(|| (name.trim().to_owned(), uri.to_owned()))
+        })
+        .collect()
+}
+
 /// Path reported by `udisksctl mount`: "Mounted /dev/sdb1 at /run/media/u/DISK."
 pub fn parse_udisks_mount(output: &str) -> Option<String> {
     let (_, rest) = output.split_once(" at ")?;
@@ -197,6 +242,7 @@ pub fn list() -> Vec<Device> {
         d.usage = usage_percent(&d.path);
     }
 
+    let profiles = crate::remotes::load();
     let mut mounted_hosts: Vec<String> = Vec::new();
     if let Ok(rd) = fs::read_dir(gvfs_dir()) {
         for e in rd.flatten() {
@@ -205,7 +251,7 @@ pub fn list() -> Vec<Device> {
             devices.push(Device {
                 id: format!("remote:{name}"),
                 kind: gvfs_kind(&name),
-                label: gvfs_label(&name),
+                label: crate::remotes::name_for(&gvfs_label(&name), &profiles).unwrap_or_else(|| gvfs_label(&name)),
                 detail: "mounted".into(),
                 mounted: true,
                 path: e.path().to_string_lossy().into_owned(),
@@ -218,7 +264,53 @@ pub fn list() -> Vec<Device> {
             });
         }
     }
+    for (name, mp) in crate::remotes::cloud_mounts() {
+        devices.push(Device {
+            id: format!("cloud:{mp}"),
+            kind: "cloud",
+            label: name,
+            detail: "cloud drive".into(),
+            mounted: true,
+            path: mp,
+            device: String::new(),
+            uri: String::new(),
+            removable: true,
+            usage: -1,
+            used: 0,
+            total: 0,
+        });
+    }
     if let Ok(text) = run("gio", &["mount", "-li"]) {
+        // Mounts gvfs holds without a FUSE directory would otherwise be invisible here.
+        let mut claimed: Vec<String> = Vec::new();
+        let mut orphans: Vec<String> = Vec::new();
+        for (_, uri) in parse_gio_mounts(&text) {
+            match find_gvfs_entry(&uri) {
+                Some((entry, _)) => claimed.push(entry),
+                None => orphans.push(uri),
+            }
+        }
+        for uri in orphans {
+            // The same mount under another host spelling (name versus IP) already has its row.
+            if let Some(i) = twin_entry(&mounted_hosts, &claimed, &uri) {
+                claimed.push(mounted_hosts[i].clone());
+                continue;
+            }
+            devices.push(Device {
+                id: format!("remote:{uri}"),
+                kind: "remote",
+                label: crate::remotes::name_for(&uri, &profiles).unwrap_or_else(|| uri.clone()),
+                detail: "mounted".into(),
+                mounted: true,
+                path: String::new(),
+                device: String::new(),
+                uri,
+                removable: true,
+                usage: -1,
+                used: 0,
+                total: 0,
+            });
+        }
         for (name, uri) in parse_gio_volumes(&text) {
             let host = uri.split("host=").nth(1).unwrap_or("").trim_end_matches('/').to_owned();
             if !host.is_empty() && mounted_hosts.iter().any(|m| m.contains(&host)) {
@@ -289,7 +381,7 @@ pub fn eject_disk(device: &str, removable: bool) -> MountResult {
 }
 
 pub fn unmount_remote(uri_or_path: &str) -> MountResult {
-    match run("gio", &["mount", "-u", uri_or_path]) {
+    match run("gio", &["mount", "-u", "--", uri_or_path]) {
         Ok(_) => done(String::new(), "Unmounted"),
         Err(e) => failed(e),
     }
@@ -325,7 +417,8 @@ pub fn prompt_kind(prompt: &str) -> Option<&'static str> {
 /// `ask` gets the prompt text and returns the answer, or `None` to cancel.
 pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult {
     let Ok(mut child) = Command::new("gio")
-        .args(["mount", uri])
+        .args(["mount", "--", uri])
+        .env("LC_ALL", "C")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -384,7 +477,17 @@ pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult
     let err = err_reader.join().unwrap_or_default();
     match status {
         Ok(s) if s.success() => done(find_gvfs_path(uri).unwrap_or_default(), "Connected"),
-        _ => failed(err.trim().lines().last().unwrap_or("could not connect").to_owned()),
+        _ => {
+            let msg = err.trim().lines().last().unwrap_or("could not connect").to_owned();
+            // Already connected is the state the caller wanted: open it.
+            if msg.to_lowercase().contains("already mounted") {
+                return match find_gvfs_path(uri) {
+                    Some(path) => done(path, "Already connected"),
+                    None => failed("Already mounted by gvfs but not browsable; unmount it from the sidebar and retry".into()),
+                };
+            }
+            failed(msg)
+        }
     }
 }
 
@@ -395,24 +498,55 @@ pub fn begin_prompting() -> Receiver<Option<String>> {
     rx
 }
 
-/// Find the GVfs FUSE directory for a freshly mounted URI.
-pub fn find_gvfs_path(uri: &str) -> Option<String> {
-    let rest = uri.split_once("://")?.1;
+/// The service (as GVfs names it), host and share of a URI.
+fn uri_parts(uri: &str) -> Option<(&str, &str, &str)> {
+    let (scheme, rest) = uri.split_once("://")?;
+    let gvfs_scheme = match scheme {
+        "smb" => "smb-share",
+        "http" | "dav" => "dav",
+        "https" | "davs" => "davs",
+        "afp" => "afp-volume",
+        "ssh" => "sftp",
+        s => s,
+    };
     let host = rest.split('/').next()?.rsplit('@').next()?;
     let host = host.split(':').next()?;
-    let wanted_share = rest.split('/').nth(1).unwrap_or("");
+    Some((gvfs_scheme, host, rest.split('/').nth(1).unwrap_or("")))
+}
+
+/// Does the GVfs entry `name` (`smb-share:server=...,share=...`) have this service and share?
+fn entry_has_share(name: &str, scheme: &str, share: &str) -> bool {
+    let (entry_scheme, params) = split_gvfs_name(name);
+    entry_scheme == scheme
+        && (share.is_empty()
+            || !name.starts_with("smb-share")
+            || params.iter().any(|(k, v)| k == "share" && v.eq_ignore_ascii_case(share)))
+}
+
+/// Index of a FUSE entry no other mount owns that has this URI's service and share, whatever host it
+/// goes by: the folder-less gio mount and the entry are the same mount.
+fn twin_entry(entries: &[String], claimed: &[String], uri: &str) -> Option<usize> {
+    let (scheme, _, share) = uri_parts(uri)?;
+    entries.iter().position(|n| !claimed.contains(n) && entry_has_share(n, scheme, share))
+}
+
+/// The GVfs FUSE entry (directory name and path) for a mounted URI.
+pub fn find_gvfs_entry(uri: &str) -> Option<(String, String)> {
+    let (scheme, host, share) = uri_parts(uri)?;
     for e in fs::read_dir(gvfs_dir()).ok()?.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
         let (_, params) = split_gvfs_name(&name);
         let has_host = params.iter().any(|(k, v)| (k == "host" || k == "server") && v.eq_ignore_ascii_case(host));
-        let share_ok = wanted_share.is_empty()
-            || !name.starts_with("smb-share")
-            || params.iter().any(|(k, v)| k == "share" && v.eq_ignore_ascii_case(wanted_share));
-        if has_host && share_ok {
-            return Some(e.path().to_string_lossy().into_owned());
+        if has_host && entry_has_share(&name, scheme, share) {
+            return Some((name, e.path().to_string_lossy().into_owned()));
         }
     }
     None
+}
+
+/// Find the GVfs FUSE directory for a freshly mounted URI.
+pub fn find_gvfs_path(uri: &str) -> Option<String> {
+    find_gvfs_entry(uri).map(|e| e.1)
 }
 
 #[cfg(test)]
@@ -497,6 +631,22 @@ mod more_tests {
     fn garbage_lsblk_output_gives_no_devices() {
         assert!(parse_lsblk("not json").is_empty());
         assert!(parse_lsblk("{}").is_empty());
+    }
+
+    #[test]
+    fn a_mount_under_another_host_spelling_is_one_row() {
+        let entries = vec!["smb-share:server=nas,share=s00".to_owned(), "smb-share:server=nas,share=s01".to_owned()];
+        // gio says "192.168.1.250" for the share the FUSE entry calls "nas".
+        assert_eq!(twin_entry(&entries, &[], "smb://192.168.1.250/s01/"), Some(1));
+        // An entry another mount already owns is not handed out twice.
+        assert_eq!(twin_entry(&entries, &[entries[1].clone()], "smb://192.168.1.250/s01/"), None);
+        assert_eq!(twin_entry(&entries, &[], "sftp://192.168.1.250/"), None);
+    }
+
+    #[test]
+    fn gio_mounts_skip_local_and_keep_remote() {
+        let text = "Drive(0): X\n  Type: GProxyDrive\n  Volume(0): USB\n    Mount(0): USB -> file:///run/media/u/USB\nMount(0): media on nas -> smb://nas/media\n";
+        assert_eq!(parse_gio_mounts(text), vec![("media on nas".to_owned(), "smb://nas/media".to_owned())]);
     }
 
     #[test]

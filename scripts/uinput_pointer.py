@@ -5,6 +5,7 @@ Reads commands from stdin, one per line, coordinates in screen pixels (SCREEN_W 
   warp X Y            jump to X,Y
   move X Y [MS]       glide to X,Y over MS milliseconds (default 600)
   down | up           left button
+  rdown | rup         right button
   key ctrl|shift|alt down|up
   wait MS
   print TEXT          write TEXT to stdout (lets a caller sync a screenshot to the script)
@@ -13,7 +14,7 @@ import fcntl, os, struct, sys, time
 
 W, H = int(os.environ.get("SCREEN_W", 3840)), int(os.environ.get("SCREEN_H", 2160))
 EV_SYN, EV_KEY, EV_ABS = 0, 1, 3
-BTN_LEFT, ABS_X, ABS_Y = 0x110, 0, 1
+BTN_LEFT, BTN_RIGHT, ABS_X, ABS_Y = 0x110, 0x111, 0, 1
 KEYS = {"ctrl": 29, "shift": 42, "alt": 56}
 UI_SET_EVBIT, UI_SET_KEYBIT, UI_SET_ABSBIT = 0x40045564, 0x40045565, 0x40045567
 UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
@@ -21,7 +22,7 @@ UI_DEV_CREATE, UI_DEV_DESTROY = 0x5501, 0x5502
 fd = os.open("/dev/uinput", os.O_WRONLY | os.O_NONBLOCK)
 for ev in (EV_KEY, EV_ABS, EV_SYN):
     fcntl.ioctl(fd, UI_SET_EVBIT, ev)
-for k in (BTN_LEFT, *KEYS.values()):
+for k in (BTN_LEFT, BTN_RIGHT, *KEYS.values()):
     fcntl.ioctl(fd, UI_SET_KEYBIT, k)
 for a in (ABS_X, ABS_Y):
     fcntl.ioctl(fd, UI_SET_ABSBIT, a)
@@ -58,10 +59,11 @@ try:
         if a[0] == "warp": put(float(a[1]), float(a[2]))
         elif a[0] == "move": glide(float(a[1]), float(a[2]), float(a[3]) if len(a) > 3 else 600)
         elif a[0] in ("down", "up"): emit(EV_KEY, BTN_LEFT, 1 if a[0] == "down" else 0); sync()
+        elif a[0] in ("rdown", "rup"): emit(EV_KEY, BTN_RIGHT, 1 if a[0] == "rdown" else 0); sync()
         elif a[0] == "key": emit(EV_KEY, KEYS[a[1]], 1 if a[2] == "down" else 0); sync()
         elif a[0] == "wait": time.sleep(float(a[1]) / 1000)
         elif a[0] == "print": print(" ".join(a[1:]), flush=True)
 finally:
     for k in KEYS.values(): emit(EV_KEY, k, 0)
-    emit(EV_KEY, BTN_LEFT, 0); sync()
+    emit(EV_KEY, BTN_LEFT, 0); emit(EV_KEY, BTN_RIGHT, 0); sync()
     fcntl.ioctl(fd, UI_DEV_DESTROY)

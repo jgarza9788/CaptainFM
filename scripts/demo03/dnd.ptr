@@ -1,0 +1,28 @@
+# Drag README.md onto media-stack and drop it with Ctrl held (a copy), then right-click docker-compose.yml.
+warp 1900 1500
+wait 600
+move 647 885 700
+wait 300
+down
+wait 250
+move 800 800 400
+move 676 322 600
+wait 1200
+key ctrl down
+move 690 330 200
+move 676 322 200
+wait 1100
+up
+wait 900
+key ctrl up
+wait 500
+move 731 697 800
+wait 300
+rdown
+wait 90
+rup
+wait 1700
+move 770 760 500
+wait 500
+move 780 830 500
+wait 1000

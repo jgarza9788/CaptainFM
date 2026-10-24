@@ -1,5 +1,5 @@
 //! Command-line handling that runs before Qt starts: `--help`, `--version`, `--install`,
-//! `--default [off]`. Everything else is forwarded to the QML app.
+//! `--default [off]`, `--plugins`, `--plugin`. Everything else is forwarded to the QML app.
 
 use std::fs;
 use std::path::PathBuf;
@@ -18,6 +18,9 @@ const USAGE: &str = "usage: captainfm [--select <path>] [path...]
        captainfm --install-portal [off]
                                   use CaptainFM as the file picker (xdg-desktop-portal FileChooser)
        captainfm --install-dbus   let other apps open folders in CaptainFM (FileManager1)
+       captainfm --plugins        list plugins and whether they are on
+       captainfm --plugin <name|all> on|off
+                                  switch a plugin (e.g. torrent, sqlite) on or off; applies at once to previews
        captainfm --version
 
 Each path opens in its own tab; --select opens the parent folder with the item highlighted.";
@@ -39,6 +42,18 @@ pub fn handle(args: &[String]) -> Action {
         Some("--version" | "-V") => {
             println!("captainfm {}", env!("CARGO_PKG_VERSION"));
             Action::Exit(0)
+        }
+        Some("--plugins") => {
+            println!("{}", crate::plugins::describe());
+            Action::Exit(0)
+        }
+        Some("--plugin") => {
+            let result = match (args.get(1), args.get(2).map(String::as_str)) {
+                (Some(name), Some("on")) => crate::plugins::set_enabled(name, true),
+                (Some(name), Some("off")) => crate::plugins::set_enabled(name, false),
+                _ => Err("usage: captainfm --plugin <name|all> on|off".to_owned()),
+            };
+            Action::Exit(report(result))
         }
         Some("--install") => Action::Exit(report(install())),
         Some("--tab") => {

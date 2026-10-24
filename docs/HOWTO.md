@@ -237,8 +237,16 @@ In Vim keys, pressing `Space`, `g`, `y`, `d`, `z` or `Ctrl-w` and pausing shows 
 - **Drives** under the sidebar's DRIVES show usage (yellow at 80%, red at 90%).
 - `Space g d` (palette: "Devices and remotes") lists disks and phones; `Enter` mounts and opens. `Space g e` unmounts or
   ejects. Needs `udisks2`.
-- `Space g c` ("Connect to server") takes `smb://host/share`, `sftp://user@host/`, `ftp://…` or `dav://…`; if a password is
-  needed you are prompted. Mounted servers show under REMOTE. Needs `gvfs` (`gvfs-smb`, `gvfs-mtp`…).
+- `Space g c` ("Connect to server or cloud drive") lists your saved connections, **New connection…** and **Connect to a URL…**
+  (`smb://host/share`, `sftp://user@host/`, `ftp://…`, `davs://…`). The form covers SFTP, SMB, FTP, WebDAV and NFS (through `gvfs`)
+  and Google Drive, Google Cloud Storage, Dropbox, OneDrive, Box and S3 (through `rclone`). Connected servers and drives show under
+  REMOTE at once; `Space g e` disconnects them; `Ctrl+D` on a saved connection forgets it.
+- **Passwords.** "Save this connection" keeps the host, user and name in `connections.json` (no secrets). "Remember password" is
+  off by default; when on, the password goes only into your system keyring (Secret Service through `secret-tool`, e.g.
+  gnome-keyring or KWallet) and never into a file. With no keyring it is not saved, and you are told. S3 secret keys travel the
+  same way. Google Drive, Dropbox, OneDrive and Box sign in through your browser; rclone keeps the resulting sign-in token in
+  `~/.config/captainfm/rclone.conf` (mode 600, not encrypted), and forgetting the connection removes it.
+- Cloud drives need `rclone` and `fuse3` installed. They mount under `~/.local/share/captainfm/mounts/<name>`.
 
 ## Themes and look
 
@@ -307,6 +315,35 @@ Actions are Lua functions in `main.lua` (or the file named by `"file"`), run in 
 
 An action that **returns a value** hands it to a panel. A panel is a QML `Item` with a `property var api`
 (`api.path`, `api.cursor`, `api.selection()`, `api.theme`, `api.call(plugin, action, callback)`, `api.navigate`, `api.toast`).
+A plugin can also provide **previews** for file types the app does not preview itself:
+
+```json
+{ "name": "Preview: torrents",
+  "previews": [{ "id": "torrent", "ext": ["torrent"], "function": "preview" }] }
+```
+
+`ext` lists file name endings (`torrent`, `tar.gz`); `magic` lists first bytes as hex (`7f454c46`) for files without a telling
+name. The function gets `{ path, name, ext, size, mtime }` and returns `{ text, note }` (shown as text), `{ image, note }`
+(a PNG or JPEG file it made) or nothing, so the next plugin or the built-in preview can try. Two more functions help:
+`cfm.read_bytes(path, max)` reads a file exactly as it is, and `cfm.cache_file(key, ext)` gives a file name in the preview
+cache for something the plugin makes with `cfm.run`.
+
+The rarely used previews ship inside the app this way: torrents, calendars and contacts, SQLite databases, programs,
+certificates, SSH keys and packages, and RTF, DjVu, e-book and comic covers. **Settings > Plugins** switches each one
+on or off. A plugin in your plugins folder with the same name replaces the built-in one.
+
+Ways to switch plugins, from quickest to most permanent:
+
+- **Palette:** "Plugins: turn off …" / "turn on …" for each plugin, and "Plugins: turn all on" / "turn all off".
+- **Command line:** `captainfm --plugins` lists them; `captainfm --plugin torrent off` (or `on`; `all` for every plugin;
+  the short name is the part after `preview-`). Previews follow at once, and a running window picks the change up when you
+  switch back to it.
+- **Settings > Plugins:** one switch per plugin.
+- **At build time:** leave plugins out of the program altogether with `./build.sh --no-plugins`,
+  `./build.sh --without torrent,sqlite` or `./build.sh --only sqlite,system` (plugins: `torrent`, `calendar-contacts`, `sqlite`,
+  `system`, `documents`; `--quick` is the faster development build). The same with cargo:
+  `cargo build --release --no-default-features --features plugin-sqlite,plugin-system`.
+
 Actions and panels appear in the command palette (`Plugin: …`, `toggle panel`) and can be bound to keys. Scripts are
 stopped after 10 seconds. Examples: [`examples/plugins/`](../examples/plugins).
 

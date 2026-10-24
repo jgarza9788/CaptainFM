@@ -47,6 +47,7 @@ Item {
         onEntered: (drag) => hint = Dnd.hint(drag, col.path, col.baseName(col.path), false)
         onPositionChanged: (drag) => hint = Dnd.hint(drag, col.path, col.baseName(col.path), false)
         onDropped: (drop) => Dnd.accept(drop, col.path, false)
+        DropWatch { area: colDrop; destination: col.path; name: col.baseName(col.path); onRefreshed: (h) => colDrop.hint = h }
         Rectangle {
             anchors.fill: parent
             visible: colDrop.containsDrag
@@ -131,6 +132,7 @@ Item {
                 onEntered: (drag) => hint = Dnd.hint(drag, col.childPath(row.name), row.name, false)
                 onPositionChanged: (drag) => hint = Dnd.hint(drag, col.childPath(row.name), row.name, false)
                 onDropped: (drop) => Dnd.accept(drop, col.childPath(row.name), false)
+                DropWatch { area: parent; destination: col.childPath(row.name); name: row.name; onRefreshed: (h) => parent.hint = h }
                 HoverOpen {
                     hovering: parent.containsDrag
                     onOpened: col.openRequested(col.childPath(row.name))

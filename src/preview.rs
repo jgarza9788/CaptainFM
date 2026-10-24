@@ -18,8 +18,9 @@ use crate::preview_extra::*;
 use crate::state::cache_dir;
 use crate::theme::palette;
 
-const MAX_TEXT_BYTES: usize = 96 * 1024;
-const MAX_TEXT_LINES: usize = 600;
+// A preview is a glance, not an editor: a few screens of text is plenty, and highlighting more costs real time.
+const MAX_TEXT_BYTES: usize = 24 * 1024;
+const MAX_TEXT_LINES: usize = 200;
 
 /// Decoded by Qt directly.
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"];
@@ -31,6 +32,11 @@ const ARCHIVE_EXT: &[&str] = &[
 ];
 const AUDIO_EXT: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac", "wma"];
 const VIDEO_EXT: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv"];
+
+/// Load the syntax definitions ahead of the first text preview (it takes about 60 ms).
+pub fn warm_up() {
+    syntaxes();
+}
 
 fn syntaxes() -> &'static SyntaxSet {
     static SET: OnceLock<SyntaxSet> = OnceLock::new();
@@ -284,6 +290,14 @@ fn human_perms(mode: u32) -> String {
 
 /// Build the preview description for `path` as JSON (see QML Inspector for the schema).
 pub fn preview(path: &str) -> Value {
+    let v = build_preview(path);
+    if let Some(kind) = v["kind"].as_str() {
+        crate::state::FeatureUse::mark(&format!("preview:{kind}"));
+    }
+    v
+}
+
+fn build_preview(path: &str) -> Value {
     let Ok(meta) = fs::symlink_metadata(path) else {
         return json!({"kind": "none", "path": path, "message": "Cannot read this item"});
     };
@@ -317,6 +331,21 @@ pub fn preview(path: &str) -> Value {
     }
 
     let mtime = target_meta.mtime();
+    // The rarely used kinds (torrents, calendars, databases, certificates, DjVu, covers...) come from plugins.
+    match crate::plugins::preview(path, &name, &ext, target_meta.len() as i64, mtime) {
+        Some(crate::plugins::Preview::Text { text, note }) => {
+            fill_text(&mut v, &text, "x.txt", false);
+            v["note"] = json!(note);
+            return v;
+        }
+        Some(crate::plugins::Preview::Image { path: image, note }) => {
+            v["kind"] = json!("image");
+            v["url"] = json!(file_url(&image));
+            v["note"] = json!(note);
+            return v;
+        }
+        None => {}
+    }
     let unconvertible = |v: &mut Value, what: &str| {
         v["kind"] = json!("binary");
         v["message"] = json!(format!("{what} preview needs ImageMagick or ffmpeg"));
@@ -360,14 +389,6 @@ pub fn preview(path: &str) -> Value {
         }
         return v;
     }
-    // E-books and comics: show the cover; fall back to the file list.
-    if COVER_EXT.contains(&ext.as_str())
-        && let Some(url) = archive_cover(path, mtime) {
-            v["kind"] = json!("image");
-            v["url"] = json!(url);
-            v["note"] = json!(if ext == "epub" { "e-book cover" } else { "first page" });
-            return v;
-        }
     // Word processors, spreadsheets, presentations: extracted text.
     if OFFICE_EXT.contains(&ext.as_str())
         && let Some(text) = office_text(path, &ext) {
@@ -409,19 +430,6 @@ pub fn preview(path: &str) -> Value {
         v["info"] = json!(font_info(path));
         return v;
     }
-    if matches!(ext.as_str(), "db" | "sqlite" | "sqlite3" | "db3")
-        && let Some(text) = sqlite_summary(path) {
-            fill_text(&mut v, &text, "x.sql", false);
-            v["note"] = json!("SQLite database");
-            return v;
-        }
-    if matches!(ext.as_str(), "pem" | "crt" | "cer")
-        && let Some(text) = certificate_summary(path) {
-            fill_text(&mut v, &text, "x.txt", false);
-            v["note"] = json!("certificate");
-            return v;
-        }
-
     match read_head(path, MAX_TEXT_BYTES) {
         Some(bytes) if !looks_binary(&bytes) => {
             let truncated = bytes.len() >= MAX_TEXT_BYTES;

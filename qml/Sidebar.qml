@@ -14,12 +14,14 @@ Rectangle {
     signal searchRequested()          // icon-only mode: open the search prompt instead
     property string searchValue: ""
     signal connectRequested()
+    signal unpinRequested(string path, string name)
 
     color: Style.bgDark
     clip: true
 
     property var places: []
     property var pinned: []
+    property string armedPath: ""     // a pin that the next unpin press removes
     property var drives: []
     property var remotes: []
 
@@ -69,14 +71,23 @@ Rectangle {
         Backend.listSidebarDevices()
     }
 
-    Component.onCompleted: refresh()
+    Component.onCompleted: { refresh(); Backend.watchDevices() }
 
     // Pins and unpins show up immediately, wherever they were made (keys, menu, other windows).
     Connections {
         target: Backend
         function onBookmarksChanged() { side.refreshPinned() }
     }
-    Timer { interval: 30000; running: true; repeat: true; onTriggered: Backend.listSidebarDevices() }
+    // A new or dropped connection shows up at once instead of at the next poll.
+    Connections {
+        target: Backend
+        function onMountDone(json) { Backend.listSidebarDevices() }
+    }
+    // The list follows mounts as they happen; coming back to the window refreshes the free-space bars.
+    Connections {
+        target: Qt.application
+        function onStateChanged() { if (Qt.application.state === Qt.ApplicationActive) Backend.listSidebarDevices() }
+    }
 
     Connections {
         target: Backend
@@ -92,9 +103,13 @@ Rectangle {
                     if (!wanted) continue
                     const label = mp === "/" ? "root" : (x.label || mp.substring(mp.lastIndexOf("/") + 1))
                     d.push({ label: label.toLowerCase(), glyph: Style.pick("\uf0a0", "■"), path: mp, usage: x.usage, used: x.used, total: x.total })
+                } else if (x.kind === "cloud") {
+                    r.push({ label: x.label, glyph: Style.pick("\uf0c2", "☁"), path: x.path })
                 } else {
-                    const u = x.label.replace(/^[a-z0-9+.-]+:\/\//, "").replace(/^.*@/, "")
-                    r.push({ label: u.split("/")[0].toLowerCase(), glyph: Style.pick("\uf0ac", "⇅"), path: x.path })
+                    // A saved connection's name is shown as it is; a bare URI is cut down to its host.
+                    const named = x.label.indexOf("://") < 0
+                    const u = named ? x.label : x.label.replace(/^[a-z0-9+.-]+:\/\//, "").replace(/^.*@/, "").split("/")[0].toLowerCase()
+                    r.push({ label: u, glyph: Style.pick("\uf0ac", "⇅"), path: x.path })
                 }
             }
             drives = d
@@ -170,9 +185,11 @@ Rectangle {
         Text {
             visible: !side.compact
             anchors { left: glyph.right; leftMargin: Style.pad; right: dropIcon.visible ? dropIcon.left : usage.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter; verticalCenterOffset: -entry.barShift }
-            text: entry.item ? entry.item.label : ""
+            readonly property bool armed: entry.item && entry.item.pin === true && entry.item.path === side.armedPath
+            text: entry.item ? (armed ? "unpin " + entry.item.label + "?" : entry.item.label) : ""
+            textFormat: Text.PlainText      // connection names are typed by the user
             elide: Text.ElideRight
-            color: entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight)
+            color: armed ? Style.red : (entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight))
             font { family: Style.font; pixelSize: Style.fontSize }
         }
         Text {
@@ -212,6 +229,8 @@ Rectangle {
             onEntered: (drag) => update(drag)
             onPositionChanged: (drag) => update(drag)
             onDropped: (drop) => Dnd.accept(drop, entry.item.path, entry.item.trash === true)
+            DropWatch { area: dropHere; destination: entry.item ? entry.item.path : ""; name: entry.item ? entry.item.label : ""
+                        trash: entry.item ? entry.item.trash === true : false; onRefreshed: (h) => dropHere.hint = h }
             HoverOpen {
                 hovering: dropHere.containsDrag && entry.item.trash !== true
                 onOpened: side.navigate(entry.item.path)
@@ -244,7 +263,7 @@ Rectangle {
             onClicked: (m) => {
                 if (m.button === Qt.RightButton) {
                     // Right-click a pinned entry to unpin it.
-                    if (entry.item && entry.item.pin) Backend.toggleBookmark(entry.item.path)
+                    if (entry.item && entry.item.pin) side.unpinRequested(entry.item.path, entry.item.label)
                     return
                 }
                 entry.item.path === "" ? side.connectRequested() : side.navigate(entry.item.path)

@@ -7,6 +7,7 @@ fn main() {
         QmlFile::from("qml/Dnd.qml").singleton(true),
         QmlFile::from("qml/DragGhost.qml"),
         QmlFile::from("qml/HoverOpen.qml"),
+        QmlFile::from("qml/DropWatch.qml"),
         QmlFile::from("qml/Main.qml"),
         QmlFile::from("qml/Pane.qml"),
         QmlFile::from("qml/TabPage.qml"),
@@ -25,8 +26,18 @@ fn main() {
         QmlFile::from("qml/Commands.qml"),
         QmlFile::from("qml/BatchRename.qml"),
         QmlFile::from("qml/Settings.qml"),
+        QmlFile::from("qml/ConnectDialog.qml"),
+        QmlFile::from("qml/ConflictDialog.qml"),
+        QmlFile::from("qml/TransferPanel.qml"),
     ];
-    CxxQtBuilder::new_qml_module(QmlModule::new("CaptainFM").qml_files(qml_files))
-        .files(["src/dir_model.rs", "src/theme.rs", "src/backend.rs"])
-        .build();
+    // SAFETY: the closure only adds one C++ file of ours to the build.
+    unsafe {
+        CxxQtBuilder::new_qml_module(QmlModule::new("CaptainFM").qml_files(qml_files))
+            .files(["src/dir_model.rs", "src/theme.rs", "src/backend.rs"])
+            .cc_builder(|cc| {
+                cc.file("src/cpp/modifiers.cpp");
+            })
+            .build();
+    }
+    println!("cargo:rerun-if-changed=src/cpp/modifiers.cpp");
 }

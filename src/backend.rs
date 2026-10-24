@@ -9,7 +9,12 @@ use std::process::{Command, Stdio};
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
-use crate::{devices, ops, plugins, preview, state};
+use crate::transfer::{self, Ctl, Policy};
+use crate::{devices, ops, plugins, preview, remotes, state};
+
+unsafe extern "C" {
+    fn cfm_held_modifiers() -> i32;
+}
 
 #[cxx_qt::bridge]
 mod qobject {
@@ -28,6 +33,10 @@ mod qobject {
         fn home(&self) -> QString;
         #[qinvokable]
         fn env(&self, name: &QString) -> QString;
+        /// Milliseconds since the program started, for the `CFM_DEBUG` startup timings.
+        #[qinvokable]
+        #[rust_name = "since_start_ms"]
+        fn sinceStartMs(&self) -> i32;
         #[qinvokable]
         #[rust_name = "read_config"]
         fn readConfig(&self, name: &QString) -> QString;
@@ -54,9 +63,27 @@ mod qobject {
         #[rust_name = "mount_root"]
         fn mountRoot(&self, path: &QString) -> QString;
 
-        /// Copy or move `paths` (JSON array) into `dest`. Reports through `opDone`.
+        /// Copy or move `paths` (JSON array) into `dest`. Names that `dest` already has are asked about
+        /// first (`pasteConflicts`); with none, it starts at once. Reports through `opDone`.
         #[qinvokable]
         fn paste(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool);
+        /// Copy or move, answering name clashes with `policy`: "replace", "skip" or "both".
+        #[qinvokable]
+        #[rust_name = "paste_with"]
+        fn pasteWith(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString);
+        /// Every copy and move, as a JSON array with progress, speed and time left.
+        #[qinvokable]
+        fn transfers(&self) -> QString;
+        #[qinvokable]
+        #[rust_name = "transfer_cancel"]
+        fn transferCancel(&self, id: i32);
+        #[qinvokable]
+        #[rust_name = "transfer_pause"]
+        fn transferPause(&self, id: i32, paused: bool);
+        /// Forget the transfers that are over.
+        #[qinvokable]
+        #[rust_name = "transfer_clear"]
+        fn transferClear(&self);
         /// Make symbolic links to `paths` (JSON array) in `dest`. Reports through `opDone`.
         #[qinvokable]
         fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString);
@@ -105,6 +132,34 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "rank_strict"]
         fn rankStrict(&self, items: &QString, query: &QString) -> QString;
+        /// Qt::KeyboardModifier flags held right now (Shift 0x2000000, Ctrl 0x4000000, Alt 0x8000000).
+        #[qinvokable]
+        #[rust_name = "held_modifiers"]
+        fn heldModifiers(&self) -> i32;
+        /// Palette ranking: literal matches, else guesses (word forms, synonyms, typos), with the commands
+        /// chosen before for this query first. `items` and `ids` are parallel JSON arrays.
+        #[qinvokable]
+        #[rust_name = "rank_commands"]
+        fn rankCommands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString;
+        /// Forget what the palette learned from your picks.
+        #[qinvokable]
+        #[rust_name = "forget_palette_history"]
+        fn forgetPaletteHistory(&self);
+        /// Note that a feature (a command id) was used today. Kept on this computer; see `state::FeatureUse`.
+        #[qinvokable]
+        #[rust_name = "mark_feature"]
+        fn markFeature(&self, id: &QString);
+        /// How often each feature was used in the last four weeks, as JSON.
+        #[qinvokable]
+        #[rust_name = "feature_report"]
+        fn featureReport(&self) -> QString;
+        #[qinvokable]
+        #[rust_name = "forget_feature_use"]
+        fn forgetFeatureUse(&self);
+        /// Remember that `id` was chosen for what was typed in the palette.
+        #[qinvokable]
+        #[rust_name = "record_choice"]
+        fn recordChoice(&self, query: &QString, id: &QString);
         #[qinvokable]
         #[rust_name = "copy_text"]
         fn copyText(&self, text: &QString);
@@ -207,11 +262,19 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "index_paths"]
         fn indexPaths(&self) -> i32;
+        /// Start watching for mounts and unmounts (once); each change asks for a new `sidebarDevices`.
+        #[qinvokable]
+        #[rust_name = "watch_devices"]
+        fn watchDevices(self: Pin<&mut Self>);
         /// Disks and remotes for the sidebar; answered by `sidebarDevices`.
         #[qinvokable]
         #[rust_name = "list_sidebar_devices"]
         fn listSidebarDevices(self: Pin<&mut Self>);
 
+        /// A copy or move was queued, so the transfer list should start refreshing.
+        #[qsignal]
+        #[cxx_name = "transferStarted"]
+        fn transfer_started(self: Pin<&mut Self>);
         #[qsignal]
         #[cxx_name = "sidebarDevices"]
         fn sidebar_devices(self: Pin<&mut Self>, json: QString);
@@ -232,6 +295,27 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "connect_remote"]
         fn connectRemote(self: Pin<&mut Self>, url: &QString);
+        /// Connect a profile from the connection form: a JSON profile plus `password` and `save`;
+        /// answered by `mountDone`.
+        #[qinvokable]
+        #[rust_name = "connect_profile"]
+        fn connectProfile(self: Pin<&mut Self>, json: &QString);
+        /// Connect a saved connection by id, using the keyring password if one was kept.
+        #[qinvokable]
+        #[rust_name = "connect_saved"]
+        fn connectSaved(self: Pin<&mut Self>, id: &QString);
+        /// Saved connections as a JSON array (never includes passwords).
+        #[qinvokable]
+        #[rust_name = "saved_connections"]
+        fn savedConnections(&self) -> QString;
+        /// Forget a saved connection and its keyring password; answered by `mountDone`.
+        #[qinvokable]
+        #[rust_name = "delete_connection"]
+        fn deleteConnection(self: Pin<&mut Self>, id: &QString);
+        /// Save changes to a saved connection (JSON profile with `id` and `password`); answered by `mountDone`.
+        #[qinvokable]
+        #[rust_name = "update_connection"]
+        fn updateConnection(self: Pin<&mut Self>, json: &QString);
         /// Reply to `credentialsNeeded`; `cancel` aborts the connection.
         #[qinvokable]
         #[rust_name = "answer_prompt"]
@@ -247,6 +331,10 @@ mod qobject {
         #[cxx_name = "credentialsNeeded"]
         fn credentials_needed(self: Pin<&mut Self>, prompt: QString);
 
+        /// A paste would hit names `dest` already has: `{paths, dest, cut, names}`. Answer with `pasteWith`.
+        #[qsignal]
+        #[cxx_name = "pasteConflicts"]
+        fn paste_conflicts(self: Pin<&mut Self>, json: QString);
         #[qsignal]
         #[cxx_name = "opDone"]
         fn op_done(self: Pin<&mut Self>, result: QString);
@@ -389,6 +477,10 @@ impl qobject::Backend {
         q(&state::home().to_string_lossy())
     }
 
+    fn since_start_ms(&self) -> i32 {
+        crate::START.get().map_or(0, |t| t.elapsed().as_millis() as i32)
+    }
+
     fn env(&self, name: &QString) -> QString {
         q(&std::env::var(name.to_string()).unwrap_or_default())
     }
@@ -434,6 +526,13 @@ impl qobject::Backend {
         }));
     }
 
+    /// Queue a copy or move that shows up in the transfer list.
+    fn start_paste(mut self: Pin<&mut Self>, paths: Vec<String>, dest: String, cut: bool, policy: Policy) {
+        let ctl = Ctl::register(if cut { "Moved" } else { "Copied" }, &dest, paths.len());
+        self.as_mut().transfer_started();
+        self.run_op(move || ops::paste_tracked(&ctl, &paths, &dest, cut, policy));
+    }
+
     fn link(self: Pin<&mut Self>, paths: &QString, dest: &QString) {
         let (paths, dest) = (parse_paths(paths), dest.to_string());
         self.run_op(move || ops::link(&paths, &dest));
@@ -444,9 +543,35 @@ impl qobject::Backend {
         self.run_op(move || ops::extract(&paths, into_folder));
     }
 
-    fn paste(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool) {
-        let (paths, dest) = (parse_paths(paths), dest.to_string());
-        self.run_op(move || ops::paste(&paths, &dest, cut));
+    fn paste(mut self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool) {
+        let (list, dest) = (parse_paths(paths), dest.to_string());
+        let names = ops::conflicts(&list, &dest);
+        if names.is_empty() {
+            self.start_paste(list, dest, cut, Policy::Both);
+        } else {
+            let json = serde_json::json!({"paths": list, "dest": dest, "cut": cut, "names": names});
+            self.as_mut().paste_conflicts(q(&json.to_string()));
+        }
+    }
+
+    fn paste_with(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString) {
+        self.start_paste(parse_paths(paths), dest.to_string(), cut, Policy::parse(&policy.to_string()));
+    }
+
+    fn transfers(&self) -> QString {
+        q(&transfer::snapshot())
+    }
+
+    fn transfer_cancel(&self, id: i32) {
+        transfer::cancel(id);
+    }
+
+    fn transfer_pause(&self, id: i32, paused: bool) {
+        transfer::pause(id, paused);
+    }
+
+    fn transfer_clear(&self) {
+        transfer::clear_finished();
     }
 
     fn trash(self: Pin<&mut Self>, paths: &QString) {
@@ -571,10 +696,36 @@ impl qobject::Backend {
     }
 
     fn list_sidebar_devices(self: Pin<&mut Self>) {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        // One listing at a time: a hung network mount must not pile up threads. A request that comes in
+        // meanwhile is answered by one more listing afterwards.
+        static RUNNING: AtomicBool = AtomicBool::new(false);
+        static AGAIN: AtomicBool = AtomicBool::new(false);
+        if RUNNING.swap(true, Ordering::SeqCst) {
+            AGAIN.store(true, Ordering::SeqCst);
+            return;
+        }
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
-            let json = serde_json::to_string(&devices::list()).unwrap_or_else(|_| "[]".into());
-            let _ = qt_thread.queue(move |b| b.sidebar_devices(q(&json)));
+            loop {
+                AGAIN.store(false, Ordering::SeqCst);
+                let json = serde_json::to_string(&devices::list()).unwrap_or_else(|_| "[]".into());
+                let _ = qt_thread.queue(move |b| b.sidebar_devices(q(&json)));
+                if !AGAIN.load(Ordering::SeqCst) {
+                    RUNNING.store(false, Ordering::SeqCst);
+                    return;
+                }
+            }
+        });
+    }
+
+    fn watch_devices(self: Pin<&mut Self>) {
+        static STARTED: std::sync::Once = std::sync::Once::new();
+        let qt_thread = self.qt_thread();
+        STARTED.call_once(|| {
+            devices::watch_changes(move || {
+                let _ = qt_thread.queue(|b| b.list_sidebar_devices());
+            });
         });
     }
 
@@ -606,12 +757,43 @@ impl qobject::Backend {
         if kind == "disk" {
             self.report_mount(move || devices::eject_disk(&device_path, removable));
         } else {
-            self.report_mount(move || devices::unmount_remote(&path));
+            // A gvfs mount with no FUSE directory has only its uri to unmount by.
+            let target = if path.is_empty() { field("uri") } else { path };
+            self.report_mount(move || remotes::unmount(&target));
         }
     }
 
     fn connect_remote(self: Pin<&mut Self>, url: &QString) {
         self.mount_with_prompts(url.to_string());
+    }
+
+    fn connect_profile(self: Pin<&mut Self>, json: &QString) {
+        let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
+        let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
+        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        let save = v.get("save").and_then(|p| p.as_bool()).unwrap_or(false);
+        self.connect_job(move |ask| remotes::connect(profile, password, save, ask));
+    }
+
+    fn connect_saved(self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        self.connect_job(move |ask| remotes::connect_saved(&id, ask));
+    }
+
+    fn saved_connections(&self) -> QString {
+        q(&serde_json::to_string(&remotes::load()).unwrap_or_else(|_| "[]".into()))
+    }
+
+    fn delete_connection(self: Pin<&mut Self>, id: &QString) {
+        let id = id.to_string();
+        self.report_mount(move || remotes::delete(&id));
+    }
+
+    fn update_connection(self: Pin<&mut Self>, json: &QString) {
+        let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
+        let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
+        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        self.report_mount(move || remotes::update(profile, &password));
     }
 
     fn answer_prompt(&self, text: &QString, cancel: bool) {
@@ -629,11 +811,19 @@ impl qobject::Backend {
 
     /// Mount a GVfs URI, asking the UI for credentials when gio prompts for them.
     fn mount_with_prompts(self: Pin<&mut Self>, uri: String) {
+        self.connect_job(move |ask| devices::mount_uri(&uri, ask));
+    }
+
+    /// Run a connect job on a thread; `ask` relays credential prompts to the UI and waits for the answer.
+    fn connect_job(
+        self: Pin<&mut Self>,
+        work: impl FnOnce(&dyn Fn(&str) -> Option<String>) -> devices::MountResult + Send + 'static,
+    ) {
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
             let answers = devices::begin_prompting();
             let asker = qt_thread.clone();
-            let result = devices::mount_uri(&uri, |prompt| {
+            let result = work(&|prompt: &str| {
                 let prompt = prompt.to_owned();
                 let _ = asker.queue(move |b| b.credentials_needed(q(&prompt)));
                 answers.recv_timeout(std::time::Duration::from_secs(180)).ok().flatten()
@@ -665,6 +855,47 @@ impl qobject::Backend {
         let items: Vec<String> = serde_json::from_str(&items.to_string()).unwrap_or_default();
         let order = rank_items(&items, query.to_string().trim(), false);
         q(&serde_json::to_string(&order).unwrap_or_else(|_| "[]".into()))
+    }
+
+    fn held_modifiers(&self) -> i32 {
+        // SAFETY: a plain getter defined in src/cpp/modifiers.cpp.
+        unsafe { cfm_held_modifiers() }
+    }
+
+    fn rank_commands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString {
+        let items: Vec<String> = serde_json::from_str(&items.to_string()).unwrap_or_default();
+        let ids: Vec<String> = serde_json::from_str(&ids.to_string()).unwrap_or_default();
+        let query = query.to_string();
+        let query = query.trim();
+        // Regular expressions keep the plain ranking.
+        let order = if query.starts_with("re:") || (query.len() > 1 && query.starts_with('/') && query.ends_with('/')) {
+            rank_items(&items, query, false)
+        } else {
+            let usage = if learn { state::Usage::load() } else { state::Usage::default() };
+            crate::fuzzy::predict_rank(&items, &ids, query, &usage)
+        };
+        q(&serde_json::to_string(&order).unwrap_or_else(|_| "[]".into()))
+    }
+
+    fn record_choice(&self, query: &QString, id: &QString) {
+        let (query, id) = (query.to_string(), id.to_string());
+        state::Usage::update(|u| u.record(&query, &id, state::now()));
+    }
+
+    fn mark_feature(&self, id: &QString) {
+        state::FeatureUse::mark(&id.to_string());
+    }
+
+    fn feature_report(&self) -> QString {
+        q(&state::FeatureUse::report((state::now() / 86_400) as u32).to_string())
+    }
+
+    fn forget_feature_use(&self) {
+        state::FeatureUse::forget();
+    }
+
+    fn forget_palette_history(&self) {
+        state::Usage::forget();
     }
 
     fn copy_text(&self, text: &QString) {

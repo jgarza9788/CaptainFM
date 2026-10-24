@@ -334,6 +334,7 @@ FocusScope {
         onEntered: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
         onPositionChanged: (drag) => hint = Dnd.hint(drag, dir.path, pane.baseName(dir.path) || "/", false)
         onDropped: (drop) => Dnd.accept(drop, dir.path, false)
+        DropWatch { area: paneDrop; destination: dir.path; name: pane.baseName(dir.path) || "/"; onRefreshed: (h) => paneDrop.hint = h }
         Rectangle {
             anchors.fill: parent
             visible: paneDrop.containsDrag
@@ -713,6 +714,7 @@ FocusScope {
                 onEntered: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onPositionChanged: (drag) => hint = Dnd.hint(drag, row.fullPath, row.name, false)
                 onDropped: (drop) => Dnd.accept(drop, row.fullPath, false)
+                DropWatch { area: parent; destination: row.fullPath; name: row.name; onRefreshed: (h) => parent.hint = h }
                 HoverOpen {
                     hovering: parent.containsDrag
                     onOpened: {
@@ -896,6 +898,41 @@ FocusScope {
                     elide: Text.ElideRight
                     color: cell.nameColor
                     font { family: Style.font; pixelSize: Style.fontSize }
+                }
+            }
+
+            DragHandler {
+                target: null
+                onActiveChanged: {
+                    pane.dragToken++
+                    if (active) pane.beginDrag(cell.index, cell.fullPath, cell.isDir)
+                }
+            }
+
+            // A folder takes a drop, and opens when a drag rests on it, like a row in the list.
+            DropArea {
+                anchors.fill: parent
+                enabled: cell.isDir
+                property var hint: ({ kind: "", text: "" })
+                onEntered: (drag) => hint = Dnd.hint(drag, cell.fullPath, cell.name, false)
+                onPositionChanged: (drag) => hint = Dnd.hint(drag, cell.fullPath, cell.name, false)
+                onDropped: (drop) => Dnd.accept(drop, cell.fullPath, false)
+                DropWatch { area: parent; destination: cell.fullPath; name: cell.name; onRefreshed: (h) => parent.hint = h }
+                HoverOpen {
+                    hovering: parent.containsDrag
+                    onOpened: pane.navigate(cell.fullPath)
+                }
+                Rectangle {
+                    anchors { fill: parent; margins: pane.icons ? 3 : 1 }
+                    radius: 6
+                    visible: parent.containsDrag
+                    color: Style.alpha(Style.accent, 0.25)
+                }
+                DropChip {
+                    visible: parent.containsDrag && parent.hint.kind !== ""
+                    hint: parent.hint
+                    anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: Style.pad / 2 }
+                    z: 8
                 }
             }
 

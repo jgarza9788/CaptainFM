@@ -22,6 +22,7 @@ Rectangle {
 
     // Playback controls, shared by the on-screen buttons and the hotkey commands.
     function togglePlayback() { if (!hasMedia) return; if (player.playbackState === MediaPlayer.PlayingState) player.pause(); else player.play() }
+    function play() { if (hasMedia && player.playbackState !== MediaPlayer.PlayingState) player.play() }
     function seekBy(ms) {
         if (!hasMedia || player.duration <= 0) return
         media.scrubbed = true

@@ -1,0 +1,7 @@
+{
+  "name": "Preview: calendars and contacts",
+  "previews": [
+    { "id": "calendar", "ext": ["ics"], "function": "calendar" },
+    { "id": "contacts", "ext": ["vcf"], "function": "contacts" }
+  ]
+}

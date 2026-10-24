@@ -22,6 +22,7 @@ QtObject {
     function run(id, n, has) {
         const c = byId(id)
         if (!c) { app.toast("Unknown command: " + id, "error"); return }
+        Backend.markFeature(id)
         c.run(n ?? 1, has ?? false)
     }
 
@@ -230,12 +231,14 @@ QtObject {
           } },
         { id: "nav.parent", title: "Go to parent folder", fp: ["<BS>", "<A-Up>"], keys: ["<BS>", "-"],
           run: (n) => { const p = pane(); if (p) for (let i = 0; i < n; i++) p.goUp() } },
-        { id: "nav.open", title: "Open / enter / expand", fp: ["<Right>"], keys: ["l", "<Right>"],
+        { id: "nav.open", title: "Open / enter / expand (Miller: preview or play a file)", fp: ["<Right>"], keys: ["l", "<Right>"],
           run: () => {
               const p = pane(); if (!p) return
               if (p.tree) { p.treeRight(); return }
               if (p.grid && app.keymap === "fp") { p.moveHorizontal(1); return }
               if (app.pickMode && p.currentPath !== "" && !p.currentIsDir) { app.pickEnterFile(); return }
+              // Miller view: a file has no column to open, so Right goes to its preview (Enter opens the file).
+              if (p.miller && p.currentPath !== "" && !p.currentIsDir && !p.deep) { app.inspectorOn = true; app.inspector.play(); return }
               p.openCurrent(p.deep && !p.currentIsDir)
           } },
         { id: "nav.enter", title: "Open / enter folder", fp: ["<CR>"], keys: ["<CR>"],
@@ -258,7 +261,7 @@ QtObject {
         { id: "nav.documents", title: "Go to Documents", keys: ["g D"], run: () => go(Backend.home() + "/Documents") },
         { id: "nav.config", title: "Go to ~/.config", keys: ["g c"], run: () => go(Backend.home() + "/.config") },
         { id: "nav.trash", title: "Go to Trash", keys: ["g b"], run: () => go(Backend.home() + "/.local/share/Trash/files") },
-        { id: "nav.jump", title: "Jump to folder…", fp: ["<C-l>", "<C-g>", "<A-d>"], keys: ["z", "<C-l>", "<Space> g j"], run: () => app.jump.open("") },
+        { id: "nav.jump", title: "Jump to folder…", words: ["goto", "cd"], fp: ["<C-l>", "<C-g>", "<A-d>"], keys: ["z", "<C-l>", "<Space> g j"], run: () => app.jump.open("") },
         { id: "nav.reload", title: "Reload folder", fp: ["<F5>", "<C-r>"], keys: ["<Space> v r", "<C-S-r>"], run: () => { const p = pane(); if (p) p.dir.reload() } },
 
         { id: "sel.toggle", title: "Toggle mark and move down", fp: ["<Space>", "<C-Space>"], keys: ["m"],
@@ -282,7 +285,7 @@ QtObject {
               app.newTab(parent)
               Qt.callLater(() => { if (app.pane) app.pane.pendingName = name })
           } },
-        { id: "keymap.toggle", title: "Switch keymap: File Pilot (Ctrl) / Vim (modal)", keys: ["<Space> k"], fp: ["<C-S-k>"],
+        { id: "keymap.toggle", title: "Switch keymap: File Pilot (Ctrl) / Vim (modal)", words: ["vim", "modal", "file pilot"], keys: ["<Space> k"], fp: ["<C-S-k>"],
           run: () => app.setKeymap(app.keymap === "fp" ? "vim" : "fp") },
         { id: "sel.visual", title: "Visual selection mode", keys: ["v"],
           run: () => { const p = pane(); if (!p) return; if (p.visualMode) p.endVisual(); else p.startVisual() } },
@@ -317,14 +320,14 @@ QtObject {
           run: () => { const p = pane(); if (p) { Backend.copyText(p.dir.path); app.toast("Copied folder path") } } },
         { id: "file.terminal", title: "Open terminal here", fp: ["<C-`>"], keys: ["!", "<Space> T"],
           run: () => { const p = pane(); if (p) Backend.openTerminal(p.deep ? p.parentOf(p.currentPath) : p.dir.path) } },
-        { id: "file.batchRename", title: "Batch rename…", fp: ["<C-S-r>"], keys: ["R", "<Space> r r"], run: () => app.batchRename.open() },
+        { id: "file.batchRename", title: "Batch rename…", words: ["bulk", "mass"], fp: ["<C-S-r>"], keys: ["R", "<Space> r r"], run: () => app.batchRename.open() },
         { id: "file.copyOther", title: "Copy to other pane", fp: ["<F7>"], keys: ["<F5>", "<Space> w y"], run: () => sendToOther(false) },
         { id: "file.moveOther", title: "Move to other pane", fp: ["<F8>"], keys: ["<F6>", "<Space> w m"], run: () => sendToOther(true) },
 
         { id: "view.filter", title: "Filter this folder", fp: ["<F3>"], keys: ["/"], run: () => filter() },
-        { id: "view.hidden", title: "Toggle hidden files", fp: ["<C-h>"], keys: [".", "<C-h>", "<Space> v h"],
+        { id: "view.hidden", title: "Toggle hidden files", words: ["dotfiles"], fp: ["<C-h>"], keys: [".", "<C-h>", "<Space> v h"],
           run: () => { app.showHidden = !app.showHidden; app.toast(app.showHidden ? "Showing hidden files" : "Hiding hidden files") } },
-        { id: "view.inspector", title: "Toggle inspector", fp: ["<C-i>"], keys: ["i", "<Space> v i"],
+        { id: "view.inspector", title: "Toggle preview pane (inspector)", words: ["preview", "right", "inspector", "side panel", "info"], fp: ["<C-i>"], keys: ["i", "<Space> v i"],
           run: () => { app.inspectorOn = !app.inspectorOn } },
         { id: "view.zoomIn", title: "Zoom in", fp: ["<C-=>", "<C-+>", "<KP-+>"], keys: ["<C-=>", "<C-+>", "<Space> v +", "<KP-+>"], run: () => zoom(0.1) },
         { id: "view.zoomOut", title: "Zoom out", fp: ["<C-->", "<KP-->"], keys: ["<C-->", "<Space> v -", "<KP-->"], run: () => zoom(-0.1) },
@@ -354,9 +357,9 @@ QtObject {
           } },
         { id: "tab.list", title: "Search open tabs…", keys: ["<Space> t t"], fp: ["<A-t>", "<C-S-t>"], run: () => app.tabsPicker() },
         { id: "media.toggle", title: "Media: play / pause", keys: ["<Space> m p"], fp: ["<C-m>"], run: () => app.inspector.togglePlayback() },
-        { id: "media.seekBack", title: "Media: back 10 seconds", keys: ["<Space> m h"], fp: ["<C-Left>"], run: () => app.inspector.seekBy(-10000) },
-        { id: "media.seekFwd", title: "Media: forward 10 seconds", keys: ["<Space> m l"], fp: ["<C-Right>"], run: () => app.inspector.seekBy(10000) },
-        { id: "media.mute", title: "Media: mute / unmute", keys: ["<Space> m m"], fp: ["<C-S-m>"], run: () => app.inspector.toggleMute() },
+        { id: "media.seekBack", title: "Media: back 10 seconds", words: ["rewind"], keys: ["<Space> m h"], fp: ["<C-Left>"], run: () => app.inspector.seekBy(-10000) },
+        { id: "media.seekFwd", title: "Media: forward 10 seconds", words: ["fast forward"], keys: ["<Space> m l"], fp: ["<C-Right>"], run: () => app.inspector.seekBy(10000) },
+        { id: "media.mute", title: "Media: mute / unmute", words: ["silence"], keys: ["<Space> m m"], fp: ["<C-S-m>"], run: () => app.inspector.toggleMute() },
         { id: "media.loop", title: "Media: loop on / off", keys: ["<Space> m r"], fp: [], run: () => app.inspector.toggleLoop() },
         { id: "view.animations", title: "Toggle animations", fp: [], keys: ["<Space> v a"],
           run: () => { Style.animations = !Style.animations; app.toast(Style.animations ? "Animations on" : "Animations off"); app.markDirty() } },
@@ -368,7 +371,7 @@ QtObject {
               app.toast(next < 1 ? "Compact spacing" : (next > 1 ? "Roomy spacing" : "Normal spacing"))
               app.markDirty()
           } },
-        { id: "menu.context", title: "Context menu (actions for the item)", fp: ["<Menu>", "<S-F10>"], keys: ["<Space> c", "<S-F10>", "<Menu>"], run: () => app.contextMenu() },
+        { id: "menu.context", title: "Context menu (actions for the item)", words: ["right click"], fp: ["<Menu>", "<S-F10>"], keys: ["<Space> c", "<S-F10>", "<Menu>"], run: () => app.contextMenu() },
         { id: "tab.moveLeft", title: "Move tab left", fp: ["<C-S-PageUp>"], keys: ["<Space> t H"], run: () => app.moveTab(app.tabIndex, app.tabIndex - 1) },
         { id: "tab.moveRight", title: "Move tab right", fp: ["<C-S-PageDown>"], keys: ["<Space> t L"], run: () => app.moveTab(app.tabIndex, app.tabIndex + 1) },
         { id: "pane.swap", title: "Swap pane with the next one", fp: ["<C-S-x>"], keys: ["<Space> w x"],
@@ -382,16 +385,12 @@ QtObject {
         { id: "pin.folder", title: "Pin / unpin this folder", fp: ["<C-b>"], keys: ["<Space> p f"],
           run: () => {
               const p = pane(); if (!p) return
-              const on = Backend.toggleBookmark(p.dir.path)
-              app.toast(on ? "Pinned " + p.pretty(p.dir.path) : "Unpinned")
-              app.pinsChanged()
+              app.togglePinned(p.dir.path, p.pretty(p.dir.path))
           } },
         { id: "pin.item", title: "Pin / unpin the item under the cursor", keys: ["<Space> p i"], fp: ["<C-d>"],
           run: () => {
               const p = pane(); if (!p || p.currentPath === "") return
-              const on = Backend.toggleBookmark(p.currentPath)
-              app.toast(on ? "Pinned " + p.baseName(p.currentPath) : "Unpinned " + p.baseName(p.currentPath))
-              app.pinsChanged()
+              app.togglePinned(p.currentPath, p.baseName(p.currentPath))
           } },
 
         { id: "tab.new", title: "New tab", fp: ["<C-t>"], keys: ["<C-t>", "<Space> t n"],
@@ -413,7 +412,7 @@ QtObject {
           run: () => { if (app.tab) app.tab.focusPane(app.tab.activeIndex + 1) } },
         { id: "pane.prev", title: "Focus previous pane", fp: ["<S-Tab>"], keys: ["<S-Tab>", "<C-w> h", "<Space> w h"],
           run: () => { if (app.tab) app.tab.focusPane(app.tab.activeIndex - 1) } },
-        { id: "pane.splitV", title: "Split: add pane beside", fp: ["<C-\\>"], keys: ["<C-w> v", "<Space> w v"],
+        { id: "pane.splitV", title: "Split: add pane beside", words: ["dual pane", "side by side"], fp: ["<C-\\>"], keys: ["<C-w> v", "<Space> w v"],
           run: () => { const t = app.tab; if (!t) return; t.layoutMode = "columns"; if (!t.addPane(pane().dir.path)) app.toast("At most 4 panes", "warn") } },
         { id: "pane.splitH", title: "Split: add pane below", fp: ["<C-|>"], keys: ["<C-w> s", "<Space> w s"],
           run: () => { const t = app.tab; if (!t) return; t.layoutMode = "rows"; if (!t.addPane(pane().dir.path)) app.toast("At most 4 panes", "warn") } },
@@ -425,11 +424,34 @@ QtObject {
         { id: "layout.load", title: "Load layout…", keys: ["<Space> l l"], run: () => app.loadLayoutPicker() },
 
         { id: "devices.open", title: "Devices and remotes…", keys: ["<Space> g d"], run: () => app.devicesPicker("open") },
-        { id: "devices.eject", title: "Unmount / eject device…", keys: ["<Space> g e"], run: () => app.devicesPicker("eject") },
-        { id: "remote.connect", title: "Connect to server… (smb, sftp, ftp, dav)", keys: ["<Space> g c"], run: () => app.connectPrompt() },
+        { id: "devices.eject", title: "Unmount / disconnect / eject device…", words: ["unconnect"], keys: ["<Space> g e"], run: () => app.devicesPicker("eject") },
+        { id: "remote.connect", title: "Connect to server or cloud drive…", words: ["login", "add server"], keys: ["<Space> g c"], run: () => app.connectPrompt() },
+        { id: "remote.edit", title: "Edit connection…", words: ["view connection", "rename connection", "saved connections", "manage connections", "connection settings", "properties", "forget connection", "change password"],
+          run: () => app.manageConnections() },
+        { id: "remote.sftp", title: "Connect: SFTP (SSH)…", words: ["ssh"], run: () => app.connectPicker(["sftp"]) },
+        { id: "remote.smb", title: "Connect: SMB / Windows share…", words: ["samba", "windows", "nas"], run: () => app.connectPicker(["smb"]) },
+        { id: "remote.ftp", title: "Connect: FTP…", run: () => app.connectPicker(["ftp"]) },
+        { id: "remote.webdav", title: "Connect: WebDAV…", words: ["nextcloud", "owncloud"], run: () => app.connectPicker(["davs", "dav"]) },
+        { id: "remote.nfs", title: "Connect: NFS…", run: () => app.connectPicker(["nfs"]) },
+        { id: "remote.gdrive", title: "Connect: Google Drive…", words: ["google"], run: () => app.connectPicker(["gdrive"]) },
+        { id: "remote.gcs", title: "Connect: Google Cloud Storage…", words: ["bucket", "google cloud"], run: () => app.connectPicker(["gcs"]) },
+        { id: "remote.dropbox", title: "Connect: Dropbox…", run: () => app.connectPicker(["dropbox"]) },
+        { id: "remote.onedrive", title: "Connect: OneDrive…", words: ["microsoft"], run: () => app.connectPicker(["onedrive"]) },
+        { id: "remote.box", title: "Connect: Box…", run: () => app.connectPicker(["box"]) },
+        { id: "remote.s3", title: "Connect: S3 or compatible…", words: ["aws", "amazon", "bucket"], run: () => app.connectPicker(["s3"]) },
+        { id: "transfers.toggle", title: "Show transfers", words: ["copy progress", "queue", "downloads", "hide transfers"], keys: ["<Space> x x"], run: () => app.transfers.toggle() },
+        { id: "transfers.pause", title: "Pause or resume transfers", words: ["copy", "move"], keys: ["<Space> x p"], run: () => app.transfers.pauseAll() },
+        { id: "transfers.cancel", title: "Cancel transfers", words: ["stop copy", "abort"], keys: ["<Space> x c"], run: () => app.transfers.cancelAll() },
+        { id: "plugins.allOn", title: "Plugins: turn all on", words: ["enable plugins"], run: () => app.setAllPlugins(true) },
+        { id: "plugins.allOff", title: "Plugins: turn all off", words: ["disable plugins", "lean", "minimal"], run: () => app.setAllPlugins(false) },
+        { id: "usage.show", title: "Show feature use…", words: ["statistics", "which features", "what do i use", "rarely used"], run: () => app.showFeatureUse() },
+        { id: "usage.forget", title: "Forget feature use", words: ["clear statistics", "reset usage"],
+          run: () => { Backend.forgetFeatureUse(); app.toast("Feature use cleared") } },
+        { id: "palette.forget", title: "Forget palette history", words: ["clear history", "reset learning"],
+          run: () => { Backend.forgetPaletteHistory(); app.toast("Palette history cleared") } },
         { id: "app.palette", title: "Command palette", fp: ["<C-p>", "<C-S-p>", "<C-k>"], keys: ["<Space> <Space>", ":", "<C-p>"], run: () => app.openPalette() },
         { id: "app.settings", title: "Settings…", fp: ["<C-,>"], keys: ["<Space> ,"], run: () => app.openSettings() },
-        { id: "app.keys", title: "Show key bindings file", keys: ["<Space> ?"],
+        { id: "app.keys", title: "Show key bindings file", words: ["shortcuts", "hotkeys", "keybindings"], keys: ["<Space> ?"],
           run: () => { Backend.openPath(Backend.home() + "/.config/captainfm/keys.json"); } },
         { id: "app.quit", title: "Quit", fp: ["<C-q>"], keys: ["<C-q>", "Z Z", "<Space> q"], run: () => app.quit() }
     ]

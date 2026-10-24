@@ -20,7 +20,8 @@ The feature set is inspired by [File Pilot](https://filepilot.tech/) on Windows;
   controls, audio, PDFs, e-books, Office documents, Markdown, CSV tables, SQLite, certificates, fonts, archives.
 - **Tabs, up to four panes, saved layouts**; list, tree, Miller, icons (thumbnails) and columns views;
   group by type, date or size.
-- **Pins, jump bar, batch rename, undo/redo**, devices and remotes (SMB, SFTP, MTP), drag and drop.
+- **Pins, jump bar, batch rename, undo/redo**, devices and remotes (SMB, SFTP, FTP, WebDAV, MTP, and cloud drives through rclone) with saved connections and keyring-stored passwords, drag and drop.
+- **Transfers you can watch.** Copies and moves show progress, speed and time left in a panel, can be paused or cancelled (`Space x p`, `Space x c`, `Space x x` shows the panel), and ask whether to replace, skip or keep both on name clashes.
 - **Fits Omarchy:** live theme sync, your system font, frameless, sane at half-screen tile width, a
   file-picker portal (Open/Save dialogs of other apps), drag and drop with other apps, and `FileManager1`.
 - **Settings for everything** (`Ctrl-,`): start behavior, keys, view defaults, font, units, drop behavior, terminal.
@@ -42,12 +43,25 @@ Every color comes from the active Omarchy theme:
 
 Needs Rust, Qt 6 (`qt6-declarative`, `qt6-multimedia`) and a C++ toolchain. Optional helpers unlock more previews
 and features: `ffmpeg`, `imagemagick`, `poppler`, `libarchive` (`bsdtar`), `sqlite`, `openssl`, `wl-clipboard`,
-`gvfs`, `udisks2`.
+`gvfs`, `udisks2`, and `rclone` + `libsecret` for cloud drives and remembered passwords.
 
 ```sh
 git clone https://github.com/jgarza9788/CaptainFM.git
 cd CaptainFM
-./build.sh          # release build; installs ~/.local/bin/captainfm (+ cfm alias), desktop entry and icon
+./build.sh          # optimised build; installs ~/.local/bin/captainfm (+ cfm alias), desktop entry and icon
+```
+
+Leave built-in plugins out of the program (they are the rarely used previews; names: `torrent`, `calendar-contacts`,
+`sqlite`, `system`, `documents`):
+
+```sh
+./build.sh --quick                    # faster development build (about 1 minute instead of 6)
+./build.sh --no-plugins               # none of the built-in plugins
+./build.sh --without torrent,sqlite   # everything except these
+./build.sh --only sqlite,system       # just these
+./build.sh --dry-run --only sqlite    # show the cargo command and stop
+# or with cargo directly:
+cargo build --release --no-default-features --features plugin-sqlite,plugin-system
 ```
 
 CaptainFM does not change your default file manager or keybindings on its own. To make it the folder handler
@@ -89,9 +103,22 @@ captainfm --install-dbus                let other apps open folders in CaptainFM
 ## Configuration and plugins
 
 Settings, key overrides, aliases, layouts and plugins live under `~/.config/captainfm/`; pins and recent folders
-under `~/.local/share/captainfm/`. Plugins add Lua actions and QML side panels; two examples are in
+under `~/.local/share/captainfm/`. Plugins add Lua actions, QML side panels and file previews (the rarely used previews are built-in plugins you can switch off); two examples are in
 [`examples/plugins/`](examples/plugins). Details: [configuration files](docs/HOWTO.md#configuration-files) and
 [plugins](docs/HOWTO.md#plugins).
+
+Switching the built-in plugins on and off (a plugin that is off costs nothing and its previews fall back to plain text):
+
+```sh
+captainfm --plugins                   # list plugins, on or off
+captainfm --plugin torrent off        # switch one off (short name, or the full id preview-torrent)
+captainfm --plugin torrent on
+captainfm --plugin all off            # all of them; `all on` brings them back
+```
+
+Inside the app: open the command palette (`Ctrl-P`) and type `plugins` for "Plugins: turn off …" / "turn on …" per plugin
+and "turn all on" / "turn all off", or use **Settings > Plugins** (`Ctrl-,`). A running window picks up a change made
+on the command line when you switch back to it.
 
 ## Development
 

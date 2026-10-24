@@ -13,6 +13,7 @@ use std::sync::Mutex;
 use serde::Serialize;
 
 use crate::state::home;
+use crate::transfer::{Ctl, Policy, State};
 
 #[derive(Clone, Debug)]
 enum Step {
@@ -45,6 +46,9 @@ pub struct Outcome {
     pub errors: Vec<String>,
     /// Final paths of things created/moved, so the UI can put the cursor on them.
     pub paths: Vec<String>,
+    /// Items left alone because the destination already had one and the answer was skip.
+    pub skipped: usize,
+    pub cancelled: bool,
 }
 
 impl Outcome {
@@ -204,6 +208,11 @@ fn unique_dest(dir: &Path, name: &str) -> PathBuf {
 }
 
 fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
+    copy_tracked(src, dst, &Ctl::detached())
+}
+
+fn copy_tracked(src: &Path, dst: &Path, ctl: &Ctl) -> io::Result<()> {
+    ctl.checkpoint()?;
     let meta = fs::symlink_metadata(src)?;
     if meta.file_type().is_symlink() {
         symlink(fs::read_link(src)?, dst)
@@ -215,12 +224,50 @@ fn copy_recursive(src: &Path, dst: &Path) -> io::Result<()> {
         fs::create_dir(dst)?;
         for entry in fs::read_dir(src)? {
             let entry = entry?;
-            copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+            copy_tracked(&entry.path(), &dst.join(entry.file_name()), ctl)?;
         }
         fs::set_permissions(dst, meta.permissions())
     } else {
-        fs::copy(src, dst).map(|_| ())
+        copy_file(src, dst, &meta, ctl)
     }
+}
+
+/// Copy one file in chunks so progress, pause and cancel work. The kernel does the copying when it can
+/// (`copy_file_range`, which also shares blocks on filesystems that support it), else read and write.
+fn copy_file(src: &Path, dst: &Path, meta: &fs::Metadata, ctl: &Ctl) -> io::Result<()> {
+    use std::io::{Read, Write};
+    use std::os::fd::AsRawFd;
+    const CHUNK: usize = 8 << 20;
+    let mut input = fs::File::open(src)?;
+    let mut output = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
+    let mut kernel = true;
+    let mut buf = Vec::new();
+    loop {
+        ctl.checkpoint()?;
+        let n = if kernel {
+            // SAFETY: both descriptors are open files owned by this function; null offsets use and advance each file position.
+            let r = unsafe {
+                libc::copy_file_range(input.as_raw_fd(), std::ptr::null_mut(), output.as_raw_fd(), std::ptr::null_mut(), CHUNK, 0)
+            };
+            if r >= 0 {
+                r as usize
+            } else {
+                // Not supported here (other filesystem on an old kernel, special file...): read and write instead.
+                kernel = false;
+                continue;
+            }
+        } else {
+            buf.resize(1 << 20, 0);
+            let n = input.read(&mut buf)?;
+            output.write_all(&buf[..n])?;
+            n
+        };
+        if n == 0 {
+            break;
+        }
+        ctl.add_bytes(n as u64);
+    }
+    output.set_permissions(meta.permissions())
 }
 
 fn remove_any(p: &Path) -> io::Result<()> {
@@ -229,14 +276,29 @@ fn remove_any(p: &Path) -> io::Result<()> {
 
 /// Rename, falling back to copy + delete across filesystems.
 fn move_any(src: &Path, dst: &Path) -> io::Result<()> {
+    move_tracked(src, dst, &Ctl::detached())
+}
+
+fn move_tracked(src: &Path, dst: &Path, ctl: &Ctl) -> io::Result<()> {
     match fs::rename(src, dst) {
         Ok(()) => Ok(()),
         Err(e) if e.raw_os_error() == Some(18) => {
-            copy_recursive(src, dst)?;
+            copy_tracked(src, dst, ctl)?;
             remove_any(src)
         }
         Err(e) => Err(e),
     }
+}
+
+/// Total size of the regular files under `p`.
+fn tree_bytes(p: &Path) -> u64 {
+    walkdir::WalkDir::new(p)
+        .into_iter()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_type().is_file())
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 // ---- trash -----------------------------------------------------------------------------
@@ -300,31 +362,105 @@ fn restore_one(orig: &str, stored: &str, info: &str) -> io::Result<()> {
 
 // ---- public operations -----------------------------------------------------------------
 
+/// Names in `paths` that `dest_dir` already has, so the user can choose what happens to them.
+/// Copying into the folder an item is already in makes a `(copy)`, and moving it there does nothing,
+/// so neither counts.
+pub fn conflicts(paths: &[String], dest_dir: &str) -> Vec<String> {
+    paths
+        .iter()
+        .filter(|src| Path::new(src).parent() != Some(Path::new(dest_dir)))
+        .map(|src| base_name(src))
+        .filter(|name| fs::symlink_metadata(Path::new(dest_dir).join(name)).is_ok())
+        .collect()
+}
+
+/// Copy or move with the default answer to a name clash: keep both.
+#[cfg(test)]
 pub fn paste(paths: &[String], dest_dir: &str, cut: bool) -> Outcome {
+    let ctl = Ctl::register(if cut { "Moved" } else { "Copied" }, dest_dir, paths.len());
+    paste_tracked(&ctl, paths, dest_dir, cut, Policy::Both)
+}
+
+/// Copy or move as the transfer `ctl`, reporting progress through it.
+pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, policy: Policy) -> Outcome {
+    use std::os::unix::fs::MetadataExt;
     let mut out = Outcome::new(if cut { "Moved" } else { "Copied" });
+    if ctl.cancelled() {
+        out.cancelled = true;
+        ctl.set_state(State::Cancelled);
+        return out;
+    }
+    ctl.set_state(State::Running);
+    // Sizes for the progress bar. A move on one filesystem is a rename and has no bytes to count.
+    let dest_dev = fs::metadata(dest_dir).map(|m| m.dev()).ok();
+    let bytes: u64 = paths
+        .iter()
+        .filter(|p| !cut || fs::symlink_metadata(p).map(|m| Some(m.dev()) != dest_dev).unwrap_or(false))
+        .map(|p| tree_bytes(Path::new(p)))
+        .sum();
+    ctl.bytes_total.store(bytes, std::sync::atomic::Ordering::Relaxed);
     let mut steps = Vec::new();
     for src in paths {
         let name = base_name(src);
+        ctl.set_current(&name);
+        let same_folder = Path::new(src).parent() == Some(Path::new(dest_dir));
         // Moving into the folder it is already in is a no-op.
-        if cut && Path::new(src).parent() == Some(Path::new(dest_dir)) {
+        if cut && same_folder {
+            ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         }
-        let dst = unique_dest(Path::new(dest_dir), &name);
-        let result = if cut {
-            move_any(Path::new(src), &dst)
+        let wanted = Path::new(dest_dir).join(&name);
+        let clash = !same_folder && fs::symlink_metadata(&wanted).is_ok();
+        let mut replaced = None;
+        let dst = if clash && policy == Policy::Skip {
+            out.skipped += 1;
+            ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            continue;
+        } else if clash && policy == Policy::Replace {
+            if Path::new(src).starts_with(&wanted) {
+                out.errors.push(format!("{name}: cannot replace a folder with something inside it"));
+                continue;
+            }
+            // The old one goes to the trash, so replacing is undoable and nothing is lost for good.
+            match trash_one(&wanted.to_string_lossy(), &deletion_date()) {
+                Ok(step) => replaced = Some(step),
+                Err(e) => {
+                    out.errors.push(format!("{name}: {e}"));
+                    continue;
+                }
+            }
+            wanted
         } else {
-            copy_recursive(Path::new(src), &dst)
+            unique_dest(Path::new(dest_dir), &name)
         };
+        let result = if cut { move_tracked(Path::new(src), &dst, ctl) } else { copy_tracked(Path::new(src), &dst, ctl) };
         match result {
             Ok(()) => {
                 let (from, to) = (src.clone(), dst.to_string_lossy().into_owned());
                 out.paths.push(to.clone());
+                steps.extend(replaced);
                 steps.push(if cut { Step::Moved { from, to } } else { Step::Copied { from, to } });
                 out.ok += 1;
+                ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
-            Err(e) => out.errors.push(format!("{name}: {e}")),
+            Err(e) => {
+                // Do not leave half a copy behind, and put back what was replaced.
+                let stopped = e.kind() == io::ErrorKind::Interrupted;
+                if fs::symlink_metadata(&dst).is_ok() {
+                    let _ = remove_any(&dst);
+                }
+                if let Some(Step::Trashed { orig, stored, info }) = replaced {
+                    let _ = restore_one(&orig, &stored, &info);
+                }
+                if stopped {
+                    out.cancelled = true;
+                    break;
+                }
+                out.errors.push(format!("{name}: {e}"));
+            }
         }
     }
+    ctl.set_state(if out.cancelled { State::Cancelled } else { State::Done });
     record(Action { label: out.label.clone(), steps });
     out
 }
@@ -779,11 +915,47 @@ mod journal_tests {
     #[test]
     fn empty_history_reports_nothing_to_undo() {
         let _sb = Sandbox::new("empty-history");
-        // Drain whatever earlier tests left behind.
-        while step_history(false).ok > 0 {}
+        // Drain whatever earlier tests left behind (their folders are gone, so some undos fail: keep going).
+        while step_history(false).errors != ["Nothing to undo"] {}
         let out = step_history(false);
         assert_eq!(out.ok, 0);
         assert_eq!(out.errors, ["Nothing to undo"]);
+    }
+
+    #[test]
+    fn name_clashes_replace_skip_or_keep_both() {
+        let sb = Sandbox::new("clash");
+        sb.touch("src/a.txt", "new");
+        sb.touch("dst/a.txt", "old");
+        let (src, dst) = (sb.path("src/a.txt"), sb.path("dst"));
+        assert_eq!(conflicts(&[src.clone()], &dst), ["a.txt"]);
+        let run = |policy| {
+            let ctl = Ctl::register("Copied", &dst, 1);
+            paste_tracked(&ctl, &[src.clone()], &dst, false, policy)
+        };
+        let out = run(Policy::Skip);
+        assert_eq!((out.ok, out.skipped), (0, 1));
+        assert_eq!(fs::read_to_string(sb.path("dst/a.txt")).unwrap(), "old");
+        assert_eq!(run(Policy::Both).paths, [sb.path("dst/a (copy).txt")]);
+        let out = run(Policy::Replace);
+        assert_eq!(out.ok, 1);
+        assert_eq!(fs::read_to_string(sb.path("dst/a.txt")).unwrap(), "new");
+        // Undo puts the old file back (it went to the trash, not away for good).
+        let undone = step_history(false);
+        assert!(undone.errors.is_empty(), "{:?}", undone.errors);
+        assert_eq!(fs::read_to_string(sb.path("dst/a.txt")).unwrap(), "old");
+    }
+
+    #[test]
+    fn a_cancelled_copy_leaves_no_partial_file() {
+        let sb = Sandbox::new("cancel");
+        sb.touch("a.txt", "data");
+        let ctl = Ctl::register("Copied", &sb.path("d"), 1);
+        fs::create_dir(sb.path("d")).unwrap();
+        crate::transfer::cancel_ctl(&ctl);
+        let out = paste_tracked(&ctl, &[sb.path("a.txt")], &sb.path("d"), false, Policy::Both);
+        assert!(out.cancelled);
+        assert!(!Path::new(&sb.path("d/a.txt")).exists());
     }
 
     #[test]

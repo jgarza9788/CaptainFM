@@ -28,6 +28,7 @@ Rectangle {
     NumberAnimation { id: fadeIn; target: st; property: "opacity"; to: 1; duration: Style.anim(110); easing.type: Easing.OutCubic }
 
     function open() {
+        loadPluginRows()
         current = 1
         editing = false
         note = ""
@@ -43,7 +44,7 @@ Rectangle {
     }
 
     // A row is a section title, a choice (value -> label), or a text field.
-    readonly property var rows: [
+    readonly property var baseRows: [
         { section: "General" },
         Object.assign({ title: "On start", hint: "restore the last tabs, or always begin in one folder" },
             prefs("startup", [["restore", "restore last session"], ["home", "home folder"], ["folder", "start folder"]])),
@@ -55,6 +56,10 @@ Rectangle {
             prefs("defaultView", [["list", "list"], ["tree", "tree"], ["miller", "Miller"], ["grid", "icons"], ["columns", "columns"]])),
         Object.assign({ title: "Open items with", hint: "a folder or file under the pointer" },
             prefs("openOnClick", [["double", "double click"], ["single", "single click"]])),
+        Object.assign({ title: "Learn from palette picks", hint: "rank the commands you use first; what you type is kept on this computer" },
+            { choices: [[true, "on"], [false, "off"]], get: () => Prefs.v.learnPalette, set: (v) => Prefs.set("learnPalette", v) }),
+        Object.assign({ title: "Count feature use", hint: "which commands you use, by day, kept only on this computer; see \"Show feature use\" in the palette" },
+            { choices: [[true, "on"], [false, "off"]], get: () => Prefs.v.countUsage, set: (v) => Prefs.set("countUsage", v) }),
         { title: "Terminal", hint: "command that opens in the current folder; empty uses xdg-terminal-exec", kind: "text", key: "terminal",
           get: () => Prefs.v.terminal, set: (v) => Prefs.set("terminal", v) },
 
@@ -98,6 +103,31 @@ Rectangle {
           choices: [[true, "on"], [false, "off"]], get: () => Backend.systemPicker(),
           set: (v) => { const r = JSON.parse(Backend.setSystemPicker(v)); st.note = r.message; if (!r.ok) app.toast(r.message, "error") } }
     ]
+
+    // One on/off row per plugin, read when the dialog opens.
+    property var pluginRows: []
+    readonly property var rows: baseRows.concat(pluginRows)
+
+    function loadPluginRows() {
+        let plugins = []
+        try { plugins = JSON.parse(Backend.listPlugins()) } catch (e) { plugins = [] }
+        if (plugins.length === 0) { pluginRows = []; return }
+        const rows = [{ section: "Plugins" }]
+        for (const pl of plugins) {
+            const parts = []
+            if (pl.previews.length > 0) parts.push("previews " + pl.previews.join(", "))
+            if (pl.actions.length > 0) parts.push(pl.actions.length + (pl.actions.length === 1 ? " action" : " actions"))
+            if (pl.panels.length > 0) parts.push(pl.panels.length + (pl.panels.length === 1 ? " panel" : " panels"))
+            rows.push({
+                title: pl.name,
+                hint: (pl.bundled ? "built in · " : "") + parts.join(" · "),
+                choices: [[true, "on"], [false, "off"]],
+                get: () => !Prefs.v.disabledPlugins.includes(pl.id),
+                set: (on) => app.setPluginEnabled(pl.id, on)
+            })
+        }
+        pluginRows = rows
+    }
 
     function isRow(i) { return i >= 0 && i < rows.length && rows[i].section === undefined }
 

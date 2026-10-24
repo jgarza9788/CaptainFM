@@ -228,6 +228,11 @@ impl Query {
         !self.terms.is_empty() || self.regex.is_some() || self.bad_regex
     }
 
+    /// Whether the query filters on size or date, which needs the file's metadata.
+    pub fn needs_meta(&self) -> bool {
+        self.newer.is_some() || self.older.is_some() || self.min_size.is_some() || self.max_size.is_some()
+    }
+
     /// Check the non-fuzzy filters. Unknown values (`size < 0`) never fail a filter.
     pub fn accepts(&self, name: &str, is_dir: bool, size: i64, mtime: i64) -> bool {
         if let Some(d) = self.only_dirs
@@ -382,5 +387,319 @@ mod tests {
         let q = Query::parse("size>1k size<1m");
         assert!(q.accepts("x", false, 2048, 0));
         assert!(!q.accepts("x", false, 10, 0));
+    }
+}
+
+// ---- palette prediction ----------------------------------------------------------------------
+
+/// Words that mean the same thing to someone typing into the palette. A query word also matches the
+/// other words of any group it is in, a little less well than itself.
+const SYNONYMS: &[&[&str]] = &[
+    &["delete", "remove", "erase", "trash", "bin", "rm", "destroy", "discard", "shred", "recycle", "rubbish", "garbage"],
+    &["copy", "duplicate", "clone", "yank"],
+    &["move", "relocate", "cut", "mv", "transfer"],
+    &["rename", "retitle"],
+    &["create", "new", "make", "add"],
+    &["folder", "directory", "dir"],
+    &["hidden", "dotfiles", "invisible"],
+    &["open", "launch", "run", "start"],
+    &["unmount", "disconnect", "eject", "umount", "detach", "unplug"],
+    &["connect", "login", "mount"],
+    &["settings", "preferences", "options", "config", "configure", "setup"],
+    &["preview", "inspector", "info", "details"],
+    &["find", "search", "locate", "grep", "lookup"],
+    &["refresh", "reload", "rescan", "update"],
+    &["bookmark", "pin", "favorite", "favourite", "star"],
+    &["network", "server", "remote", "share"],
+    &["samba", "smb", "cifs", "windows"],
+    &["ssh", "sftp", "scp"],
+    &["terminal", "shell", "console", "cmd", "prompt"],
+    &["quit", "exit", "leave"],
+    &["undo", "revert"],
+    &["redo", "repeat"],
+    &["select", "mark", "tick", "check"],
+    &["deselect", "unselect", "clear", "reset"],
+    &["thumbnail", "icons", "gallery", "grid"],
+    &["sidebar", "places", "drives"],
+    &["play", "pause", "stop"],
+    &["zoom", "bigger", "larger", "smaller", "magnify", "scale"],
+    &["sort", "order", "arrange"],
+    &["pane", "panel", "split"],
+    &["compress", "zip", "archive", "pack"],
+    &["extract", "unzip", "unpack", "uncompress", "untar"],
+    &["path", "location", "address"],
+    &["edit", "change", "modify", "view", "manage"],
+    &["password", "credentials"],
+    &["google", "gdrive"],
+    &["aws", "amazon", "s3", "bucket"],
+    &["webdav", "dav", "nextcloud", "owncloud"],
+    &["onedrive", "microsoft"],
+];
+
+/// A loose word form: lowercase, with plural, `-ing`, `-ed`, `-er` and a final `e` taken off, so
+/// "deleting", "deleted" and "delete" are the same word.
+pub fn stem(word: &str) -> String {
+    let mut w = word.to_lowercase();
+    if w.chars().count() <= 3 {
+        return w;
+    }
+    for _ in 0..2 {
+        let mut next = None;
+        if let Some(r) = w.strip_suffix("ies").filter(|r| r.len() >= 2) {
+            next = Some(format!("{r}y"));
+        } else {
+            for suf in ["ing", "ed", "er", "es", "s"] {
+                if suf == "s" && w.ends_with("ss") {
+                    continue;
+                }
+                if let Some(r) = w.strip_suffix(suf).filter(|r| r.len() >= 3) {
+                    let mut r = r.to_owned();
+                    // "running" -> "runn" -> "run"
+                    let b = r.as_bytes();
+                    if suf == "ing" || suf == "ed" || suf == "er" {
+                        if b.len() >= 4 && b[b.len() - 1] == b[b.len() - 2] && !b"lsz".contains(&b[b.len() - 1]) {
+                            r.pop();
+                        }
+                    }
+                    next = Some(r);
+                    break;
+                }
+            }
+        }
+        match next {
+            Some(n) => w = n,
+            None => break,
+        }
+    }
+    if w.len() > 3 && w.ends_with('e') {
+        w.pop();
+    }
+    w
+}
+
+/// Edits (insert, delete, replace, swap two neighbours) between two words.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let mut d = vec![vec![0usize; b.len() + 1]; a.len() + 1];
+    for (i, row) in d.iter_mut().enumerate() {
+        row[0] = i;
+    }
+    for j in 0..=b.len() {
+        d[0][j] = j;
+    }
+    for i in 1..=a.len() {
+        for j in 1..=b.len() {
+            let cost = usize::from(a[i - 1] != b[j - 1]);
+            d[i][j] = (d[i - 1][j] + 1).min(d[i][j - 1] + 1).min(d[i - 1][j - 1] + cost);
+            if i > 1 && j > 1 && a[i - 1] == b[j - 2] && a[i - 2] == b[j - 1] {
+                d[i][j] = d[i][j].min(d[i - 2][j - 2] + 1);
+            }
+        }
+    }
+    d[a.len()][b.len()]
+}
+
+fn text_words(text: &str) -> Vec<String> {
+    text.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect()
+}
+
+/// Every word that shares a group with `word` (or with its word form).
+fn synonyms_of(word: &str) -> Vec<&'static str> {
+    let sw = stem(word);
+    SYNONYMS
+        .iter()
+        .filter(|g| g.iter().any(|m| *m == word || stem(m) == sw))
+        .flat_map(|g| g.iter().copied())
+        .collect()
+}
+
+/// How well `q` matches the words of a command: 5 exact word, 4 start of a word, 3 same word form,
+/// 2 synonym, 1 typo, 0 none.
+fn word_tier(q: &str, words: &[String], stems: &[String]) -> u8 {
+    if words.iter().any(|w| w == q) {
+        return 5;
+    }
+    if words.iter().any(|w| w.starts_with(q)) {
+        return 4;
+    }
+    if stems.iter().any(|s| *s == stem(q)) {
+        return 3;
+    }
+    if synonyms_of(q).iter().any(|m| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m))) {
+        return 2;
+    }
+    let len = q.chars().count();
+    if len < 4 {
+        return 0;
+    }
+    let allowed = if len >= 7 { 2 } else { 1 };
+    let near = |w: &str| {
+        let wl = w.chars().count();
+        wl >= 4 && wl.abs_diff(len) <= allowed && edit_distance(q, w) <= allowed
+    };
+    if words.iter().any(|w| near(w)) {
+        return 1;
+    }
+    // A misspelt synonym ("prefrences" for settings): correct it against the known words first.
+    let matches_text = |m: &str| words.iter().any(|w| w == m) || stems.iter().any(|s| *s == stem(m));
+    let known = SYNONYMS.iter().flat_map(|g| g.iter().copied()).filter(|m| near(m));
+    for m in known {
+        if matches_text(m) || synonyms_of(m).iter().any(|s| matches_text(s)) {
+            return 1;
+        }
+    }
+    0
+}
+
+/// `(weakest word tier, total)` when every word of `query` matches something in `text`, else `None`.
+pub fn predict_score(query: &str, text: &str) -> Option<(u8, i32)> {
+    let words = text_words(text);
+    let stems: Vec<String> = words.iter().map(|w| stem(w)).collect();
+    let mut weakest = 5;
+    let mut total = 0;
+    let mut any = false;
+    for q in text_words(query) {
+        any = true;
+        let t = word_tier(&q, &words, &stems);
+        if t == 0 {
+            return None;
+        }
+        weakest = weakest.min(t);
+        total += t as i32 * 10;
+    }
+    any.then(|| (weakest, total - text.len() as i32 / 16))
+}
+
+/// Order palette `items` (with command `ids`) for `query`: literal matches first; when there are none, the
+/// best-guessed ones (word forms, synonyms, typos). Commands chosen for this query before come first,
+/// and an empty query lists the most used commands first.
+pub fn predict_rank(items: &[String], ids: &[String], query: &str, usage: &crate::state::Usage) -> Vec<usize> {
+    let q = query.trim();
+    let ql = q.to_lowercase();
+    let count = |i: usize| ids.get(i).and_then(|id| usage.counts.get(id)).copied().unwrap_or(0) as i32;
+    if q.is_empty() {
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by(|&a, &b| count(b).cmp(&count(a)).then(a.cmp(&b)));
+        return order;
+    }
+    // Learned: (is it an exact repeat of a query, bonus).
+    let learned = |i: usize| -> (bool, i32) {
+        let Some(id) = ids.get(i) else { return (false, 0) };
+        let mut best = (false, 0);
+        for p in usage.picks.iter().filter(|p| &p.id == id) {
+            let cand = if p.q == ql {
+                (true, 1000 + 100 * p.n as i32)
+            } else if p.q.starts_with(&ql) {
+                (false, 300 + 30 * p.n as i32)
+            } else {
+                continue;
+            };
+            if cand.1 > best.1 {
+                best = cand;
+            }
+        }
+        best
+    };
+    let mut scored: Vec<(i32, usize)> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, s)| ordered_terms_score(q, s).map(|sc| (sc + learned(i).1, i)))
+        .collect();
+    let literal = scored.len();
+    let guesses: Vec<(usize, u8, i32)> = items
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !scored.iter().any(|s| s.1 == *i))
+        .filter_map(|(i, s)| predict_score(q, s).map(|(t, sc)| (i, t, sc)))
+        .collect();
+    if literal == 0 {
+        // Nothing literal: the best-matching tier of guesses, typos only as a last resort.
+        let best = guesses.iter().map(|g| g.1).max().unwrap_or(0);
+        scored = guesses.into_iter().filter(|g| g.1 == best).map(|(i, _, sc)| (sc + learned(i).1, i)).collect();
+    } else {
+        // Literal hits first; synonyms and word forms of what was typed follow them.
+        scored.extend(guesses.into_iter().filter(|g| g.1 >= 2).map(|(i, _, sc)| (sc - 1000 + learned(i).1, i)));
+    }
+    // A command picked for this query (or one it is the start of) shows up even when the words don't match.
+    for i in 0..items.len() {
+        let (_, bonus) = learned(i);
+        if bonus > 0 && !scored.iter().any(|s| s.1 == i) {
+            scored.push((bonus, i));
+        }
+    }
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+    scored.into_iter().map(|(_, i)| i).collect()
+}
+
+#[cfg(test)]
+mod predict_tests {
+    use super::*;
+    use crate::state::Usage;
+
+    fn items(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn word_forms_collapse() {
+        assert_eq!(stem("deleting"), stem("delete"));
+        assert_eq!(stem("renaming"), stem("rename"));
+        assert_eq!(stem("settings"), stem("setting"));
+        assert_eq!(stem("copies"), stem("copy"));
+        assert_eq!(stem("running"), stem("run"));
+        assert_ne!(stem("copy"), stem("cut"));
+    }
+
+    #[test]
+    fn typos_are_one_edit() {
+        assert_eq!(edit_distance("disconect", "disconnect"), 1);
+        assert_eq!(edit_distance("prefrences", "preferences"), 1);
+        assert_eq!(edit_distance("recieve", "receive"), 1);
+        assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
+
+    #[test]
+    fn guesses_find_the_command() {
+        let list = items(&["Close pane", "Move to trash", "Delete permanently…", "Unmount / disconnect / eject device…", "Settings…", "Pin / unpin this folder"]);
+        let ids: Vec<String> = (0..list.len()).map(|i| format!("c{i}")).collect();
+        let u = Usage::default();
+        let first = |q: &str| predict_rank(&list, &ids, q, &u).first().map(|&i| list[i].clone());
+        assert_eq!(first("deleting").as_deref(), Some("Delete permanently…"));
+        assert_eq!(first("preferences").as_deref(), Some("Settings…"));
+        assert_eq!(first("prefrences").as_deref(), Some("Settings…"));
+        assert_eq!(first("bookmark").as_deref(), Some("Pin / unpin this folder"));
+        assert_eq!(first("disconect").as_deref(), Some("Unmount / disconnect / eject device…"));
+        assert_eq!(first("zzzz"), None);
+    }
+
+    #[test]
+    fn short_words_do_not_guess_wildly() {
+        let list = items(&["Go to Downloads", "Cut"]);
+        let ids = vec!["a".to_owned(), "b".to_owned()];
+        assert!(predict_rank(&list, &ids, "cat", &Usage::default()).is_empty());
+    }
+
+    #[test]
+    fn literal_matches_beat_guesses() {
+        let list = items(&["Remove this", "Delete permanently…"]);
+        let ids = vec!["a".to_owned(), "b".to_owned()];
+        // The literal hit comes first; the synonym follows it.
+        assert_eq!(predict_rank(&list, &ids, "remove", &Usage::default()), vec![0, 1]);
+        assert_eq!(predict_rank(&list, &ids, "delete", &Usage::default()), vec![1, 0]);
+    }
+
+    #[test]
+    fn learned_picks_rank_first_and_empty_query_orders_by_use() {
+        let list = items(&["Move to trash", "Delete permanently…"]);
+        let ids = vec!["trash".to_owned(), "delete".to_owned()];
+        let mut u = Usage::default();
+        assert_eq!(predict_rank(&list, &ids, "remove", &u), vec![0, 1]);
+        u.record("remove", "delete", 1);
+        u.record("remove", "delete", 2);
+        assert_eq!(predict_rank(&list, &ids, "remove", &u), vec![1, 0]);
+        assert_eq!(predict_rank(&list, &ids, "", &u), vec![1, 0]);
+        // A prefix of a learned query leans the same way.
+        assert_eq!(predict_rank(&list, &ids, "remo", &u).first(), Some(&1));
     }
 }

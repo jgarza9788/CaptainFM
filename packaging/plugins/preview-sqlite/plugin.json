@@ -1,0 +1,4 @@
+{
+  "name": "Preview: SQLite databases",
+  "previews": [{ "id": "sqlite", "ext": ["db", "sqlite", "sqlite3", "db3"], "function": "preview" }]
+}

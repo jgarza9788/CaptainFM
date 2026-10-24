@@ -46,7 +46,184 @@ fn safe_name(name: &str) -> String {
 
 pub fn write_config(name: &str, json: &str) -> bool {
     let dir = config_dir();
-    fs::create_dir_all(&dir).is_ok() && fs::write(dir.join(format!("{}.json", safe_name(name))), json).is_ok()
+    if fs::create_dir_all(&dir).is_err() {
+        return false;
+    }
+    // Write beside the file and rename, so a crash or a second copy never leaves half a file.
+    let file = dir.join(format!("{}.json", safe_name(name)));
+    let tmp = dir.join(format!(".{}.json.{}", safe_name(name), std::process::id()));
+    if fs::write(&tmp, json).is_err() {
+        return false;
+    }
+    fs::rename(&tmp, &file).is_ok() || {
+        let _ = fs::remove_file(&tmp);
+        false
+    }
+}
+
+/// What the palette learns: the command chosen for each typed query, and how often each command is used.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct Usage {
+    pub picks: Vec<Pick>,
+    pub counts: std::collections::HashMap<String, u32>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Pick {
+    /// The lowercased query that was typed.
+    pub q: String,
+    pub id: String,
+    pub n: u32,
+    pub t: i64,
+}
+
+const MAX_PICKS: usize = 500;
+
+/// Run `f` holding an exclusive lock on a file in the config folder, so two copies of the app take turns.
+fn locked<T>(lock_name: &str, f: impl FnOnce() -> T) -> T {
+    use std::os::fd::AsRawFd;
+    let dir = config_dir();
+    let _ = fs::create_dir_all(&dir);
+    let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(lock_name)).ok();
+    if let Some(file) = &lock {
+        // SAFETY: flock only takes the descriptor; the lock is released when `lock` is dropped.
+        unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    }
+    f()
+}
+
+/// On which days each feature was used, kept on this computer only: command ids and day numbers, never
+/// what was typed or which files. It shows which features are rarely used. Switch off with `countUsage`.
+#[derive(Serialize, Deserialize, Default, Clone, Debug)]
+#[serde(default)]
+pub struct FeatureUse {
+    /// Feature id (a command id, `preview:<kind>`, `plugin:<id>`, `app.opened`) to the days it was used.
+    pub used: std::collections::HashMap<String, Vec<u32>>,
+}
+
+const KEEP_DAYS: usize = 120;
+/// Days looked at when judging how often a feature is used.
+const WINDOW_DAYS: u32 = 28;
+
+impl FeatureUse {
+    fn load() -> FeatureUse {
+        serde_json::from_str(&read_config("feature_usage")).unwrap_or_default()
+    }
+
+    fn save(&self) {
+        write_config("feature_usage", &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()));
+    }
+
+    fn enabled() -> bool {
+        serde_json::from_str::<serde_json::Value>(&read_config("settings"))
+            .ok()
+            .and_then(|v| v.get("countUsage").and_then(serde_json::Value::as_bool))
+            .unwrap_or(true)
+    }
+
+    /// Note that `id` was used today. Once per feature and day per run costs a write; after that it is free.
+    pub fn mark(id: &str) {
+        // Tests run without a private config folder in places, so they never write here.
+        if !cfg!(test) {
+            FeatureUse::mark_on(id, (now() / 86_400) as u32);
+        }
+    }
+
+    fn mark_on(id: &str, day: u32) {
+        static SEEN: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex::new(Vec::new());
+        {
+            let mut seen = SEEN.lock().unwrap();
+            if seen.iter().any(|(d, i)| *d == day && i == id) {
+                return;
+            }
+            seen.push((day, id.to_owned()));
+        }
+        if !FeatureUse::enabled() {
+            return;
+        }
+        locked(".feature_usage.lock", || {
+            let mut all = FeatureUse::load();
+            let days = all.used.entry(id.to_owned()).or_default();
+            if days.last() != Some(&day) {
+                days.push(day);
+                let excess = days.len().saturating_sub(KEEP_DAYS);
+                days.drain(..excess);
+            }
+            all.save();
+        });
+    }
+
+    /// `[{id, days, last}]` for the last four weeks, most used first: how many days each feature was used
+    /// and how many days ago it last was, plus `opened`, the days the app itself was opened.
+    pub fn report(today: u32) -> serde_json::Value {
+        let all = FeatureUse::load();
+        let since = today.saturating_sub(WINDOW_DAYS - 1);
+        let opened = all.used.get("app.opened").map_or(0, |d| d.iter().filter(|x| **x >= since).count());
+        let mut rows: Vec<(String, usize, u32)> = all
+            .used
+            .iter()
+            .filter(|(id, _)| id.as_str() != "app.opened")
+            .map(|(id, days)| {
+                (id.clone(), days.iter().filter(|d| **d >= since).count(), today.saturating_sub(days.last().copied().unwrap_or(0)))
+            })
+            .collect();
+        rows.sort_by(|a, b| b.1.cmp(&a.1).then(a.2.cmp(&b.2)).then(a.0.cmp(&b.0)));
+        serde_json::json!({
+            "opened": opened,
+            "window": WINDOW_DAYS,
+            "rows": rows.into_iter().map(|(id, days, last)| serde_json::json!({"id": id, "days": days, "last": last})).collect::<Vec<_>>(),
+        })
+    }
+
+    pub fn forget() {
+        locked(".feature_usage.lock", || FeatureUse::default().save());
+    }
+}
+
+impl Usage {
+    pub fn load() -> Usage {
+        serde_json::from_str(&read_config("palette_usage")).unwrap_or_default()
+    }
+
+    pub fn save(&self) {
+        write_config("palette_usage", &serde_json::to_string(self).unwrap_or_else(|_| "{}".into()));
+    }
+
+    /// Load, change and save the usage file while holding a lock, so two copies of the app don't lose each
+    /// other's picks.
+    pub fn update(change: impl FnOnce(&mut Usage)) {
+        locked(".palette_usage.lock", || {
+            let mut usage = Usage::load();
+            change(&mut usage);
+            usage.save();
+        });
+    }
+
+    /// Forget everything the palette learned.
+    pub fn forget() {
+        Usage::update(|u| *u = Usage::default());
+    }
+
+    /// Count `id` as chosen for `query` (an empty query only counts the command).
+    pub fn record(&mut self, query: &str, id: &str, now: i64) {
+        *self.counts.entry(id.to_owned()).or_insert(0) += 1;
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return;
+        }
+        match self.picks.iter_mut().find(|p| p.q == q && p.id == id) {
+            Some(p) => {
+                p.n += 1;
+                p.t = now;
+            }
+            None => self.picks.push(Pick { q, id: id.to_owned(), n: 1, t: now }),
+        }
+        if self.picks.len() > MAX_PICKS {
+            self.picks.sort_by(|a, b| b.t.cmp(&a.t));
+            self.picks.truncate(MAX_PICKS);
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -357,5 +534,29 @@ mod store_tests {
         let root = mount_root(&nested.to_string_lossy());
         assert!(nested.starts_with(&root));
         assert!(std::path::Path::new(&root).is_dir());
+    }
+
+    #[test]
+    fn feature_use_counts_days_and_can_be_switched_off() {
+        let _sb = Sandbox::new("feature-use");
+        FeatureUse::mark_on("test.alpha", 20_000);
+        FeatureUse::mark_on("test.alpha", 20_000);
+        FeatureUse::mark_on("test.alpha", 20_003);
+        FeatureUse::mark_on("test.beta", 19_900);
+        FeatureUse::mark_on("app.opened", 20_003);
+        let report = FeatureUse::report(20_005);
+        assert_eq!(report["opened"], 1);
+        let rows = report["rows"].as_array().unwrap();
+        // beta was last used 105 days ago, outside the four weeks; alpha twice, the last time 2 days ago.
+        assert_eq!((rows[0]["id"].clone(), rows[0]["days"].clone(), rows[0]["last"].clone()), ("test.alpha".into(), 2.into(), 2.into()));
+        assert_eq!(rows[1]["days"], 0);
+        // Nothing but ids and days is stored.
+        assert!(!read_config("feature_usage").contains('/'));
+
+        write_config("settings", r#"{"countUsage":false}"#);
+        FeatureUse::mark_on("test.gamma", 20_005);
+        assert!(!read_config("feature_usage").contains("gamma"));
+        FeatureUse::forget();
+        assert_eq!(FeatureUse::report(20_005)["rows"].as_array().unwrap().len(), 0);
     }
 }

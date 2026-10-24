@@ -1,0 +1,8 @@
+{
+  "name": "Preview: RTF, DjVu, e-books and comics",
+  "previews": [
+    { "id": "rtf", "ext": ["rtf"], "function": "rtf" },
+    { "id": "djvu", "ext": ["djvu", "djv"], "function": "djvu" },
+    { "id": "cover", "ext": ["epub", "cbz", "cbr"], "function": "cover" }
+  ]
+}

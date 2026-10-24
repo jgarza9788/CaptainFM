@@ -1,0 +1,9 @@
+{
+  "name": "Preview: programs, certificates, keys and packages",
+  "previews": [
+    { "id": "program", "magic": ["7f454c46"], "function": "program" },
+    { "id": "certificate", "ext": ["pem", "crt", "cer"], "function": "certificate" },
+    { "id": "ssh-key", "ext": ["pub"], "function": "ssh_key" },
+    { "id": "package", "ext": ["pkg.tar.zst", "pkg.tar.xz", "pkg.tar.gz", "pkg.tar", "deb", "rpm"], "function": "package" }
+  ]
+}

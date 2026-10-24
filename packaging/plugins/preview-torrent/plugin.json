@@ -1,0 +1,4 @@
+{
+  "name": "Preview: torrents",
+  "previews": [{ "id": "torrent", "ext": ["torrent"], "function": "preview" }]
+}
