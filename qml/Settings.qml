@@ -226,7 +226,7 @@ Rectangle {
             height: Math.round(52 * Style.zoom)
             Text {
                 anchors.centerIn: parent
-                text: "CaptainFM v0.01 *Ahab*"
+                text: "CaptainFM v0.02 *Blackbeard (Edward Teach), 🏴‍☠️*"
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.smallFont }
             }
