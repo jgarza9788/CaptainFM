@@ -59,6 +59,19 @@ There is no usage data to go on: a web search found no real survey of file manag
 - [x] The rarely used previews are now five built-in plugins, and their Rust code is gone: `preview-torrent`, `preview-calendar-contacts`, `preview-sqlite`, `preview-system` (programs, certificates, SSH keys, packages) and `preview-documents` (RTF, DjVu, e-book and comic covers). Their tests run the Lua.
 - [x] The Connect dialog shows SFTP, SMB, FTP, WebDAV, NFS and Google Drive; Dropbox, OneDrive, Box, Google Cloud Storage and S3 come after "More cloud services…" (still reachable from the palette).
 - [x] Plugins can be switched with build flags (`./build.sh --no-plugins`, `--without torrent,sqlite`, `--only sqlite,system`, or cargo features `plugin-torrent` and so on), and at run time from the palette ("Plugins: turn off …", "turn all on/off"), from the command line (`captainfm --plugins`, `captainfm --plugin torrent off`) and in Settings.
+
+## 11. right click (double) eject remove drives
+- [ ] a right click (twice) should eject remove drives
+
+## 12. remote drive capacity (plugin)
+- [ ] show an indicatator showing the capacity of remove drives 
+
+## 13. performance test 
+- [ ] create a performance test
+- [ ] standarddrize the performance test
+- [ ] make a small report for each performance test
+
+## 14. Features few people user
 - [ ] After 4 weeks of counts, read "Show feature use…" and decide per feature: switch off by default, or compile out behind a cargo feature if it also costs build time. All plugins are on by default for now, so nothing seems to disappear.
 - [ ] Likely under 5%: Lua plugins themselves (vendored Lua adds build time and size), batch rename templates and regex, the learned palette history. Not changed without numbers.
 - Keep, even though not everyone uses them: the folder-handler D-Bus service and portal file chooser (they make it the default file manager), and trash and undo. Font previews stay built in because they need the font drawn, not just text.
