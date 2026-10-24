@@ -151,7 +151,11 @@ Rectangle {
     function move(dir) {
         let i = current
         do { i += dir } while (i >= 0 && i < rows.length && !isRow(i))
-        if (isRow(i)) { current = i; list.positionViewAtIndex(i, ListView.Contain) }
+        if (isRow(i)) {
+            current = i
+            // The last row scrolls the release line into view too.
+            if (i === rows.length - 1) list.positionViewAtEnd(); else list.positionViewAtIndex(i, ListView.Contain)
+        }
     }
 
     function startEdit() {
@@ -216,6 +220,17 @@ Rectangle {
         clip: true
         model: st.rows
         boundsBehavior: Flickable.StopAtBounds
+        // Marks the release; plain text after the last row.
+        footer: Item {
+            width: list.width
+            height: Math.round(52 * Style.zoom)
+            Text {
+                anchors.centerIn: parent
+                text: "CaptainFM v0.01 *Ahab*"
+                color: Style.fgDim
+                font { family: Style.font; pixelSize: Style.smallFont }
+            }
+        }
         delegate: Item {
             id: item
             required property int index
