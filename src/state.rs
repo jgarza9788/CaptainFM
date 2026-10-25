@@ -493,9 +493,13 @@ pub fn jump_candidates(query: &str) -> Vec<Candidate> {
     scored.into_iter().take(60).map(|(_, c)| c).collect()
 }
 
-/// Walk up from `path` to the top of its filesystem (the "drive" for whole-drive search).
+/// Walk up from `path` to the top of its filesystem (the "drive" for whole-drive search). A remote answers
+/// with its mount point straight away instead of stat'ing each parent folder over the network.
 pub fn mount_root(path: &str) -> String {
     use std::os::unix::fs::MetadataExt;
+    if let Some(root) = crate::listing::remote_root(path) {
+        return root;
+    }
     let Ok(dev) = fs::metadata(path).map(|m| m.dev()) else {
         return "/".into();
     };

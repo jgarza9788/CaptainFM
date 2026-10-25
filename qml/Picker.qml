@@ -221,10 +221,13 @@ Rectangle {
                 anchors { left: category.right; leftMargin: picker.hasCategories ? Style.pad : Style.pad * 2
                           right: badge.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
                 textFormat: Text.RichText
-                text: row.item ? Style.highlightHtml(row.item.title, input.text.trim(), Style.accent) : ""
+                // Rich text is not elided by Qt, so the title is cut first. Folder results keep their end (the
+                // interesting part) visible, names (`elide: "middle"`) both ends, commands their start.
+                readonly property int mode: !row.item ? Text.ElideRight
+                    : (typeof row.item.tag === "object" && row.item.tag.folder !== undefined ? Text.ElideLeft
+                    : (row.item.elide === "middle" ? Text.ElideMiddle : Text.ElideRight))
+                text: row.item ? Style.highlightHtml(Style.elide(row.item.title, font, width, mode), input.text.trim(), Style.accent) : ""
                 color: Style.fg
-                // Folder results keep their end (the interesting part) visible.
-                elide: row.item && typeof row.item.tag === "object" && row.item.tag.folder !== undefined ? Text.ElideLeft : Text.ElideRight
                 font { family: Style.font; pixelSize: Style.fontSize + 1 }
             }
             // Current binding as a badge; unbound commands get a dashed "+ bind".

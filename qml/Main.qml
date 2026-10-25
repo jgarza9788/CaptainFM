@@ -350,6 +350,7 @@ Window {
             items: list.map(d => ({
                 title: d.label + (d.kind === "remote" || d.kind === "cloud" ? "" : "  " + d.detail),
                 hint: d.mounted ? (d.path || d.uri) : "not mounted",
+                elide: "middle",
                 tag: d
             })),
             choose: (item) => {
@@ -357,7 +358,7 @@ Window {
                 refocus()
                 if (devicesMode === "eject") { Backend.ejectDevice(JSON.stringify(d)); return }
                 if (d.mounted) { if (pane) pane.navigate(d.path); return }
-                pendingMount = true
+                beginMount(d.label)
                 toast("Mounting " + d.label + "…")
                 Backend.mountDevice(JSON.stringify(d))
             }
@@ -365,9 +366,19 @@ Window {
     }
 
     property bool pendingMount: false
+    property var mountPane: null    // the pane showing "Connecting to …" while a mount runs
+
+    function beginMount(name) {
+        pendingMount = true
+        if (mountPane) mountPane.connecting = ""
+        mountPane = pane
+        if (pane) pane.connecting = name
+    }
 
     function handleMount(json) {
         const r = JSON.parse(json)
+        if (mountPane) mountPane.connecting = ""
+        mountPane = null
         if (!r.ok) { pendingMount = false; toast(r.message, "error"); return }
         toast(r.message)
         if (pendingMount && r.path !== "" && pane) pane.navigate(r.path)
@@ -386,7 +397,7 @@ Window {
         }]
         for (const c of JSON.parse(Backend.savedConnections())) {
             if (only && kinds.indexOf(c.kind) < 0) continue
-            items.push({ title: c.name, hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host : "") + (c.remember ? "  ·  password in keyring" : ""), tag: c })
+            items.push({ title: c.name, elide: "middle", hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host : "") + (c.remember ? "  ·  password in keyring" : ""), tag: c })
         }
         if (!only) items.push({ title: "Connect to a URL…", hint: "smb://, sftp://, ftp://, davs://", tag: { make: "url" } })
         pickerBox.open({
@@ -398,7 +409,7 @@ Window {
                 if (c.make === "new") { lazyConnect().open({}, only ? kinds[0] : undefined); return }
                 if (c.make === "url") { connectUrlPrompt(); return }
                 refocus()
-                pendingMount = true
+                beginMount(c.name)
                 toast("Connecting to " + c.name + "…")
                 Backend.connectSaved(c.id)
             },
@@ -450,6 +461,7 @@ Window {
             hintRight: "enter edits · ctrl+d forgets",
             items: saved.map(c => ({
                 title: c.name,
+                elide: "middle",
                 hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host + (c.path ? "/" + c.path.replace(/^\//, "") : "") : "") + (c.remember ? "  ·  password in keyring" : ""),
                 tag: c
             })),
@@ -471,7 +483,7 @@ Window {
             text: "sftp://",
             accept: (url) => {
                 if (url === "") return
-                pendingMount = true
+                beginMount(url.replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, ""))
                 toast("Connecting…")
                 Backend.connectRemote(url)
             }
@@ -485,7 +497,7 @@ Window {
 
     // The form was filled in; sign-in for cloud drives happens in the browser and can take a while.
     function runConnect(req) {
-        pendingMount = true
+        beginMount(req.name || req.host || "server")
         toast(req.kind === "gdrive" || req.kind === "dropbox" || req.kind === "onedrive" || req.kind === "box"
               ? "Signing in… check your browser" : "Connecting…")
         Backend.connectProfile(JSON.stringify(req))
@@ -646,6 +658,7 @@ Window {
         const items = tabPages.map((t, i) => ({
             title: (i + 1) + "  " + t.title,
             hint: t.activePane ? t.activePane.pretty(t.activePane.dir.path) : "",
+            elide: "middle",
             tag: i
         }))
         pickerBox.open({
@@ -1122,18 +1135,22 @@ Window {
                                     readonly property Item page: app.tabPages.length > index ? app.tabPages[index] : null
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: parent.height - 8
-                                    width: Math.min(Math.round(220 * Style.zoom), label.implicitWidth + Style.pad * 2.4)
+                                    readonly property int maxWidth: Math.round(220 * Style.zoom)
+                                    width: Math.min(maxWidth, label.implicitWidth + Style.pad * 2.4)
                                     radius: 4
                                     color: current ? Style.surface : "transparent"
                                     Text {
                                         id: label
                                         anchors.centerIn: parent
                                         textFormat: Text.RichText
-                                        text: chip.armed ? "<font color=\"" + Style.red + "\">close tab " + (chip.index + 1) + "?</font>"
-                                              : "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + (chip.index + 1) + "</font> "
-                                                + (chip.page ? chip.page.title.replace(/&/g, "&amp;").replace(/</g, "&lt;") : "")
+                                        // Rich text, so the title is cut in the middle by hand, against the widest
+                                        // chip (not its own width, which follows this text).
+                                        readonly property string number: String(chip.index + 1)
+                                        readonly property string cut: chip.page ? Style.elide(number + " " + chip.page.title, font, chip.maxWidth - Style.pad * 2.4).substring(number.length + 1) : ""
+                                        text: chip.armed ? "<font color=\"" + Style.red + "\">close tab " + number + "?</font>"
+                                              : "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + number + "</font> "
+                                                + cut.replace(/&/g, "&amp;").replace(/</g, "&lt;")
                                         color: chip.current ? Style.fg : Style.fgDim
-                                        elide: Text.ElideRight
                                         width: Math.min(implicitWidth, chip.width - Style.pad)
                                         font { family: Style.font; pixelSize: Style.fontSize }
                                     }

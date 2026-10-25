@@ -71,6 +71,8 @@ mod qobject {
         #[qproperty(bool, lite)]
         #[qproperty(i32, entry_count, cxx_name = "entryCount")]
         #[qproperty(i32, selected_count, cxx_name = "selectedCount")]
+        /// Server the folder lives on ("" for a local folder).
+        #[qproperty(QString, remote)]
         type DirModel = super::DirModelRust;
 
         #[cxx_override]
@@ -240,6 +242,7 @@ pub struct DirModelRust {
     expanded: HashSet<String>,
     entry_count: i32,
     selected_count: i32,
+    remote: QString,
 
     /// Everything read from the folder (or deep results), in read order. Shared with the worker
     /// thread that stats the entries, hence the `Arc`; sizes and times live in `meta`.
@@ -272,6 +275,7 @@ impl Default for DirModelRust {
             expanded: HashSet::new(),
             entry_count: 0,
             selected_count: 0,
+            remote: QString::default(),
             all: Arc::new(Vec::new()),
             meta: Vec::new(),
             order: Vec::new(),
@@ -485,13 +489,21 @@ impl qobject::DirModel {
         }
         self.as_mut().set_filter(QString::default());
         self.as_mut().set_selected_count(0);
+        self.as_mut()
+            .set_remote(QString::from(listing::remote_label(&dir).as_str()));
 
         self.as_mut().rewatch();
         self.refresh(true);
     }
 
-    /// Watch the folder (and, in tree view, every expanded sub-folder) for changes.
+    /// Watch the folder (and, in tree view, every expanded sub-folder) for changes. Not on a remote:
+    /// setting the watch up looks the path up here on the UI thread, which can wait seconds on a fresh
+    /// mount, and inotify never sees changes made on the server anyway. Our own changes reload through `opDone`.
     fn rewatch(mut self: Pin<&mut Self>) {
+        if !self.remote().is_empty() {
+            self.as_mut().rust_mut().watcher = None;
+            return;
+        }
         let mut paths = vec![self.path().to_string()];
         paths.extend(self.expanded.iter().cloned());
         let qt_thread = self.qt_thread();
@@ -793,6 +805,7 @@ impl qobject::DirModel {
         }
         let path = self.path().to_string();
         let (tree, expanded, lite) = (*self.tree(), self.expanded.clone(), *self.lite());
+        let remote = !self.remote().is_empty();
         let generation = Arc::clone(&self.generation);
         let ticket = generation.fetch_add(1, Ordering::SeqCst) + 1;
         let qt_thread = self.qt_thread();
@@ -860,7 +873,17 @@ impl qobject::DirModel {
                 });
             }
 
-            // Stage 3: recursive folder sizes.
+            // Stage 3: recursive folder sizes. Not on a remote: walking the whole tree there keeps the
+            // connection busy and every other lookup queues behind it; folders show no size instead.
+            if remote {
+                let g = Arc::clone(&generation);
+                let _ = qt_thread.queue(move |mut model| {
+                    if g.load(Ordering::SeqCst) == ticket {
+                        model.as_mut().set_loading(false);
+                    }
+                });
+                return;
+            }
             let dirs: Vec<(usize, String)> = entries
                 .iter()
                 .enumerate()

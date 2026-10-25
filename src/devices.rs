@@ -74,7 +74,7 @@ pub fn watch_changes(on_change: impl Fn() + Send + Sync + 'static) {
     });
 }
 
-fn gvfs_dir() -> PathBuf {
+pub fn gvfs_dir() -> PathBuf {
     let runtime = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })));

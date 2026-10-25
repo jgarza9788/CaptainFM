@@ -10,7 +10,7 @@ use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 use crate::transfer::{self, Ctl, Policy};
-use crate::{devices, ops, plugins, preview, remotes, state};
+use crate::{devices, listing, ops, plugins, preview, remotes, state};
 
 unsafe extern "C" {
     fn cfm_held_modifiers() -> i32;
@@ -448,8 +448,33 @@ fn drag_payload(paths: &[String]) -> serde_json::Value {
 
 /// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
 /// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
+/// A yes/no lookup QML waits for. On a remote it gets about 150 ms on a helper thread and is then taken as
+/// yes, so a slow server never freezes the UI; whoever acts on the answer finds out soon enough.
+fn bounded_lookup(path: String, look: fn(&str) -> bool) -> bool {
+    if !listing::is_remote(&path) {
+        return look(&path);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(look(&path));
+    });
+    rx.recv_timeout(std::time::Duration::from_millis(150))
+        .unwrap_or(true)
+}
+
+/// Whether moving `paths` into `dest` stays on one filesystem. Remote mounts are compared by their mount
+/// point, so hovering a drag over a remote folder never waits on the server.
 fn same_device(paths: &[String], dest: &str) -> bool {
     use std::os::unix::fs::MetadataExt;
+    if paths.is_empty() {
+        return false;
+    }
+    let dest_remote = listing::remote_root(dest);
+    if dest_remote.is_some() || paths.iter().any(|p| listing::is_remote(p)) {
+        return paths
+            .iter()
+            .all(|p| listing::remote_root(p) == dest_remote);
+    }
     let Ok(target) = std::fs::metadata(dest) else {
         return false;
     };
@@ -989,11 +1014,11 @@ impl qobject::Backend {
     }
 
     fn exists(&self, path: &QString) -> bool {
-        std::fs::symlink_metadata(path.to_string()).is_ok()
+        bounded_lookup(path.to_string(), |p| std::fs::symlink_metadata(p).is_ok())
     }
 
     fn is_dir(&self, path: &QString) -> bool {
-        std::path::Path::new(&path.to_string()).is_dir()
+        bounded_lookup(path.to_string(), |p| std::path::Path::new(p).is_dir())
     }
 
     fn expand_path(&self, path: &QString) -> QString {

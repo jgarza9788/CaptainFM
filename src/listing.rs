@@ -178,6 +178,150 @@ pub fn stat(path: &str) -> (i64, i64) {
     }
 }
 
+// ---- remote folders -----------------------------------------------------------------------
+
+/// A mount whose lookups go over the network (or to a phone): every stat may wait on a server.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteMount {
+    pub point: String,
+    /// What was mounted: `user@host:/srv` (sshfs), `//nas/share` (cifs), `gdrive:` (rclone)...
+    pub source: String,
+}
+
+fn remote_fstype(fstype: &str) -> bool {
+    matches!(
+        fstype,
+        "fuse.gvfsd-fuse" | "fuse.rclone" | "fuse.sshfs" | "cifs" | "smb3" | "9p"
+    ) || fstype.starts_with("nfs")
+}
+
+/// mountinfo escapes spaces and a few other bytes as `\040`-style octal.
+fn unescape_mount(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(v);
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Remote mounts in a `/proc/self/mountinfo` table.
+pub fn parse_remote_mounts(mountinfo: &str) -> Vec<RemoteMount> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (left, right) = line.split_once(" - ")?;
+            let point = left.split(' ').nth(4)?;
+            let mut rest = right.split(' ');
+            let fstype = rest.next()?;
+            let source = rest.next().unwrap_or("");
+            remote_fstype(fstype).then(|| RemoteMount {
+                point: unescape_mount(point),
+                source: unescape_mount(source),
+            })
+        })
+        .collect()
+}
+
+/// The top of the remote `path` lives on, from `mounts` and the gvfs folder: for gvfs that is the
+/// share's own folder (`…/gvfs/sftp:host=nas`), not the gvfs folder holding every share.
+pub fn remote_root_in(path: &str, mounts: &[RemoteMount], gvfs: &str) -> Option<String> {
+    let under = |root: &str| {
+        let root = root.trim_end_matches('/');
+        path == root || path.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+    };
+    let gvfs = gvfs.trim_end_matches('/');
+    if !gvfs.is_empty() && under(gvfs) {
+        return Some(match path[gvfs.len()..].trim_start_matches('/').split('/').next() {
+            Some(entry) if !entry.is_empty() => format!("{gvfs}/{entry}"),
+            _ => gvfs.to_owned(),
+        });
+    }
+    mounts
+        .iter()
+        .filter(|m| under(&m.point))
+        .max_by_key(|m| m.point.len())
+        .map(|m| m.point.clone())
+}
+
+/// The server a remote mount talks to, for "Waiting for <server>…".
+pub fn remote_server(root: &str, mounts: &[RemoteMount]) -> String {
+    let base = root.rsplit('/').next().unwrap_or(root);
+    // gvfs: `smb-share:server=nas,share=media`, `sftp:host=nas,user=bob`.
+    if let Some((_, params)) = base.split_once(':')
+        && let Some(host) = params.split(',').find_map(|kv| {
+            kv.strip_prefix("host=")
+                .or_else(|| kv.strip_prefix("server="))
+        })
+    {
+        return host.to_owned();
+    }
+    let source = mounts
+        .iter()
+        .find(|m| m.point == root)
+        .map_or("", |m| m.source.as_str());
+    let host = if let Some(s) = source.strip_prefix("//") {
+        s.split('/').next().unwrap_or("")
+    } else if let Some((left, _)) = source.split_once(':') {
+        left.rsplit('@').next().unwrap_or(left)
+    } else {
+        ""
+    };
+    if host.is_empty() {
+        base.to_owned()
+    } else {
+        host.to_owned()
+    }
+}
+
+type MountCache = Option<(Instant, std::sync::Arc<Vec<RemoteMount>>)>;
+static REMOTE_MOUNTS: Mutex<MountCache> = Mutex::new(None);
+
+/// Remote mounts right now; the table is read again at most every 2 s.
+fn remote_mounts() -> std::sync::Arc<Vec<RemoteMount>> {
+    let mut cache = REMOTE_MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, mounts)) = cache.as_ref()
+        && at.elapsed() < Duration::from_secs(2)
+    {
+        return mounts.clone();
+    }
+    let text = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    let mounts = std::sync::Arc::new(parse_remote_mounts(&text));
+    *cache = Some((Instant::now(), mounts.clone()));
+    mounts
+}
+
+fn gvfs_dir_str() -> String {
+    crate::devices::gvfs_dir().to_string_lossy().into_owned()
+}
+
+/// Top of the remote mount `path` is on, or `None` for a local path. Never touches `path` itself.
+pub fn remote_root(path: &str) -> Option<String> {
+    remote_root_in(path, &remote_mounts(), &gvfs_dir_str())
+}
+
+pub fn is_remote(path: &str) -> bool {
+    remote_root(path).is_some()
+}
+
+/// Server name for a remote `path` ("" when local).
+pub fn remote_label(path: &str) -> String {
+    let mounts = remote_mounts();
+    remote_root_in(path, &mounts, &gvfs_dir_str()).map_or_else(String::new, |root| {
+        remote_server(&root, &mounts)
+    })
+}
+
 /// Recursive size on disk of everything under `path`; `cancel` aborts early.
 pub fn dir_size(path: &str, cancel: &dyn Fn() -> bool) -> i64 {
     let mut total = 0u64;
@@ -491,6 +635,65 @@ mod tests {
         sort_entries(&mut v, "name", false);
         let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["z", "a", "b"]);
+    }
+
+    const MOUNTINFO: &str = "\
+22 1 259:2 / / rw,relatime shared:1 - btrfs /dev/nvme0n1p2 rw
+30 22 0:26 / /home rw,relatime shared:2 - btrfs /dev/nvme0n1p2 rw
+40 22 0:40 / /run/user/1000/gvfs rw,nosuid,nodev shared:3 - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000
+41 30 0:41 / /home/me/nas rw shared:4 - cifs //nas.local/media rw,vers=3.1.1
+42 30 0:42 / /home/me/My\\040Drive rw shared:5 - fuse.rclone gdrive: rw
+43 30 0:43 / /home/me/box rw shared:6 - fuse.sshfs bob@host.example:/srv rw
+44 22 0:44 / /mnt/nfs rw shared:7 - nfs4 fileserver:/export rw
+45 22 0:45 / /mnt/usb rw shared:8 - vfat /dev/sdb1 rw
+";
+
+    #[test]
+    fn remote_mounts_come_from_the_mount_table() {
+        let mounts = parse_remote_mounts(MOUNTINFO);
+        let points: Vec<&str> = mounts.iter().map(|m| m.point.as_str()).collect();
+        assert_eq!(
+            points,
+            [
+                "/run/user/1000/gvfs",
+                "/home/me/nas",
+                "/home/me/My Drive",
+                "/home/me/box",
+                "/mnt/nfs"
+            ]
+        );
+        assert!(parse_remote_mounts("garbage\n\n").is_empty());
+    }
+
+    #[test]
+    fn remote_roots_and_servers() {
+        let mounts = parse_remote_mounts(MOUNTINFO);
+        let gvfs = "/run/user/1000/gvfs";
+        let root = |p: &str| remote_root_in(p, &mounts, gvfs);
+        assert_eq!(root("/home/me/docs"), None);
+        assert_eq!(root("/mnt/usb/x"), None);
+        // A sibling whose name only starts like the mount point is local.
+        assert_eq!(root("/home/me/nasty"), None);
+        assert_eq!(root("/home/me/nas/films/a.mkv").as_deref(), Some("/home/me/nas"));
+        assert_eq!(root("/home/me/My Drive").as_deref(), Some("/home/me/My Drive"));
+        assert_eq!(
+            root("/run/user/1000/gvfs/sftp:host=nas,user=bob/srv").as_deref(),
+            Some("/run/user/1000/gvfs/sftp:host=nas,user=bob")
+        );
+        assert_eq!(root("/run/user/1000/gvfs").as_deref(), Some(gvfs));
+        // The gvfs folder counts even before its mount shows up in the table.
+        assert_eq!(
+            remote_root_in("/g/smb-share:server=x,share=y/a", &[], "/g").as_deref(),
+            Some("/g/smb-share:server=x,share=y")
+        );
+
+        let server = |r: &str| remote_server(r, &mounts);
+        assert_eq!(server("/run/user/1000/gvfs/sftp:host=nas,user=bob"), "nas");
+        assert_eq!(server("/run/user/1000/gvfs/smb-share:server=nas2,share=m"), "nas2");
+        assert_eq!(server("/home/me/nas"), "nas.local");
+        assert_eq!(server("/home/me/box"), "host.example");
+        assert_eq!(server("/mnt/nfs"), "fileserver");
+        assert_eq!(server("/home/me/My Drive"), "gdrive");
     }
 }
 

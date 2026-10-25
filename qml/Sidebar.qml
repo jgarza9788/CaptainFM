@@ -209,7 +209,7 @@ Rectangle {
                                                          || (entry.item.dev !== undefined && side.armedKey === "drive:" + entry.item.path))
             text: entry.item ? (armed ? (entry.item.pin === true ? "unpin" : entry.item.verb) + " " + entry.item.label + "?" : entry.item.label) : ""
             textFormat: Text.PlainText      // connection names are typed by the user
-            elide: Text.ElideRight
+            elide: Text.ElideMiddle
             color: armed ? Style.red : (entry.active ? Style.accent : (entry.dashed ? Style.fgDim : Style.fgLight))
             font { family: Style.font; pixelSize: Style.fontSize }
         }

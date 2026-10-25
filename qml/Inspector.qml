@@ -185,7 +185,7 @@ Rectangle {
                 readonly property bool isDir: isObj ? modelData.isDir : label.endsWith("/")
                 width: ListView.view.width
                 height: Math.round(22 * Style.zoom)
-                elide: Text.ElideRight
+                elide: Text.ElideMiddle
                 text: Style.glyph(label, isDir, false) + "  " + label
                 color: isDir ? Style.accent : Style.fgLight
                 font { family: Style.font; pixelSize: Style.smallFont }

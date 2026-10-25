@@ -48,6 +48,37 @@ FocusScope {
     signal scopeToggled()
     property bool showHeader: false
     property string searchText: ""
+    // Name of the server a connection is being made to (set by Main while it mounts), "" otherwise.
+    property string connecting: ""
+
+    // A turning arc: the UI is alive while a server keeps us waiting.
+    component Spinner: Canvas {
+        width: Math.round(Style.fontSize * 1.1); height: width
+        property color tint: Style.yellow
+        onTintChanged: requestPaint()
+        onPaint: {
+            const ctx = getContext("2d")
+            ctx.reset()
+            ctx.lineWidth = Math.max(1.5, width / 7)
+            ctx.lineCap = "round"
+            ctx.strokeStyle = tint
+            ctx.beginPath()
+            ctx.arc(width / 2, height / 2, width / 2 - ctx.lineWidth, 0, Math.PI * 1.5)
+            ctx.stroke()
+        }
+        RotationAnimator on rotation {
+            running: parent.visible; loops: Animation.Infinite
+            from: 0; to: 360; duration: 900
+        }
+    }
+    // Seconds spent waiting, shown after 3 s so a slow server is told apart from a stuck one.
+    component WaitClock: Timer {
+        property int seconds: 0
+        interval: 1000; repeat: true
+        onRunningChanged: seconds = 0
+        onTriggered: seconds++
+        function suffix() { return seconds >= 3 ? "  " + seconds + " s" : "" }
+    }
     readonly property int rowH: Math.round(Style.rowHeight * (deep ? 1.85 : 1))
 
     function baseName(p) { return p.substring(p.lastIndexOf("/") + 1) }
@@ -661,10 +692,10 @@ FocusScope {
                 Text {
                     width: parent.width
                     textFormat: pane.deep ? Text.RichText : Text.PlainText
-                    text: pane.deep ? pane.highlighted(row.name + (row.isDir ? "/" : ""), Style.accent)
+                    text: pane.deep ? pane.highlighted(Style.elide(row.name + (row.isDir ? "/" : ""), font, width), Style.accent)
                                     : row.name + (row.isDir ? "/" : "")
                     color: row.nameColor
-                    elide: Text.ElideRight
+                    elide: Text.ElideMiddle
                     font { family: Style.font; pixelSize: Style.fontSize }
                 }
                 Text {
@@ -775,22 +806,16 @@ FocusScope {
             running: dir.loading && !pane.deep
         }
         Row {
+            id: loadingRow
             anchors.centerIn: parent
             spacing: Style.pad
-            visible: list.count === 0 && dir.loading && !pane.deep && !slowTimer.running
-            Rectangle {
-                width: 9; height: 9; radius: 5; anchors.verticalCenter: parent.verticalCenter
-                color: Style.yellow
-                SequentialAnimation on opacity {
-                    running: parent.visible; loops: Animation.Infinite
-                    NumberAnimation { to: 0.2; duration: 450 }
-                    NumberAnimation { to: 1.0; duration: 450 }
-                }
-            }
+            visible: list.count === 0 && dir.loading && !pane.deep && !slowTimer.running && pane.connecting === ""
+            WaitClock { id: loadClock; running: loadingRow.visible }
+            Spinner { anchors.verticalCenter: parent.verticalCenter }
             Text {
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.fontSize }
-                text: "Loading…"
+                text: (dir.remote !== "" ? "Waiting for " + dir.remote + "…" : "Loading…") + loadClock.suffix()
             }
         }
 
@@ -800,6 +825,31 @@ FocusScope {
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.fontSize }
             text: dir.filter !== "" || pane.searchText !== "" ? "No matches" : (pane.deep ? "Type to search" : "Empty folder")
+        }
+    }
+
+    // A connection is being made: say so in the pane, not only in a toast.
+    Rectangle {
+        id: connectingBox
+        anchors.centerIn: parent
+        z: 5
+        visible: pane.connecting !== ""
+        width: connectingRow.implicitWidth + Style.pad * 4
+        height: connectingRow.implicitHeight + Style.pad * 3
+        radius: Style.pad
+        color: Style.surface
+        border.color: Style.muted
+        WaitClock { id: connectClock; running: connectingBox.visible }
+        Row {
+            id: connectingRow
+            anchors.centerIn: parent
+            spacing: Style.pad
+            Spinner { anchors.verticalCenter: parent.verticalCenter; tint: Style.accent }
+            Text {
+                color: Style.fg
+                font { family: Style.font; pixelSize: Style.fontSize }
+                text: "Connecting to " + pane.connecting + "…" + connectClock.suffix()
+            }
         }
     }
 
@@ -893,7 +943,8 @@ FocusScope {
                 Text {
                     anchors { left: parent.left; right: parent.right; top: thumbBox.bottom; topMargin: Style.pad / 2
                               leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
-                    text: cell.name + (cell.isDir ? "/" : "")
+                    // Two wrapped lines hold about twice the width, less a letter lost at the break.
+                    text: Style.elide(cell.name + (cell.isDir ? "/" : ""), font, width * 2 - font.pixelSize)
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WrapAnywhere
                     maximumLineCount: 2
@@ -921,7 +972,7 @@ FocusScope {
                     anchors { left: colIcon.right; leftMargin: Style.pad * 0.8; right: parent.right; rightMargin: Style.pad
                               verticalCenter: parent.verticalCenter }
                     text: cell.name + (cell.isDir ? "/" : "")
-                    elide: Text.ElideRight
+                    elide: Text.ElideMiddle
                     color: cell.nameColor
                     font { family: Style.font; pixelSize: Style.fontSize }
                 }

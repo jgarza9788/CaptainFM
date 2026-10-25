@@ -74,6 +74,16 @@ QtObject {
         return out + esc(text.substring(pos))
     }
 
+    // Qt does not elide rich text (or wrapped text, except at the end): cut the plain text to `width`
+    // here, then mark it up. Text that fits comes back unchanged. A method call, not TextMetrics' properties,
+    // so callers' bindings do not depend on one another through the shared object.
+    readonly property FontMetrics metrics: FontMetrics {}
+    function elide(text, font, width, mode) {
+        if (width <= 0 || text === "") return text
+        metrics.font = font
+        return metrics.elidedText(text, mode ?? Text.ElideMiddle, width)
+    }
+
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
     function mix(a, b, t) { return Qt.rgba(a.r + (b.r - a.r) * t, a.g + (b.g - a.g) * t, a.b + (b.b - a.b) * t, 1) }
 
