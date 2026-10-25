@@ -474,6 +474,7 @@ pub fn paste_tracked(
         return out;
     }
     ctl.set_state(State::Running);
+    let started = std::time::Instant::now();
     // Sizes for the progress bar. A move on one filesystem is a rename and has no bytes to count.
     let dest_dev = fs::metadata(dest_dir).map(|m| m.dev()).ok();
     let bytes: u64 = paths
@@ -566,6 +567,15 @@ pub fn paste_tracked(
     } else {
         State::Done
     });
+    if std::env::var_os("CFM_DEBUG").is_some() {
+        eprintln!(
+            "[timing] {} {} items, {} bytes: {:?}",
+            out.label.to_lowercase(),
+            out.ok,
+            ctl.bytes_done.load(std::sync::atomic::Ordering::Relaxed),
+            started.elapsed()
+        );
+    }
     record(Action {
         label: out.label.clone(),
         steps,

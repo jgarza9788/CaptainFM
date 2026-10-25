@@ -50,7 +50,7 @@ Rectangle {
             prefs("startup", [["restore", "restore last session"], ["home", "home folder"], ["folder", "start folder"]])),
         { title: "Start folder", hint: "used when \"On start\" is start folder", kind: "text", key: "startFolder",
           get: () => Prefs.v.startFolder, set: (v) => Prefs.set("startFolder", v) },
-        { title: "Key style", hint: "File Pilot keys, or modal Vim keys with a Space leader",
+        { title: "Key style", hint: "File Pilot keys, or modal Vim keys with a comma leader",
           choices: [["fp", "File Pilot"], ["vim", "Vim"]], get: () => app.keymap, set: (v) => { app.keymap = v; app.markDirty() } },
         Object.assign({ title: "Default view", hint: "for new panes and tabs" },
             prefs("defaultView", [["list", "list"], ["tree", "tree"], ["miller", "Miller"], ["grid", "icons"], ["columns", "columns"]])),

@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=CaptainFM
+GenericName=File Manager
+Comment=Fast, keyboard-first file manager for Omarchy
+Exec=captainfm %F
+Icon=captainfm
+Terminal=false
+Categories=System;FileTools;FileManager;
+MimeType=inode/directory;
+Keywords=files;folder;manager;browser;captainfm;cfm;
+StartupWMClass=captainfm

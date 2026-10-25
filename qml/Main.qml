@@ -323,7 +323,7 @@ Window {
     function loadLayoutPicker() {
         const all = JSON.parse(Backend.readConfig("layouts"))
         const names = Object.keys(all)
-        if (names.length === 0) { toast("No saved layouts yet (Space l s)", "warn"); return }
+        if (names.length === 0) { toast("No saved layouts yet (, l s)", "warn"); return }
         pickerBox.open({
             placeholder: "Load layout",
             items: names.map(n => ({ title: n, hint: all[n].tabs.length + " tab(s)", tag: n })),
@@ -680,7 +680,7 @@ Window {
     function setKeymap(name) {
         keymap = name
         engine.rebuild(userKeys)
-        toast(name === "fp" ? "File Pilot keys (Ctrl shortcuts, type to find)" : "Vim keys (modal, Space leader)")
+        toast(name === "fp" ? "File Pilot keys (Ctrl shortcuts, type to find)" : "Vim keys (modal, comma leader)")
         markDirty()
     }
 
@@ -1286,7 +1286,7 @@ Window {
                     ? (deep ? [["↑↓", "move"], ["enter", "open"], ["esc", "back"]]
                             : [["↑↓", "move"], ["→", "open"], ["←", "up"], ["ctrl+l", "go to"], ["ctrl+f", "search"], ["ctrl+p", "actions"]])
                     : (deep ? [["j/k", "move"], ["enter", "open"], ["esc", "back"]]
-                            : [["j/k", "move"], ["l", "open"], ["h", "up"], ["space", "leader"], ["/", "filter"]])
+                            : [["j/k", "move"], ["l", "open"], ["h", "up"], [",", "leader"], ["/", "filter"]])
 
                 Row {
                     id: leftStatus

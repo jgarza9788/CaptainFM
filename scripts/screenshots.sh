@@ -47,8 +47,8 @@ shot() { # name folder keys [keymap]
 }
 settle="<F9> <F9> <F9> <F9> <F9>"
 
-shot main "$P" "<Down> <Down> <Down> <Down> <Down> <Space> <Space> $settle"
-shot leader "$P" "<Down> <Down> <Down> <Down> <Space> $settle" vim
+shot main "$P" "<Down> <Down> <Down> <Down> <Down> <Insert> <Insert> $settle"
+shot leader "$P" "<Down> <Down> <Down> <Down> , $settle" vim
 shot palette "$P" "@app.palette =spl $settle"
 shot search "$H" "@search.folder =compose_ext:yml,yaml $settle $settle"
 shot batch-rename "$H/Pictures/trip-2026-09" "<C-a> @file.batchRename !mode:template !clear =trip-{created:%Y-%m-%d}-{n:03}{ext} $settle"

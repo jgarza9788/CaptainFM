@@ -16,15 +16,15 @@
 - [x] Drop targets in grid view: drop onto a folder, and hover a drag over one to open it. Grid and column cells can now also start a drag.
 
 ## 4. Transfer queue with progress
-- [x] A panel listing each copy or move, with speed and time left. It opens by itself, `Space x x` shows or hides it (`src/transfer.rs`, `qml/TransferPanel.qml`).
-- [x] Cancel, and pause. Both act between 8 MB chunks; a cancelled copy removes its half-written file. `Space x p` pauses, `Space x c` cancels, or click the panel.
+- [x] A panel listing each copy or move, with speed and time left. It opens by itself, `, x x` shows or hides it (`src/transfer.rs`, `qml/TransferPanel.qml`).
+- [x] Cancel, and pause. Both act between 8 MB chunks; a cancelled copy removes its half-written file. `, x p` pauses, `, x c` cancels, or click the panel.
 - [x] Name conflicts: ask to replace, skip or keep both (one answer for the whole paste). Replace sends the old item to the trash, so undo brings it back. (`qml/ConflictDialog.qml`)
 
 ## 5. more previews
 - [x] Built-in preview for more file types: calendars (.ics), contacts (.vcf), packages (.pkg.tar.*, .deb, .rpm, through the package manager's own tool) and SSH public keys (fingerprint).
 
 ## 6. Faster deep search index
-Measured on this machine (`scripts/bench.py`): `/home` is 322,755 entries. The index now builds in 0.22 s (was 1.94 s) and the whole app peaks at 159 MB (was 199 MB). Searching it takes about 6 ms.
+Measured on this machine (`scripts/bench.py` (now `scripts/perf.py`)): `/home` is 322,755 entries. The index now builds in 0.22 s (was 1.94 s) and the whole app peaks at 159 MB (was 199 MB). Searching it takes about 6 ms.
 - [x] Stop reading size and modified time for every entry while building. They are read for the 500 results shown, and for the entries that match the name when the query uses `size>` or `newer:` (`index::search`).
 - [x] Walk folders in parallel, on our own small thread pool (up to 8 threads), because `jwalk` is unmaintained (`index::scan`).
 - [x] Use less memory: names share one text buffer and each folder is stored once, 12 bytes per entry plus the name (was about 133 bytes of path text per entry).
@@ -45,7 +45,7 @@ Idle went from about 2.7 wake-ups a second to 0.15 (3 in 20 s, measured on an op
 
 ## 9. Build and startup
 Startup with an empty folder (headless, `CFM_DEBUG=1` prints it): Qt itself is up at 87 ms, the interface is built at about 300 ms, the first frame at about 345 ms (was about 375 ms).
-- [x] `dist` profile (`lto = "fat"`, `codegen-units = 1`, `panic = "abort"`), which `build.sh` now uses: 19% smaller (12.7 to 10.2 MB) and the index builds a little faster (about 240 ms against 290 ms); startup is the same. A build takes 6 minutes instead of 1, so `cargo build --release` stays the development build, and `CFM_PROFILE=dist scripts/bench.py` measures it.
+- [x] `dist` profile (`lto = "fat"`, `codegen-units = 1`, `panic = "abort"`), which `build.sh` now uses: 19% smaller (12.7 to 10.2 MB) and the index builds a little faster (about 240 ms against 290 ms); startup is the same. A build takes 6 minutes instead of 1, so `cargo build --release` stays the development build, and `scripts/perf.py` measures it.
 - [x] Settings, Connect and Batch rename are built the first time they open, not at startup (about 30 ms).
 - [x] `CFM_DEBUG=1` prints "Qt application created", "interface built", "QML loaded" and "first frame" times.
 - [x] `cargo bloat`: code is 7.1 MB; the biggest parts are `std` 1.0 MB, `zbus` 1.0 MB, `cxx_qt_lib` 0.7 MB and the regex crates 0.9 MB. Nothing cheap to remove for speed; `zbus` is the portal and folder-handler service.
@@ -77,17 +77,25 @@ Core, not a plugin: the sidebar already drew a usage bar, percentage and "N free
 - [x] A pulsing dot and "Loading…" show in an empty folder that is still being read, but only after 300 ms so local folders never flash it (`Pane.qml`, `slowTimer`). The small dot beside the item count already showed while file details load. Not seen mid-load: the QML loads and a Google Drive folder opens, but the headless screenshot fires after the listing is back.
 
 ## 12.5 **inserted**
-- [x] The release steps are written down in `docs/RELEASING.md`: Arch package, `.deb`, `.rpm`, AppImage and Flatpak, built from one optimised binary, with what goes in each, the checks and the publish step (asks first).
-- [ ] Actually make the packaging files and run the first release by following that document (none exist yet; only `makepkg` is installed here, the rest need containers).
+- [x] The release steps are written down in `docs/RELEASING.md`: Arch package and tarball (AppImage is postponed; `.deb`, `.rpm` and Flatpak are skipped), built from one optimised binary, with what goes in each, the checks and the publish step (asks first).
+- [x] Releases are built from `master` in a separate worktree (`git worktree add ../CaptainFM-release master`); a Dev branch is never merged into `master` for a release.
+- [x] Packaging files made and the first build run: `packaging/arch/PKGBUILD` + `captainfm.desktop`, and `scripts/release.sh`, which builds from `master` in the `../CaptainFM-release` worktree (nothing committed to `master`). Output in `dist-release/v0.1.0/`: `captainfm-0.1.0-1-x86_64.pkg.tar.zst` (3.6 MB), `captainfm-0.1.0-x86_64-linux.tar.gz` (3.8 MB), `PKGBUILD`, `.SRCINFO`, `SHA256SUMS`. Checked: package file list and dependencies, tarball `install.sh` into a scratch prefix, the installed binary starts headless and shows the folder, `desktop-file-validate` passes. The first try failed to link until the PKGBUILD got `options=('!lto')`.
+- [ ] Still to do for the release: `cargo test` in the packaging run (skipped), install in a clean container, pick the version number (files say 0.1.0, Settings says v0.01 Ahab), then publish (asks first) and the AUR push.
+- [ ] AppImage (postponed): a first try on 2026-10-24 made a 93 MB file, but linuxdeploy's Qt plugin choked on the `kimg_*` image plugins and the headless run gave no screenshot. Needs a build on an old distro.
 
 ## 12.6 spacebar
-- [ ] the space bar is used to preview the item in other FMs, let's have the space bar open the inspector
+- [x] The space bar toggles the preview pane (inspector) in both key styles, as in other file managers. To make room, marking an item is now `Insert` (File Pilot keys; Vim keeps `m`) and the Vim leader moved from `Space` to `,` (`, f f`, `, v i`, `, ,` for the palette, `, s` for Settings). Docs, examples and `scripts/screenshots.sh` follow.
 
 
 ## 13. Performance test
-- [ ] Create a performance test.
-- [ ] Standardise it, so runs on different days can be compared.
-- [ ] Write a small report for each run.
+- [x] Create a performance test: `scripts/perf.py` (replaces `bench.py`). Cases: startup to "QML loaded", listing a 20,000-file folder, and indexing plus searching 70,000 files. Each reports CPU time, peak memory and the app's own `[timing]` figure.
+- [x] Standardise it: the fixture is generated the same way every run (fixed names and counts) in a scratch folder that is also `$HOME`; headless; a warm-up run, then 5 timed runs with median, best and worst. `FIXTURE_VERSION` in the script is bumped whenever the cases change, and runs with different versions are never compared.
+- [x] Write a small report for each run: `docs/perf/<date>_<commit>_<profile>.md` (and `.json`) with commit, build profile, binary size, CPU, cores, RAM, kernel, and a change column against the previous comparable run. Baseline: `docs/perf/2026-10-24_1737_0958bc4_dist.md` (fixture v2: startup 330 ms, 20,000-file listing 17 ms, 70,000-file index 11 ms, peak 144 MB). The earlier v1 report is kept but never compared.
+- [x] It is a step in `docs/RELEASING.md` (run `scripts/perf.py` on the release binary and keep the report). Not yet done for a real release, since none is published; do it with the first one.
+- Reading the numbers: Small timings are noisy (the report says so); trust CPU time and memory first.
+- [x] Added copy throughput (fixture v2): 100 files of 2 MB copied into an empty folder through the real clipboard path, timed by a new `[timing] copied N items, B bytes: T` line that `CFM_DEBUG` prints when a copy or move ends (`ops::paste_tracked`). `--scratch DIR` picks the disk the fixture lives on. Baseline on the temp folder: about 140 ms, 1.4 GB/s. On this machine's home disk the same copy took 6 ms because the filesystem clones files instead of copying them, so that number says nothing about disk speed; use a different filesystem or a bigger fixture for that.
+- Thumbnails need no case: `thumbnails.rs` only looks up the desktop's thumbnail cache (one file lookup per row); CaptainFM makes none itself.
+- [x] Decided what is not measured: scrolling smoothness and frame times (the offscreen renderer is software, so its frame times say nothing about a real GPU) and a remote or cloud folder (needs a real server, and the time is the network's). Check these by hand before a release: open the 20,000-file folder from `scripts/perf.py`, hold `j` / Page Down in list and grid views, and look for stutter; open a remote folder and check the listing appears while loading. Add a case if a headless way appears.
 
 ## 50. Features few people use: decide with the numbers
 Counting began on 2026-10-24 (section 10), so the earliest sensible review is about 2026-11-21.

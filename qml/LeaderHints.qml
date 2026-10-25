@@ -20,7 +20,7 @@ Rectangle {
         id: header
         x: Style.pad * 1.5; y: Style.pad * 1.2
         textFormat: Text.RichText
-        text: "<font color=\"" + Style.accent + "\">" + hints.prefix + " › " + (hints.prefix === "space" ? "leader" : "keys") + "</font>"
+        text: "<font color=\"" + Style.accent + "\">" + hints.prefix + " › " + (hints.prefix === "," ? "leader" : "keys") + "</font>"
         font { family: Style.font; pixelSize: Style.fontSize }
     }
 
