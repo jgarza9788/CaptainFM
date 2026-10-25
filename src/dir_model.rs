@@ -354,6 +354,52 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
     }
 }
 
+/// First row from `from` (wrapping around) whose name starts with `prefix` (lower case), or -1.
+fn find_prefix_in(all: &[Entry], order: &[u32], prefix: &str, from: i32) -> i32 {
+    let n = order.len();
+    if n == 0 {
+        return -1;
+    }
+    let start = usize::try_from(from).unwrap_or(0) % n;
+    (0..n)
+        .map(|k| (start + k) % n)
+        .find(|&row| all[order[row] as usize].lname.starts_with(prefix))
+        .map_or(-1, |r| r as i32)
+}
+
+/// Row of the folder holding the entry at `row` (tree view), or -1 when it is not shown.
+fn parent_row_in(all: &[Entry], order: &[u32], row: i32) -> i32 {
+    let Some(e) = usize::try_from(row)
+        .ok()
+        .and_then(|r| order.get(r))
+        .map(|&i| &all[i as usize])
+    else {
+        return -1;
+    };
+    let parent = e.path.rsplit_once('/').map_or("", |p| p.0);
+    order
+        .iter()
+        .position(|&i| all[i as usize].path == parent)
+        .map_or(-1, |i| i as i32)
+}
+
+/// Paths of the rows from `from` to `to` (either way round, clamped to the rows shown).
+fn range_paths(all: &[Entry], order: &[u32], from: i32, to: i32) -> Vec<String> {
+    let (lo, hi) = (from.min(to).max(0), from.max(to));
+    order
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| (*i as i32) >= lo && (*i as i32) <= hi)
+        .map(|(_, &i)| all[i as usize].path.clone())
+        .collect()
+}
+
+/// Collapsing a folder also collapses every folder inside it.
+fn collapse_in(expanded: &mut HashSet<String>, path: &str) {
+    let prefix = format!("{path}/");
+    expanded.retain(|p| p != path && !p.starts_with(&prefix));
+}
+
 impl DirModelRust {
     fn is_deep(&self) -> bool {
         self.mode.to_string() == "deep"
@@ -550,22 +596,14 @@ impl qobject::DirModel {
         if !self.expanded.contains(&path) {
             return false;
         }
-        let prefix = format!("{path}/");
-        self.as_mut()
-            .rust_mut()
-            .expanded
-            .retain(|p| p != &path && !p.starts_with(&prefix));
+        collapse_in(&mut self.as_mut().rust_mut().expanded, &path);
         self.as_mut().rewatch();
         self.refresh(true);
         true
     }
 
     fn parent_row(&self, row: i32) -> i32 {
-        let Some(e) = self.entry(row) else { return -1 };
-        let parent = e.path.rsplit_once('/').map_or("", |p| p.0);
-        self.shown()
-            .position(|p| p.path == parent)
-            .map_or(-1, |i| i as i32)
+        parent_row_in(&self.all, &self.order, row)
     }
 
     fn reload(self: Pin<&mut Self>) {
@@ -587,20 +625,12 @@ impl qobject::DirModel {
     }
 
     fn find_prefix(&self, prefix: &QString, from: i32) -> i32 {
-        let prefix = prefix.to_string().to_lowercase();
-        let n = self.order.len();
-        if n == 0 {
-            return -1;
-        }
-        let start = usize::try_from(from).unwrap_or(0) % n;
-        (0..n)
-            .map(|k| (start + k) % n)
-            .find(|&row| {
-                self.all[self.order[row] as usize]
-                    .lname
-                    .starts_with(&prefix)
-            })
-            .map_or(-1, |r| r as i32)
+        find_prefix_in(
+            &self.all,
+            &self.order,
+            &prefix.to_string().to_lowercase(),
+            from,
+        )
     }
 
     fn row_of_path(&self, path: &QString) -> i32 {
@@ -674,12 +704,7 @@ impl qobject::DirModel {
 
     fn select_range(mut self: Pin<&mut Self>, from: i32, to: i32, on: bool) {
         let (lo, hi) = (from.min(to).max(0), from.max(to));
-        let paths: Vec<String> = self
-            .shown()
-            .enumerate()
-            .filter(|(i, _)| (*i as i32) >= lo && (*i as i32) <= hi)
-            .map(|(_, e)| e.path.clone())
-            .collect();
+        let paths = range_paths(&self.all, &self.order, from, to);
         let sel = &mut self.as_mut().rust_mut().selected;
         for p in paths {
             if on {
@@ -1031,5 +1056,169 @@ impl qobject::DirModel {
         if !same_rows || force_signal {
             self.loaded();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Entries under `/r`: a path ending in `/` is a folder, and a name starting with `.` is hidden.
+    fn entries(paths: &[&str]) -> Vec<Entry> {
+        paths
+            .iter()
+            .map(|p| {
+                let is_dir = p.ends_with('/');
+                let path = p.trim_end_matches('/');
+                let name = path.rsplit('/').next().unwrap();
+                Entry {
+                    name: name.into(),
+                    lname: name.to_lowercase(),
+                    path: format!("/r/{path}"),
+                    rel: String::new(),
+                    is_dir,
+                    is_link: false,
+                    hidden: name.starts_with('.'),
+                    depth: path.matches('/').count() as u16,
+                }
+            })
+            .collect()
+    }
+
+    fn opts<'a>(filter: &'a str, key: &'a str, desc: bool) -> ViewOpts<'a> {
+        ViewOpts {
+            show_hidden: false,
+            filter,
+            exts: &[],
+            key,
+            desc,
+            tree_root: None,
+            group: "none",
+        }
+    }
+
+    fn names(all: &[Entry], order: &[u32]) -> Vec<String> {
+        order
+            .iter()
+            .map(|&i| all[i as usize].name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn order_hides_dotfiles_and_puts_folders_first() {
+        let all = entries(&["b.txt", ".hidden", "a.txt", "zdir/", "10.txt", "9.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let order = compute_order(&all, &meta, &opts("", "name", false));
+        assert_eq!(
+            names(&all, &order),
+            ["zdir", "9.txt", "10.txt", "a.txt", "b.txt"]
+        );
+        let shown = ViewOpts {
+            show_hidden: true,
+            ..opts("", "name", false)
+        };
+        assert!(names(&all, &compute_order(&all, &meta, &shown)).contains(&".hidden".into()));
+    }
+
+    #[test]
+    fn order_by_size_descending() {
+        let all = entries(&["small", "big", "mid"]);
+        let meta: Vec<Meta> = [1, 300, 20]
+            .iter()
+            .map(|&size| Meta { size, mtime: 0 })
+            .collect();
+        let order = compute_order(&all, &meta, &opts("", "size", true));
+        assert_eq!(names(&all, &order), ["big", "mid", "small"]);
+    }
+
+    #[test]
+    fn extension_filter_spares_folders() {
+        let all = entries(&["a.pdf", "b.txt", "docs/", "c.PDF"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let exts = ["pdf".to_string()];
+        let o = ViewOpts {
+            exts: &exts,
+            ..opts("", "name", false)
+        };
+        assert_eq!(
+            names(&all, &compute_order(&all, &meta, &o)),
+            ["docs", "a.pdf", "c.PDF"]
+        );
+    }
+
+    #[test]
+    fn filter_text_keeps_matches_and_ties_go_by_name() {
+        let all = entries(&["rep2.txt", "notes.md", "rep1.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let order = compute_order(&all, &meta, &opts("rep", "name", false));
+        assert_eq!(names(&all, &order), ["rep1.txt", "rep2.txt"]);
+    }
+
+    #[test]
+    fn grouping_keeps_the_sort_inside_each_group() {
+        let all = entries(&["b.png", "z.rs", "a.png", "dir/"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let o = ViewOpts {
+            group: "type",
+            ..opts("", "name", true)
+        };
+        // Folders, then images (descending by name), then code.
+        assert_eq!(
+            names(&all, &compute_order(&all, &meta, &o)),
+            ["dir", "b.png", "a.png", "z.rs"]
+        );
+    }
+
+    #[test]
+    fn tree_order_nests_children_under_their_folder() {
+        let all = entries(&["b/", "a/", "a/y.txt", "a/x.txt", "c.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let o = ViewOpts {
+            tree_root: Some("/r"),
+            ..opts("", "name", false)
+        };
+        let order = compute_order(&all, &meta, &o);
+        assert_eq!(names(&all, &order), ["a", "x.txt", "y.txt", "b", "c.txt"]);
+        // The parent of a nested row is its folder's row; top-level rows have none.
+        assert_eq!(parent_row_in(&all, &order, 2), 0);
+        assert_eq!(parent_row_in(&all, &order, 3), -1);
+        assert_eq!(parent_row_in(&all, &order, 99), -1);
+    }
+
+    #[test]
+    fn find_prefix_wraps_around_from_the_cursor() {
+        let all = entries(&["apple", "banana", "avocado"]);
+        let order = vec![0, 1, 2];
+        assert_eq!(find_prefix_in(&all, &order, "a", 0), 0);
+        assert_eq!(find_prefix_in(&all, &order, "a", 1), 2);
+        assert_eq!(
+            find_prefix_in(&all, &order, "a", 3),
+            0,
+            "past the end wraps to the top"
+        );
+        assert_eq!(find_prefix_in(&all, &order, "q", 0), -1);
+        assert_eq!(find_prefix_in(&[], &[], "a", 0), -1);
+    }
+
+    #[test]
+    fn range_selection_works_either_way_and_clamps() {
+        let all = entries(&["a", "b", "c", "d"]);
+        let order = vec![3, 2, 1, 0];
+        assert_eq!(range_paths(&all, &order, 2, 1), ["/r/c", "/r/b"]);
+        assert_eq!(range_paths(&all, &order, -5, 0), ["/r/d"]);
+        assert_eq!(range_paths(&all, &order, 3, 99), ["/r/a"]);
+    }
+
+    #[test]
+    fn collapsing_a_folder_collapses_the_folders_inside_it() {
+        let mut expanded: HashSet<String> = ["/r/a", "/r/a/b", "/r/a/b/c", "/r/ab", "/r/z"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        collapse_in(&mut expanded, "/r/a");
+        let mut left: Vec<&str> = expanded.iter().map(String::as_str).collect();
+        left.sort();
+        // `/r/ab` only shares the start of the name, so it stays open.
+        assert_eq!(left, ["/r/ab", "/r/z"]);
     }
 }

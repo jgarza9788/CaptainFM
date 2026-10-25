@@ -152,8 +152,9 @@ on the command line when you switch back to it.
 ## Development
 
 ```sh
-cargo test                      # ~160 unit tests: fuzzy matching, listing, index, file ops and undo, transfers, pins, D-Bus, plugins, previews
-cargo clippy --release --all-targets
+./run-tests.sh                  # ~190 unit tests, headless: fuzzy matching, listing, index, file ops and undo, transfers, pins, D-Bus, plugins, previews
+./run-tests.sh trash            # only tests whose name contains "trash"; --ignored adds the known failures, --list lists them
+cargo clippy --release --all-targets -- -D warnings   # ./build.sh runs fmt, clippy and the tests before it builds
 ./scripts/screenshots.sh        # regenerate docs/images from a synthetic home folder (headless)
 python3 scripts/perf.py         # standard performance test (dist build); saves a report to docs/perf/
 ```

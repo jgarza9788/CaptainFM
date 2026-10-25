@@ -501,13 +501,12 @@ pub fn stem(word: &str) -> String {
                     let mut r = r.to_owned();
                     // "running" -> "runn" -> "run"
                     let b = r.as_bytes();
-                    if suf == "ing" || suf == "ed" || suf == "er" {
-                        if b.len() >= 4
-                            && b[b.len() - 1] == b[b.len() - 2]
-                            && !b"lsz".contains(&b[b.len() - 1])
-                        {
-                            r.pop();
-                        }
+                    if (suf == "ing" || suf == "ed" || suf == "er")
+                        && b.len() >= 4
+                        && b[b.len() - 1] == b[b.len() - 2]
+                        && !b"lsz".contains(&b[b.len() - 1])
+                    {
+                        r.pop();
                     }
                     next = Some(r);
                     break;
@@ -533,8 +532,8 @@ pub fn edit_distance(a: &str, b: &str) -> usize {
     for (i, row) in d.iter_mut().enumerate() {
         row[0] = i;
     }
-    for j in 0..=b.len() {
-        d[0][j] = j;
+    for (j, cell) in d[0].iter_mut().enumerate() {
+        *cell = j;
     }
     for i in 1..=a.len() {
         for j in 1..=b.len() {
@@ -733,11 +732,33 @@ mod predict_tests {
     }
 
     #[test]
+    fn doubled_letters_are_undone_except_l_s_and_z() {
+        assert_eq!(stem("stopped"), "stop");
+        assert_eq!(stem("dropping"), "drop");
+        // "falling" keeps "fall", "buzzer" keeps "buzz", "pressed" keeps "press".
+        assert_eq!(stem("falling"), "fall");
+        assert_eq!(stem("buzzer"), "buzz");
+        assert_eq!(stem("pressed"), "press");
+        // Short words are left alone.
+        assert_eq!(stem("Bed"), "bed");
+    }
+
+    #[test]
     fn typos_are_one_edit() {
         assert_eq!(edit_distance("disconect", "disconnect"), 1);
         assert_eq!(edit_distance("prefrences", "preferences"), 1);
         assert_eq!(edit_distance("recieve", "receive"), 1);
         assert_eq!(edit_distance("abc", "xyz"), 3);
+    }
+
+    #[test]
+    fn edit_distance_edges() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("", "abc"), 3);
+        assert_eq!(edit_distance("abc", ""), 3);
+        assert_eq!(edit_distance("ab", "ba"), 1, "a swap is one edit");
+        assert_eq!(edit_distance("café", "cafe"), 1, "letters, not bytes");
+        assert_eq!(edit_distance("same", "same"), 0);
     }
 
     #[test]

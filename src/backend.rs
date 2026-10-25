@@ -471,9 +471,7 @@ fn same_device(paths: &[String], dest: &str) -> bool {
     }
     let dest_remote = listing::remote_root(dest);
     if dest_remote.is_some() || paths.iter().any(|p| listing::is_remote(p)) {
-        return paths
-            .iter()
-            .all(|p| listing::remote_root(p) == dest_remote);
+        return paths.iter().all(|p| listing::remote_root(p) == dest_remote);
     }
     let Ok(target) = std::fs::metadata(dest) else {
         return false;
@@ -1293,7 +1291,7 @@ mod tests {
     #[test]
     fn same_device_compares_filesystems() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
-        assert!(same_device(&[home.clone()], &home));
+        assert!(same_device(std::slice::from_ref(&home), &home));
         assert!(!same_device(&[], &home));
         assert!(!same_device(&["/nonexistent/x".to_owned()], &home));
         assert!(!same_device(&[home], "/nonexistent"));

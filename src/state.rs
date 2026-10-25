@@ -250,7 +250,7 @@ impl Usage {
             }),
         }
         if self.picks.len() > MAX_PICKS {
-            self.picks.sort_by(|a, b| b.t.cmp(&a.t));
+            self.picks.sort_by_key(|p| std::cmp::Reverse(p.t));
             self.picks.truncate(MAX_PICKS);
         }
     }
@@ -518,6 +518,22 @@ pub fn mount_root(path: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_picks_count_repeats_and_keep_the_newest() {
+        let mut u = Usage::default();
+        u.record("ren", "file.rename", 1);
+        u.record("ren", "file.rename", 2);
+        assert_eq!(u.picks.len(), 1);
+        assert_eq!((u.picks[0].n, u.picks[0].t), (2, 2));
+        // Past the cap, the oldest picks are dropped first.
+        for t in 0..MAX_PICKS as i64 + 5 {
+            u.record(&format!("q{t}"), "x", 100 + t);
+        }
+        assert_eq!(u.picks.len(), MAX_PICKS);
+        assert!(u.picks.iter().all(|p| p.t >= 100 + 5));
+        assert!(u.picks.iter().any(|p| p.t == 100 + MAX_PICKS as i64 + 4));
+    }
 
     #[test]
     fn frecency_prefers_recent() {

@@ -919,10 +919,10 @@ mod tests {
         if made.is_err() {
             return;
         }
-        let o = extract(&[zip.clone()], true);
+        let o = extract(std::slice::from_ref(&zip), true);
         assert_eq!(o.errors.len(), 0, "{:?}", o.errors);
         assert!(d.join("pack/f.txt").exists());
-        let o = extract(&[zip.clone()], true);
+        let o = extract(std::slice::from_ref(&zip), true);
         assert!(d.join("pack (copy)/f.txt").exists(), "{:?}", o.errors);
         fs::remove_file(d.join("pack/f.txt")).unwrap();
         fs::remove_dir(d.join("pack")).unwrap();
@@ -1004,6 +1004,98 @@ mod journal_tests {
         let redo = step_history(true);
         assert_eq!(redo.ok, 1, "{:?}", redo.errors);
         assert!(!Path::new(&p(&sb, "a.txt")).exists());
+    }
+
+    #[test]
+    fn trashing_two_files_with_the_same_name_keeps_both() {
+        let sb = Sandbox::new("trash-twins");
+        sb.touch("x/a.txt", "from x");
+        sb.touch("y/a.txt", "from y");
+        let out = trash(&[p(&sb, "x/a.txt"), p(&sb, "y/a.txt")]);
+        assert_eq!(out.ok, 2, "{:?}", out.errors);
+        let (files, infos) = trash_dirs();
+        let mut stored: Vec<String> = fs::read_dir(&files)
+            .unwrap()
+            .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        stored.sort();
+        assert_eq!(stored, ["from x", "from y"]);
+        assert_eq!(fs::read_dir(&infos).unwrap().count(), 2);
+        // One undo puts each back in its own folder.
+        assert_eq!(step_history(false).ok, 2);
+        assert_eq!(fs::read_to_string(p(&sb, "x/a.txt")).unwrap(), "from x");
+        assert_eq!(fs::read_to_string(p(&sb, "y/a.txt")).unwrap(), "from y");
+    }
+
+    #[test]
+    fn trashing_a_folder_and_undo_brings_its_contents_back() {
+        let sb = Sandbox::new("trash-dir");
+        sb.touch("d/sub/deep.txt", "deep");
+        sb.touch("d/top.txt", "top");
+        assert_eq!(trash(&[p(&sb, "d")]).ok, 1);
+        assert!(!Path::new(&p(&sb, "d")).exists());
+        assert_eq!(step_history(false).ok, 1);
+        assert_eq!(
+            fs::read_to_string(p(&sb, "d/sub/deep.txt")).unwrap(),
+            "deep"
+        );
+        assert_eq!(fs::read_to_string(p(&sb, "d/top.txt")).unwrap(), "top");
+    }
+
+    #[test]
+    fn a_missing_file_does_not_stop_the_rest_of_the_trash() {
+        let sb = Sandbox::new("trash-partial");
+        sb.touch("a.txt", "A");
+        let out = trash(&[p(&sb, "gone.txt"), p(&sb, "a.txt")]);
+        assert_eq!((out.ok, out.errors.len()), (1, 1));
+        assert!(out.errors[0].starts_with("gone.txt"), "{:?}", out.errors);
+        // No .trashinfo is left behind for the one that failed.
+        let (_, infos) = trash_dirs();
+        assert!(!infos.join("gone.txt.trashinfo").exists());
+        assert_eq!(step_history(false).ok, 1);
+        assert!(Path::new(&p(&sb, "a.txt")).exists());
+    }
+
+    #[test]
+    fn moving_across_drives_copies_then_removes() {
+        use std::os::unix::fs::MetadataExt;
+        let sb = Sandbox::new("xdev");
+        // Needs a second filesystem; /dev/shm is a separate tmpfs on most systems.
+        let other = Path::new("/dev/shm").join(format!("cfm-xdev-{}", std::process::id()));
+        if fs::create_dir_all(&other).is_err()
+            || fs::metadata(&other).unwrap().dev() == fs::metadata(&sb.root).unwrap().dev()
+        {
+            eprintln!("skipped: no second filesystem at /dev/shm");
+            return;
+        }
+        sb.touch("d/inner.txt", "inner");
+        sb.touch("f.txt", "file");
+        move_any(Path::new(&p(&sb, "d")), &other.join("d")).unwrap();
+        move_any(Path::new(&p(&sb, "f.txt")), &other.join("f.txt")).unwrap();
+        let moved = (
+            fs::read_to_string(other.join("d/inner.txt")).ok(),
+            fs::read_to_string(other.join("f.txt")).ok(),
+        );
+        let _ = fs::remove_dir_all(&other);
+        assert_eq!(moved, (Some("inner".into()), Some("file".into())));
+        assert!(!Path::new(&p(&sb, "d")).exists() && !Path::new(&p(&sb, "f.txt")).exists());
+    }
+
+    #[test]
+    #[ignore = "fails until todo 17.0: a remote file is downloaded into the local trash"]
+    fn a_remote_file_never_lands_in_the_local_trash() {
+        let mut sb = Sandbox::new("trash-remote");
+        // Anything under the gvfs folder counts as remote (`listing::remote_root`).
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = "run/gvfs/smb-share:server=nas,share=media";
+        sb.touch(&format!("{share}/a.txt"), "A");
+        assert!(crate::listing::is_remote(&p(
+            &sb,
+            &format!("{share}/a.txt")
+        )));
+        trash(&[p(&sb, &format!("{share}/a.txt"))]);
+        let (files, _) = trash_dirs();
+        assert!(!files.join("a.txt").exists());
     }
 
     #[test]
@@ -1115,10 +1207,10 @@ mod journal_tests {
         sb.touch("src/a.txt", "new");
         sb.touch("dst/a.txt", "old");
         let (src, dst) = (sb.path("src/a.txt"), sb.path("dst"));
-        assert_eq!(conflicts(&[src.clone()], &dst), ["a.txt"]);
+        assert_eq!(conflicts(std::slice::from_ref(&src), &dst), ["a.txt"]);
         let run = |policy| {
             let ctl = Ctl::register("Copied", &dst, 1);
-            paste_tracked(&ctl, &[src.clone()], &dst, false, policy)
+            paste_tracked(&ctl, std::slice::from_ref(&src), &dst, false, policy)
         };
         let out = run(Policy::Skip);
         assert_eq!((out.ok, out.skipped), (0, 1));

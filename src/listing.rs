@@ -242,10 +242,12 @@ pub fn remote_root_in(path: &str, mounts: &[RemoteMount], gvfs: &str) -> Option<
     };
     let gvfs = gvfs.trim_end_matches('/');
     if !gvfs.is_empty() && under(gvfs) {
-        return Some(match path[gvfs.len()..].trim_start_matches('/').split('/').next() {
-            Some(entry) if !entry.is_empty() => format!("{gvfs}/{entry}"),
-            _ => gvfs.to_owned(),
-        });
+        return Some(
+            match path[gvfs.len()..].trim_start_matches('/').split('/').next() {
+                Some(entry) if !entry.is_empty() => format!("{gvfs}/{entry}"),
+                _ => gvfs.to_owned(),
+            },
+        );
     }
     mounts
         .iter()
@@ -317,9 +319,8 @@ pub fn is_remote(path: &str) -> bool {
 /// Server name for a remote `path` ("" when local).
 pub fn remote_label(path: &str) -> String {
     let mounts = remote_mounts();
-    remote_root_in(path, &mounts, &gvfs_dir_str()).map_or_else(String::new, |root| {
-        remote_server(&root, &mounts)
-    })
+    remote_root_in(path, &mounts, &gvfs_dir_str())
+        .map_or_else(String::new, |root| remote_server(&root, &mounts))
 }
 
 /// Recursive size on disk of everything under `path`; `cancel` aborts early.
@@ -674,8 +675,14 @@ mod tests {
         assert_eq!(root("/mnt/usb/x"), None);
         // A sibling whose name only starts like the mount point is local.
         assert_eq!(root("/home/me/nasty"), None);
-        assert_eq!(root("/home/me/nas/films/a.mkv").as_deref(), Some("/home/me/nas"));
-        assert_eq!(root("/home/me/My Drive").as_deref(), Some("/home/me/My Drive"));
+        assert_eq!(
+            root("/home/me/nas/films/a.mkv").as_deref(),
+            Some("/home/me/nas")
+        );
+        assert_eq!(
+            root("/home/me/My Drive").as_deref(),
+            Some("/home/me/My Drive")
+        );
         assert_eq!(
             root("/run/user/1000/gvfs/sftp:host=nas,user=bob/srv").as_deref(),
             Some("/run/user/1000/gvfs/sftp:host=nas,user=bob")
@@ -689,7 +696,10 @@ mod tests {
 
         let server = |r: &str| remote_server(r, &mounts);
         assert_eq!(server("/run/user/1000/gvfs/sftp:host=nas,user=bob"), "nas");
-        assert_eq!(server("/run/user/1000/gvfs/smb-share:server=nas2,share=m"), "nas2");
+        assert_eq!(
+            server("/run/user/1000/gvfs/smb-share:server=nas2,share=m"),
+            "nas2"
+        );
         assert_eq!(server("/home/me/nas"), "nas.local");
         assert_eq!(server("/home/me/box"), "host.example");
         assert_eq!(server("/mnt/nfs"), "fileserver");

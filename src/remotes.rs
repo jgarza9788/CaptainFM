@@ -491,7 +491,9 @@ fn ensure_remote(p: &Profile, password: &str) -> Result<(), String> {
     let listed = rclone(p, password)
         .arg("listremotes")
         .output()
-        .map_err(|_| "rclone is not installed (get it at https://rclone.org/install/)".to_owned())?;
+        .map_err(|_| {
+            "rclone is not installed (get it at https://rclone.org/install/)".to_owned()
+        })?;
     if String::from_utf8_lossy(&listed.stdout)
         .lines()
         .any(|l| l.trim_end_matches(':') == name)

@@ -124,6 +124,58 @@ Long names are cut at the end today, so `Screenshot 2026-10-25 at 11.52.png` and
 
 
 
+## 16. Unit tests where they matter
+Done 2026-10-25: 169 tests became 187 (plus 1 ignored on purpose; 190 after 16.1), `cargo test --release` still takes about 1 s, and five runs in a row all passed. Not more tests for the count: these cover the code that moves or removes your files, and the code section 17 is about to change. From now on, each section 17 fix lands with its own test.
+- [x] Trash and undo (`ops.rs`), before 17.0 changes it: two files with the same name trashed at once (both kept, one undo puts each back in its own folder), a folder with its contents, a missing file that does not stop the rest (and leaves no `.trashinfo`), and a move across drives (copy then remove, checked against `/dev/shm`, a second filesystem; skips itself where there is none).
+- [x] `a_remote_file_never_lands_in_the_local_trash` is written and marked `#[ignore]`: it fails today (checked with `cargo test -- --ignored`), so 17.0 is done when it passes and the `#[ignore]` comes off. It fakes a gvfs share by pointing `XDG_RUNTIME_DIR` into the sandbox (`Sandbox::set_env`, new).
+- [x] Transfer queue (`transfer.rs`, 2 tests became 7): pause holds the copy until resumed, a paused job shows no speed or time left, progress counts items when sizes are unknown, an unknown conflict answer never means replace, and only the last 8 finished jobs stay listed. Cancel, the half-written file and replace / skip / keep-both were already covered in `ops.rs`.
+- [x] `dir_model.rs` (no tests, now 9): the row lookups, range selection and tree collapse moved out of the Qt object into plain functions (`find_prefix_in`, `parent_row_in`, `range_paths`, `collapse_in`), and the display order (`compute_order`) is tested directly: dotfiles hidden, folders first, natural numbers, size order, extension filter that spares folders, filter text, grouping and tree nesting. Not covered: which background work is skipped on a remote; it is inline in `refresh`'s worker thread, and 17.2 will touch it anyway.
+- [ ] With section 17, one test per fix in `listing.rs` / `devices.rs` / `openwith.rs`: a dead mount (`ENOTCONN`) is recognised, a remote that did not answer is remembered for about 10 s, a file type guessed from the extension on remotes.
+- Not unit tests: the QML (`Style.elide` included). Headless screenshots catch more there than a QML test runner would.
+
+### 16.1 Clean `cargo clippy` and `cargo fmt`
+Done 2026-10-25. `cargo clippy --release --all-targets` gives 0 warnings (was 8: 3 in the app, 5 in tests), `cargo fmt --check` is clean, and 190 tests pass (1 ignored, the 17.0 one).
+- [x] App code: a nested `if` in the word-form rule merged (`fuzzy::stem`), the first row of `fuzzy::edit_distance` filled with an iterator, and the palette's learned picks sorted with `sort_by_key` (`state::Usage::record`). Same behaviour.
+- [x] Tests: five `&[x.clone()]` became `std::slice::from_ref(&x)` (`ops.rs`, `backend.rs`).
+- [x] New tests for the code those fixes touched: the doubled-letter rule (`stopped` and `dropping` lose a letter; `falling`, `buzzer` and `pressed` keep theirs), edit distance at the edges (empty words, a swap, an accented letter counts once), and learned palette picks (a repeat counts up; past 500 the oldest go first).
+- [x] `cargo fmt` on the section 14 code that was never formatted (`backend.rs`, `listing.rs`, `remotes.rs`); layout only.
+- [x] Keep it clean: `./build.sh` now runs `cargo fmt --check`, `cargo clippy --release --all-targets -- -D warnings` and the unit tests (`./run-tests.sh`, new: headless, `./run-tests.sh <name>` for some, `--ignored` to include the known failures, `--list`) before it builds, and stops before installing if one fails. `--no-checks` skips them; `--dry-run` lists them. Not in `build.rs`: that is Cargo's own build script, which runs inside `cargo build` and `cargo clippy`.
+- [ ] The same checks in `scripts/release.sh` (17.5).
+
+## 17. More remote fixes, and other improvements
+Found by reading what still touches a remote after section 14. Sub-sections are in priority order (17.0 first); items inside each are highest first.
+
+### 17.0 Remote: data safety (do first)
+- [ ] Trashing a remote file downloads it. `ops::trash_one` moves it into the local `~/.local/share/Trash`; across devices that is a full copy and then a delete on the server, with no progress shown and no way to cancel. On a remote, use the server's trash (`gio trash` on gvfs mounts, which some backends support). Where there is none, say "this server has no trash, delete permanently?" and ask twice, as with the double right-click.
+
+### 17.1 Remote: UI freezes
+The app stops responding, which is what Hyprland flags as "not responding".
+- [ ] "Open with…" freezes on remote files. `openwith::content_type` runs `gio info` on the UI thread (`Backend.openWithList` from the context menu), and on a remote that sniffs the file over the network. Guess the type from the extension on remotes, or run it on a thread and fill the menu when it returns.
+- [ ] The sidebar can stall for one wait per pinned remote. `Sidebar.qml` calls `Backend.exists` and then `isDir` for each pin, and each waits up to 150 ms on a hung remote, so 5 pins is up to 1.5 s. Remember for about 10 s that a remote did not answer, and skip it in later lookups. Or ask for all pins in one threaded call.
+
+### 17.2 Remote: network load
+Too much traffic at once jams the single gvfs channel, and every other lookup waits behind it.
+- [ ] Whole-drive deep search on a remote walks the entire server. `Main.sidebarSearch` and `search.drive` start the index at `Backend.mountRoot`, which for a remote is the mount point. That means up to 8 threads listing every folder, plus the 30 s re-check of folder times, which is exactly what jams the gvfs channel. On a remote, limit it to the current folder (or a shallow depth), say so in the search bar, and skip the background re-check.
+- [ ] Icons view loads every full-size image over the network (`Pane.qml` thumbnail `Image`, `file://` source). `sourceSize` only shrinks it after the whole file is read, so a folder of photos pulls all of them at once. On a remote, show the glyph and load images only for visible cells, one or two at a time. Or use the desktop thumbnail cache only, as for other files.
+- [ ] Preview requests on a remote pile up. Holding `j` over remote files starts a thread per row (`Backend.request_preview`), and each one reads up to 24 KB through the same channel. Wait for the cursor to rest (about 150 ms) on remotes, and drop answers for rows no longer current.
+
+### 17.3 Remote: connection lifecycle
+- [ ] A dead mount (rclone exited, Wi-Fi dropped) gives "Transport endpoint is not connected" or a silent empty folder. Detect `ENOTCONN` in `DirModel::refresh` and show "Lost connection to <name> · Reconnect" in the pane, using the saved profile (`remotes`). Unmount the stale FUSE mount first.
+- [ ] Offer to reconnect saved connections at start, and to remember the last folder per connection. Today a pinned remote folder only works if the share happens to be mounted already.
+
+### 17.4 Remote: check (after 17.0 to 17.3)
+- [ ] Check: a slowed rclone mount (`--tpslimit`, as in section 14) with photos, a deep folder tree and a few pins. Trash a file (check the local trash stays empty and it lands in the server's trash, or the delete is confirmed). Run a drive search, open "Open with…", scroll Icons view, kill rclone mid-browse, and start the app with the mount hung. Keys must keep working throughout.
+
+### 17.5 Release and versioning
+- [ ] Pick the version scheme. Settings says v0.02 Blackbeard, `Cargo.toml` and the PKGBUILD say 0.1.0, and the only tag is `v0.01`. Make one number the source and have Settings read it (`env!("CARGO_PKG_VERSION")`).
+- [ ] Finish the release steps from 12.5: `cargo test` in the packaging run, and an install in a clean container.
+
+### 17.6 Performance
+- [ ] QML Profiler pass on interface build time (section 9, about 230 ms).
+
+### 17.7 Features
+- [ ] Draggable tabs (section 100): drop a file on a tab.
+
 ## 50. Features few people use: decide with the numbers
 Counting began on 2026-10-24 (section 10), so the earliest sensible review is about 2026-11-21.
 - [ ] After 4 weeks of counts, read "Show feature use…" and decide per feature: switch off by default, or compile out behind a cargo feature if it also costs build time. All plugins are on by default for now, so nothing seems to disappear.

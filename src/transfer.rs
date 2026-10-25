@@ -276,8 +276,104 @@ mod tests {
         t.join().unwrap();
     }
 
+    fn entry_of(c: &Ctl) -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(&snapshot()).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == c.id)
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn pause_holds_the_copy_until_resumed() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        pause(c.id, true);
+        let worker = {
+            let c = c.clone();
+            std::thread::spawn(move || c.checkpoint())
+        };
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(!worker.is_finished(), "a paused copy must wait");
+        pause(c.id, false);
+        assert!(worker.join().unwrap().is_ok(), "resuming is not cancelling");
+    }
+
+    #[test]
+    fn a_paused_job_shows_no_speed_or_time_left() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        c.set_state(State::Running);
+        c.bytes_total.store(1000, Ordering::Relaxed);
+        c.add_bytes(100);
+        pause(c.id, true);
+        let e = entry_of(&c);
+        assert_eq!(
+            (
+                e["paused"].as_bool(),
+                e["speed"].as_f64(),
+                e["eta"].as_i64()
+            ),
+            (Some(true), Some(0.0), Some(-1))
+        );
+        cancel(c.id);
+    }
+
+    #[test]
+    fn progress_counts_items_when_sizes_are_unknown() {
+        let _sb = crate::testutil::Sandbox::new("transfer-items");
+        let c = Ctl::register("Moved", "/tmp", 4);
+        c.set_state(State::Running);
+        c.items_done.store(1, Ordering::Relaxed);
+        assert_eq!(entry_of(&c)["fraction"], 0.25);
+        // A finished job is full, whatever the counters say.
+        c.set_state(State::Done);
+        assert_eq!(entry_of(&c)["fraction"], 1.0);
+    }
+
+    #[test]
+    fn conflict_answers_parse_and_default_to_keep_both() {
+        assert_eq!(Policy::parse("replace"), Policy::Replace);
+        assert_eq!(Policy::parse("skip"), Policy::Skip);
+        assert_eq!(Policy::parse("both"), Policy::Both);
+        assert_eq!(
+            Policy::parse(""),
+            Policy::Both,
+            "an unknown answer must never replace"
+        );
+    }
+
+    #[test]
+    fn only_the_last_finished_jobs_stay_listed() {
+        // Other tests that finish jobs hold the sandbox lock, so the count is not raced.
+        let _sb = crate::testutil::Sandbox::new("transfer-trim");
+        let jobs: Vec<_> = (0..12)
+            .map(|_| Ctl::register("Copied", "/tmp", 1))
+            .collect();
+        for j in &jobs {
+            j.set_state(State::Done);
+        }
+        let running = Ctl::register("Copied", "/tmp", 1);
+        let reg = REGISTRY.lock().unwrap();
+        let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
+        assert!(finished <= 8, "{finished} finished jobs kept");
+        assert!(
+            reg.iter().any(|c| c.id == running.id),
+            "the new job is listed"
+        );
+        assert!(
+            reg.iter().any(|c| c.id == jobs[11].id),
+            "the newest finished job is kept"
+        );
+        assert!(
+            !reg.iter().any(|c| c.id == jobs[0].id),
+            "the oldest is dropped"
+        );
+    }
+
     #[test]
     fn snapshot_reports_progress() {
+        let _sb = crate::testutil::Sandbox::new("transfer-progress");
         let c = Ctl::register("Moved", "/tmp", 2);
         c.set_state(State::Running);
         c.bytes_total.store(200, Ordering::Relaxed);

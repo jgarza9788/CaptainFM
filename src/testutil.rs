@@ -59,6 +59,13 @@ impl Sandbox {
     pub fn path(&self, rel: &str) -> String {
         self.root.join(rel).to_string_lossy().into_owned()
     }
+
+    /// Set one more environment variable for the life of the sandbox; it is put back on drop.
+    pub fn set_env(&mut self, var: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+        self.saved.push((var, std::env::var_os(var)));
+        // SAFETY: see `new`; this sandbox holds the lock.
+        unsafe { std::env::set_var(var, value) }
+    }
 }
 
 impl Drop for Sandbox {
