@@ -566,8 +566,11 @@ pub fn paste_tracked(
             }
         }
     }
+    ctl.set_errors(out.errors.len(), out.errors.first().map_or("", |e| e));
     ctl.set_state(if out.cancelled {
         State::Cancelled
+    } else if out.ok == 0 && !out.errors.is_empty() {
+        State::Failed
     } else {
         State::Done
     });
@@ -1511,5 +1514,25 @@ mod journal_tests {
         let out = paste(&[p(&sb, "d")], &p(&sb, "d"), false);
         assert_eq!(out.ok, 0);
         assert!(!out.errors.is_empty());
+    }
+
+    #[test]
+    fn a_paste_where_every_item_fails_ends_failed_and_a_mixed_one_ends_done() {
+        use crate::transfer::State;
+        let sb = Sandbox::new("failed-job");
+        sb.touch("d/f", "x");
+        sb.touch("ok.txt", "y");
+        fs::create_dir(sb.path("dest")).unwrap();
+
+        let ctl = Ctl::register("Copied", &sb.path("d"), 1);
+        let out = paste_tracked(&ctl, &[sb.path("d")], &sb.path("d"), false, Policy::Both);
+        assert_eq!(out.ok, 0);
+        assert_eq!(ctl.state(), State::Failed);
+
+        let ctl = Ctl::register("Copied", &sb.path("dest"), 2);
+        let both = [sb.path("ok.txt"), sb.path("missing.txt")];
+        let out = paste_tracked(&ctl, &both, &sb.path("dest"), false, Policy::Both);
+        assert_eq!((out.ok, out.errors.len()), (1, 1));
+        assert_eq!(ctl.state(), State::Done);
     }
 }

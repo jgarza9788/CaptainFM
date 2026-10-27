@@ -37,6 +37,7 @@ pub enum State {
     Running,
     Done,
     Cancelled,
+    Failed,
 }
 
 impl State {
@@ -46,6 +47,7 @@ impl State {
             State::Running => "running",
             State::Done => "done",
             State::Cancelled => "cancelled",
+            State::Failed => "failed",
         }
     }
 }
@@ -68,6 +70,9 @@ pub struct Ctl {
     pause: AtomicBool,
     state: Mutex<State>,
     current: Mutex<String>,
+    /// How many items failed, and the first message, for the panel.
+    errors: AtomicU64,
+    first_error: Mutex<String>,
     speed: Mutex<Speed>,
 }
 
@@ -88,6 +93,8 @@ impl Ctl {
             pause: AtomicBool::new(false),
             state: Mutex::new(State::Queued),
             current: Mutex::new(String::new()),
+            errors: AtomicU64::new(0),
+            first_error: Mutex::new(String::new()),
             speed: Mutex::new(Speed {
                 at: Instant::now(),
                 bytes: 0,
@@ -122,6 +129,12 @@ impl Ctl {
         });
         reg.push(ctl.clone());
         ctl
+    }
+
+    /// Record how many items failed and the first reason.
+    pub fn set_errors(&self, count: usize, first: &str) {
+        self.errors.store(count as u64, Ordering::Relaxed);
+        *self.first_error.lock().unwrap() = first.to_owned();
     }
 
     pub fn state(&self) -> State {
@@ -208,6 +221,8 @@ impl Ctl {
             "fraction": if state == State::Done { 1.0 } else { fraction },
             "speed": per_sec,
             "eta": eta,
+            "errors": self.errors.load(Ordering::Relaxed),
+            "error": *self.first_error.lock().unwrap(),
         })
     }
 }
@@ -329,6 +344,20 @@ mod tests {
         // A finished job is full, whatever the counters say.
         c.set_state(State::Done);
         assert_eq!(entry_of(&c)["fraction"], 1.0);
+    }
+
+    #[test]
+    fn a_job_with_failures_reports_them() {
+        let c = Ctl::register("Copied", "/tmp", 2);
+        c.set_errors(2, "A: cannot copy a folder into itself");
+        c.set_state(State::Failed);
+        let e = entry_of(&c);
+        assert_eq!(e["state"], "failed");
+        assert_eq!(e["errors"], 2);
+        assert_eq!(e["error"], "A: cannot copy a folder into itself");
+        // Failed counts as finished, like done and cancelled.
+        assert!(State::Failed >= State::Done);
+        assert!(c.state() >= State::Done);
     }
 
     #[test]

@@ -67,6 +67,12 @@ Every color comes from the active Omarchy theme:
 
 ## Install
 
+**What is supported.** CaptainFM is made for Arch Linux with Omarchy and Hyprland (Wayland, Qt 6.12), and that is
+what it is tested on. Releases ship an Arch package, a tarball, and an AppImage (best effort: it bundles Qt, but it is
+built on a very new glibc, so it only starts on rolling distros). There are no `.deb`, `.rpm` or Flatpak packages, on
+purpose: each needs a build against that distro's own Qt. On other distros build from source (below). X11, other
+desktops and other CPUs are untested.
+
 Needs Rust, Qt 6 (`qt6-declarative`, `qt6-multimedia`) and a C++ toolchain. Optional helpers unlock more previews
 and features: `ffmpeg`, `imagemagick`, `poppler`, `libarchive` (`bsdtar`), `sqlite`, `openssl`, `wl-clipboard`,
 `gvfs`, `udisks2`, and `rclone` (a separate package, see https://rclone.org/install/) + `libsecret` for cloud drives and remembered passwords.

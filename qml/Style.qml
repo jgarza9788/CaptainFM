@@ -143,6 +143,7 @@ QtObject {
     })
 
     function nerdGlyph(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return "\uf07b"
         const lower = name.toLowerCase()
         if (nerdByName[lower] !== undefined) return nerdByName[lower]
@@ -157,6 +158,7 @@ QtObject {
 
     // Single-character markers that work in any font (no Nerd Font needed).
     function glyph(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (nerd) return nerdGlyph(name, isDir, isLink)
         if (isDir) return "\u25b8"                       // ▸
         if (name.charAt(0) === ".") return "\u00b7"      // ·
@@ -181,6 +183,7 @@ QtObject {
     }
 
     function glyphColor(name, isDir) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return accent
         const dot = name.lastIndexOf(".")
         const ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : ""
@@ -217,6 +220,7 @@ QtObject {
     })
 
     function kind(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return "dir"
         const dot = name.lastIndexOf(".")
         const ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : ""

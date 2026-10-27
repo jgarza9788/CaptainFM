@@ -10,7 +10,7 @@ but with every letter a box until a font was installed, so the PKGBUILD now depe
 
 Shortcut: `scripts/release.sh` does steps 1 and 2 and the tarball from `master`, and writes `dist-release/vX.Y.Z/`
 (package, tarball, `PKGBUILD`, `.SRCINFO`, `SHA256SUMS`). It takes about 10 minutes (`--skip-tests` skips `cargo test`).
-It does not build the AppImage yet: do step 3 by hand from the same worktree and binary, then rewrite `SHA256SUMS`.
+It does not build the AppImage: run `scripts/appimage.sh` (step 3) from the same worktree, then rewrite `SHA256SUMS`.
 It never commits to or merges into `master`; the packaging files live on the Dev branch (`packaging/arch/`).
 
 ## 0. Before anything
@@ -69,43 +69,44 @@ Original plan, for reference:
 
 Tool already here: `makepkg`.
 
-## 3. AppImage (part of every release)
+## 3. AppImage (part of every release, rolling distros only for now)
 
-The same `dist` binary, wrapped with the Qt libraries and plugins it needs. First try on 2026-10-24 made a 93 MB file,
-but linuxdeploy's Qt plugin failed on the host's `kimg_*` image plugins (KDE's `kimageformats`) and the headless run gave
-no screenshot. Cause of the failure: `kimg_jxr.so` needs `libjpegxr` and `libjxrglue`, which the `jxrlib` package provides
-(`sudo pacman -S --needed jxrlib`), so the stand-in libraries and deleting `kimg_*` from the AppDir should no longer be
-needed. Not yet repeated or debugged: do that first, and record the result here.
+`scripts/appimage.sh` builds it from the `dist` binary in about a minute (`target/dist/captainfm`, so run `./build.sh`
+or `cargo build --profile dist` from the master worktree first) and writes `CaptainFM-X.Y.Z-x86_64.AppImage` into
+`dist-release/vX.Y.Z/`. It checks the tool checksums (`~/Work/CaptainFM-tools/SHA256SUMS`), that every `kimg_*` image
+plugin finds its libraries (`jxrlib` must be installed), then runs `--version` and a headless screenshot, and refuses to
+finish if nothing was drawn.
 
-Tools live in `~/Work/CaptainFM-tools` (`linuxdeploy`, `linuxdeploy-plugin-qt`, `appimagetool`, with a `SHA256SUMS`).
-Verify them with `sha256sum -c SHA256SUMS` before use; to refresh them, download the AppImages from their GitHub
-releases and update the sums.
+Tried 2026-10-26 (a trial build from the Dev1 tree, not a release artifact): 107 MB; works in a clean `archlinux`
+container with no Qt installed (version, folder drawn, PNG preview); opens a native Wayland window on this machine (not
+XWayland). What it took, all now in the script:
+- the Qt plugin only adds `xcb`: `EXTRA_PLATFORM_PLUGINS="libqwayland.so;libqoffscreen.so"` plus the three
+  `wayland-*` plugin folders copied by hand (without them there is no Wayland window, and no headless check);
+- linuxdeploy's `AppRun` starts the binary through a symlink, so Qt looks for its platform plugins next to the symlink and
+  aborts with "Could not find the Qt platform plugin"; the script writes its own `AppRun` that sets `QT_PLUGIN_PATH` and
+  `QML_IMPORT_PATH` and starts the real binary (this was the "no screenshot" failure of the first try; the `kimg_jxr`
+  problem was only `jxrlib` missing);
+- the plugins are compiled into the binary, so there is nothing else to copy.
 
-1. Prerequisites on the build machine: `jxrlib`, and every library the `kimg_*` plugins link to. Check with
-   `for f in /usr/lib/qt6/plugins/imageformats/kimg_*.so; do ldd $f | grep 'not found'; done`, which must print nothing.
-2. Build the binary from the `master` worktree (step 0) with `./build.sh` profile `dist`, the same binary as the other
-   packages. Ideally build on the oldest distro you support (a binary built against new glibc will not start on older
-   systems); until then the AppImage only promises to run on systems with a similar or newer glibc, and the release
-   notes must say so.
-3. Lay out `AppDir/` with the binary (and the `cfm` symlink), `packaging/arch/captainfm.desktop` and
-   `packaging/captainfm.svg`, plus any bundled Lua plugins from `packaging/plugins/`, then
-   `QML_SOURCES_PATHS=qml linuxdeploy --appdir AppDir --plugin qt --executable target/dist/captainfm --desktop-file packaging/arch/captainfm.desktop --icon-file packaging/captainfm.svg --output appimage`.
-   `QML_SOURCES_PATHS` makes the plugin bundle the QML modules the app imports. Run these from the master worktree and
-   put `AppDir/` outside the git tree or in an ignored folder.
-4. FUSE mounts, gvfs, udisks and rclone are host tools and are not bundled; the app must still find them on `PATH`.
-   Do not bundle fonts either; a system with no font shows boxes, as in the package check.
-5. Check, in this order:
-   - `./CaptainFM-X.Y.Z-x86_64.AppImage --version` prints the `Cargo.toml` version.
-   - A headless run (`QT_QPA_PLATFORM=offscreen`, as in `scripts/screenshots.sh`) draws a folder and writes a screenshot.
-     This is the check that failed on the first try.
-   - On a different distro than the build box (a container is enough, `--appimage-extract-and-run` if FUSE 2 is
-     missing): it starts, lists a folder, and previews an image and a video.
-   - Image formats from the `kimg_*` plugins open, or the missing ones are named in the notes.
-6. Artifact: `CaptainFM-X.Y.Z-x86_64.AppImage`, made executable (`chmod +x`), in `dist-release/vX.Y.Z/` before
-   `SHA256SUMS` is written. No automatic update information is embedded yet.
+**Limits (say them in the release notes):**
+- **glibc:** built on this Arch machine it needs glibc 2.44 or newer. In a Debian 13 container (glibc 2.41) it does not
+  start (`GLIBC_2.44 not found`). So today it only helps rolling distros (Arch and derivatives, Fedora Rawhide or the
+  newest release, openSUSE Tumbleweed). To run on older systems it must be built inside an older distro's container
+  (Debian 12 or Ubuntu 22.04), which needs a Qt 6 there that the app builds against; not tried.
+- **Host libraries are not bundled** (linuxdeploy's exclude list): `libGL`, `libEGL`, `libOpenGL` (`libopengl0` on
+  Debian), `fontconfig`, `freetype`, `harfbuzz`, `libxkbcommon`, `libwayland-client`, `libdrm`, `libgbm`, and at least one
+  font. A minimal container lacks them; a desktop has them.
+- FUSE mounts, gvfs, udisks and rclone are host tools too; the app finds them on `PATH`.
+- No update information is embedded.
 
-Do not publish an AppImage that failed the headless check; say so in the release notes and ship the other formats
-instead. Next step for the tooling: add this section to `scripts/release.sh` once one manual run has worked.
+Checks before publishing (the script does 1 and 2):
+1. `./CaptainFM-X.Y.Z-x86_64.AppImage --version` prints the `Cargo.toml` version.
+2. A headless run (`QT_QPA_PLATFORM=offscreen`, `CFM_SHOT=...`) draws a folder and saves a screenshot.
+3. In a clean container of a distro whose glibc is at least as new as the build machine's (`archlinux`): install the
+   host libraries above, run with `--appimage-extract-and-run`, folder drawn and an image previewed.
+4. A live Wayland window on the build machine (`hyprctl clients -j` shows `"xwayland": false`).
+
+Do not publish an AppImage that failed 1 or 2; say so in the release notes and ship the other formats instead.
 
 ## 4. Publish
 
@@ -121,5 +122,5 @@ instead. Next step for the tooling: add this section to `scripts/release.sh` onc
 
 - Not done: `cargo test` during the first packaging run (it was skipped), installing the package in a clean container, the AUR push, and a real `sha256sums` for the AUR.
 - Binary tarball: `captainfm-X.Y.Z-x86_64-linux.tar.gz` holds the package files plus `install.sh` (to `/usr/local` or `PREFIX=`). It links against this machine's Qt 6.12, so it only suits distros with a similar Qt.
-- Formats: Arch package, a tarball and an AppImage (step 3; included in releases from 2026-10-26, not yet built end to end, and not yet in `scripts/release.sh`). `.deb`, `.rpm` and Flatpak are skipped on purpose.
+- Formats: Arch package, a tarball and an AppImage (step 3; `scripts/appimage.sh`, built and checked 2026-10-26 as a trial; rolling distros only because of glibc; not yet called from `scripts/release.sh`). `.deb`, `.rpm` and Flatpak are skipped on purpose.
 - Version numbers disagreed until 2026-10-25 (see step 0): the first packaging run named its files `0.1.0` while `master` says `v0.01 *Ahab*`. The scheme is now `0.0.N`, so Ahab is 0.0.1; `master` still says 0.1.0 in `Cargo.toml` until it gets this change.

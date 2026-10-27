@@ -907,7 +907,7 @@ Window {
 
     Commands { id: commandsRef; app: app }
     PluginApi { id: pluginApi; app: app }
-    KeyEngine { id: engine; commands: app.commands; profile: app.keymap }
+    KeyEngine { id: engine; commands: app.commands; profile: app.keymap; userKeys: app.userKeys }
 
     Connections {
         target: Backend
@@ -938,7 +938,6 @@ Window {
         onRunningChanged: if (!running) app.updateIndexText()
     }
     onSidebarModeChanged: markDirty()
-    onKeymapChanged: engine.rebuild(userKeys)
     onGroupByChanged: markDirty()
 
     Timer { id: saveTimer; interval: 1500; onTriggered: app.saveSession() }

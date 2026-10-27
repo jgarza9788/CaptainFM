@@ -9,7 +9,10 @@ QtObject {
     property var commands            // Commands object
     // fp = File Pilot style (Ctrl shortcuts, arrows, type-ahead); vim = modal keys with a leader.
     property string profile: "fp"
-    onProfileChanged: reset()
+    property var userKeys: ({})      // the user's keys.json overrides
+    // Rebuild here, after the profile has its new value: a handler on the owner's `keymap` can run before this
+    // property is updated and would build the bindings of the old profile (Vim keys dead when started with Vim).
+    onProfileChanged: { reset(); rebuild(userKeys) }
     property var bindings: ({})      // "g g" -> "cursor.top"
     property var prefixes: ({})      // "g" -> true (proper prefix of some binding)
     property var seq: []
