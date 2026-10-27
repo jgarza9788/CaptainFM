@@ -14,6 +14,7 @@ Rectangle {
     signal searchRequested()          // icon-only mode: open the search prompt instead
     property string searchValue: ""
     signal connectRequested()
+    signal connectPathRequested(string path, string name)   // a pin on a share that is not mounted
     signal unpinRequested(string path, string name)
     signal deviceRightClicked(var item)
 
@@ -66,13 +67,19 @@ Rectangle {
 
     function refreshPinned() {
         try {
-            pinned = JSON.parse(Backend.bookmarks()).filter(p => Backend.exists(p)).map(p => {
-                const dir = Backend.isDir(p)
+            pinned = JSON.parse(Backend.bookmarks()).map(p => {
                 const label = p.substring(p.lastIndexOf("/") + 1) || "/"
+                if (!Backend.exists(p)) {
+                    // On a share that is not mounted: keep it, greyed, and connect when clicked.
+                    const home = Backend.homeLabel(p)
+                    return home === "" ? null : { label: label, glyph: Style.pick("\uf0c2", "☁"), path: p, pin: true,
+                                                  offline: true, home: home }
+                }
+                const dir = Backend.isDir(p)
                 // Pinned files show their own file-type icon; folders and the rest get a star.
                 return { label: label, glyph: dir ? Style.pick("\uf005", "★") : Style.glyph(label, false, false),
                          path: p, file: !dir, pin: true }
-            })
+            }).filter(x => x !== null)
         } catch (e) { pinned = [] }
     }
 
@@ -120,9 +127,14 @@ Rectangle {
                     // A saved connection's name is shown as it is; a bare URI is cut down to its host.
                     const named = x.label.indexOf("://") < 0
                     const u = named ? x.label : x.label.replace(/^[a-z0-9+.-]+:\/\//, "").replace(/^.*@/, "").split("/")[0].toLowerCase()
-                    r.push({ label: u, glyph: Style.pick("\uf0ac", "⇅"), path: x.path, dev: x, verb: "disconnect" })
+                    const share = named ? "" : (x.label.replace(/^[a-z0-9+.-]+:\/\//, "").split("/")[1] ?? "")
+                    r.push({ label: u, share: share, glyph: Style.pick("\uf0ac", "⇅"), path: x.path, dev: x, verb: "disconnect" })
                 }
             }
+            // Two shares on one server would read the same, so they get their share name.
+            const seen = {}
+            for (const e of r) seen[e.label] = (seen[e.label] ?? 0) + 1
+            for (const e of r) if (e.share && seen[e.label] > 1) e.label = e.label + "/" + e.share
             drives = d
             remotes = r.map(withSpace)
         }
@@ -292,7 +304,9 @@ Rectangle {
                     return
                 }
                 side.askSpace(entry.item)
-                entry.item.path === "" ? side.connectRequested() : side.navigate(entry.item.path)
+                if (entry.item.path === "") side.connectRequested()
+                else if (entry.item.offline) side.connectPathRequested(entry.item.path, entry.item.home)
+                else side.navigate(entry.item.path)
             }
         }
     }
@@ -358,7 +372,7 @@ Rectangle {
             }
 
             Section { key: "pinned"; title: "PINNED" }
-            Repeater { model: side.folded.pinned ? [] : side.pinned; delegate: Entry { required property var modelData; item: modelData } }
+            Repeater { model: side.folded.pinned ? [] : side.pinned; delegate: Entry { required property var modelData; item: modelData; dashed: modelData.offline === true } }
             Text {
                 visible: !side.compact && !side.folded.pinned && side.pinned.length === 0
                 x: Style.pad * 1.6

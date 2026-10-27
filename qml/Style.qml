@@ -46,6 +46,9 @@ QtObject {
     readonly property int radius: 6
 
     // Rich text with the query's words highlighted (in-order substrings; fuzzy letters as a fallback).
+    // A name with a line break in it (legal on Linux) would make its row taller; show the break as a symbol.
+    function oneLine(text) { return String(text).replace(/[\r\n]+/g, "\u23ce") }
+
     function highlightHtml(text, query, color) {
         const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         const words = query.split(/\s+/).filter(w => w !== "")

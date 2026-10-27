@@ -57,7 +57,55 @@ pub fn parse_gio_mime(text: &str) -> Vec<String> {
     ids
 }
 
+/// MIME type for a file `name` from a shared-mime-info `globs2` table (`weight:type:glob[:cs]`), by name
+/// only. Highest weight wins, then the longest pattern ("*.tar.gz" over "*.gz").
+pub fn mime_from_globs(name: &str, globs: &str) -> Option<String> {
+    let lname = name.to_lowercase();
+    let mut best: Option<(u32, usize, &str)> = None;
+    for line in globs.lines().filter(|l| !l.starts_with('#')) {
+        let mut parts = line.splitn(4, ':');
+        let (Some(weight), Some(mime), Some(glob)) = (parts.next(), parts.next(), parts.next())
+        else {
+            continue;
+        };
+        let Ok(weight) = weight.parse::<u32>() else {
+            continue;
+        };
+        let case_sensitive = parts
+            .next()
+            .is_some_and(|f| f.split(',').any(|f| f == "cs"));
+        let (subject, pattern) = if case_sensitive {
+            (name, glob.to_owned())
+        } else {
+            (lname.as_str(), glob.to_lowercase())
+        };
+        let hit = match pattern.strip_prefix('*') {
+            Some(suffix) if !suffix.contains(['*', '?', '[']) => subject.ends_with(suffix),
+            None if !pattern.contains(['*', '?', '[']) => subject == pattern,
+            _ => false, // rarer wildcard patterns are left to gio
+        };
+        if hit && best.is_none_or(|(w, len, _)| (weight, glob.len()) > (w, len)) {
+            best = Some((weight, glob.len(), mime));
+        }
+    }
+    best.map(|(_, _, mime)| mime.to_owned())
+}
+
+/// The MIME type from the name alone, through the system's glob table.
+fn guess_from_name(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next().unwrap_or(path);
+    data_dirs()
+        .into_iter()
+        .filter_map(|d| fs::read_to_string(d.join("mime/globs2")).ok())
+        .find_map(|globs| mime_from_globs(name, &globs))
+}
+
+/// On a remote, `gio info` reads the start of the file over the network to sniff its type, and this
+/// runs on the UI thread (the context menu), so the name decides there.
 fn content_type(path: &str) -> Option<String> {
+    if crate::listing::is_remote(path) {
+        return guess_from_name(path);
+    }
     let out = Command::new("gio")
         .args(["info", "-a", "standard::content-type", path])
         .output()
@@ -113,5 +161,64 @@ mod tests {
             ["org.gnome.Loupe.desktop", "mpv.desktop"]
         );
         assert!(parse_gio_mime("No applications").is_empty());
+    }
+
+    #[test]
+    fn mime_from_the_name_alone() {
+        let globs = "# comment\n\
+            50:application/pdf:*.pdf\n\
+            50:application/gzip:*.gz\n\
+            50:application/x-compressed-tar:*.tar.gz\n\
+            50:image/png:*.png\n\
+            40:image/apng:*.png\n\
+            50:text/x-makefile:Makefile:cs\n\
+            50:text/x-c:*.c:cs\n\
+            50:text/x-c++:*.C:cs\n\
+            10:text/x-readme:README*\n";
+        let m = |n| mime_from_globs(n, globs);
+        assert_eq!(
+            m("Report.PDF").as_deref(),
+            Some("application/pdf"),
+            "case does not matter"
+        );
+        assert_eq!(
+            m("backup.tar.gz").as_deref(),
+            Some("application/x-compressed-tar"),
+            "longest pattern wins"
+        );
+        assert_eq!(m("x.gz").as_deref(), Some("application/gzip"));
+        assert_eq!(
+            m("shot.png").as_deref(),
+            Some("image/png"),
+            "highest weight wins"
+        );
+        assert_eq!(m("Makefile").as_deref(), Some("text/x-makefile"));
+        assert_eq!(
+            m("makefile"),
+            None,
+            "a case-sensitive name must match exactly"
+        );
+        assert_eq!(
+            (m("a.c").as_deref(), m("a.C").as_deref()),
+            (Some("text/x-c"), Some("text/x-c++"))
+        );
+        assert_eq!(m("README.md"), None, "other wildcards are left to gio");
+        assert_eq!(m("noext"), None);
+    }
+
+    #[test]
+    fn the_system_glob_table_knows_common_types() {
+        // Skips itself where shared-mime-info is not installed.
+        if !std::path::Path::new("/usr/share/mime/globs2").exists() {
+            return;
+        }
+        assert_eq!(
+            guess_from_name("/x/y/photo.JPG").as_deref(),
+            Some("image/jpeg")
+        );
+        assert_eq!(
+            guess_from_name("/x/notes.txt").as_deref(),
+            Some("text/plain")
+        );
     }
 }

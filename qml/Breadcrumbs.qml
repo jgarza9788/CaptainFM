@@ -51,6 +51,7 @@ Item {
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: item.modelData.label
+                    textFormat: Text.PlainText
                     color: seg.containsMouse ? Style.accent : (item.last && crumbs.strong ? Style.fg : Style.fgDim)
                     font { family: Style.font; pixelSize: crumbs.pixelSize; bold: item.last }
                     MouseArea {

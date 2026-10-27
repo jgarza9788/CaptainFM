@@ -23,11 +23,16 @@ Item {
         const p = activePane
         if (!p || !p.dir.path) return "…"
         if (p.deep) return "search: " + p.searchText
-        return p.dir.path === "/" ? "/" : p.baseName(p.dir.path)
+        if (p.dir.path === "/") return "/"
+        const name = p.baseName(p.dir.path)
+        // The top of an SMB share is a gvfs folder named `smb-share:server=…,share=bb00,…`: title it `bb00`.
+        const share = /^smb-share:.*(?:^|[:,])share=([^,]+)/.exec(name)
+        return share && p.parentOf(p.dir.path).endsWith("/gvfs") ? share[1] : name
     }
 
     signal paneActivated()
     signal contextRequested()
+    signal reconnectRequested()
     signal sortRequested(string key)
     signal scopeToggled()
     signal zoomRequested(real steps)
@@ -123,6 +128,7 @@ Item {
                 onScopeToggled: page.scopeToggled()
                 onSwapRequested: (from, to) => page.swapPanes(from, to)
                 onContextRequested: page.contextRequested()
+                onReconnectRequested: page.reconnectRequested()
                 onPickRequested: page.pickRequested()
             }
             onItemAdded: (i, item) => {

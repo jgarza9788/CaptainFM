@@ -307,6 +307,15 @@ fn gvfs_dir_str() -> String {
     crate::devices::gvfs_dir().to_string_lossy().into_owned()
 }
 
+/// Whether reading a folder failed because its mount is gone: the FUSE process behind it (rclone, sshfs,
+/// gvfsd-fuse) exited ("Transport endpoint is not connected"), or an NFS handle went stale.
+pub fn connection_lost(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTCONN) | Some(libc::ESTALE)
+    )
+}
+
 /// Top of the remote mount `path` is on, or `None` for a local path. Never touches `path` itself.
 pub fn remote_root(path: &str) -> Option<String> {
     remote_root_in(path, &remote_mounts(), &gvfs_dir_str())
@@ -533,6 +542,17 @@ pub fn sort_entries(entries: &mut Vec<Entry>, key: &str, desc: bool) {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_dead_mount_is_told_apart_from_other_errors() {
+        use super::connection_lost;
+        use std::io::Error;
+        assert!(connection_lost(&Error::from_raw_os_error(libc::ENOTCONN)));
+        assert!(connection_lost(&Error::from_raw_os_error(libc::ESTALE)));
+        assert!(!connection_lost(&Error::from_raw_os_error(libc::ENOENT)));
+        assert!(!connection_lost(&Error::from_raw_os_error(libc::EACCES)));
+        assert!(!connection_lost(&Error::other("no os error")));
+    }
     use super::*;
 
     #[test]

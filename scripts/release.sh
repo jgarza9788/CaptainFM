@@ -26,6 +26,17 @@ sed -i "s/^pkgver=.*/pkgver=$ver/" "$work/PKGBUILD"
 flags=(-f --noconfirm --nodeps)   # build deps are checked below, so a missing one is a clear error, not a pacman prompt
 [[ "${1:-}" == --skip-tests ]] && flags+=(--nocheck)
 for tool in cargo cmake; do command -v "$tool" >/dev/null || { echo "release.sh: $tool is missing" >&2; exit 1; }; done
+
+# Lint report on what is being released. It warns and does not stop: master can predate the clean-up the Dev
+# branch got (todo 16.1). The tests themselves run in the package's check() and do stop it.
+if [[ "${1:-}" != --skip-tests ]]; then
+  (cd "$rel" && cargo fmt --check >/dev/null 2>&1) || echo "release.sh: warning: master is not cargo-fmt clean" >&2
+  warnings=$(cd "$rel" && cargo clippy --release --all-targets 2>&1 | grep -c '^warning: ' || true)
+  [[ "$warnings" == 0 ]] || echo "release.sh: warning: cargo clippy reports $warnings warning lines on master" >&2
+fi
+# The tests in check() run headless and away from the real clipboard.
+export QT_QPA_PLATFORM=offscreen
+unset WAYLAND_DISPLAY
 (cd "$work" && makepkg "${flags[@]}")
 
 pkg="$(ls "$work"/captainfm-"$ver"-1-x86_64.pkg.tar.zst)"

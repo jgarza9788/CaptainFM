@@ -46,6 +46,7 @@ FocusScope {
     signal cursorMoved()
     signal sortRequested(string key)
     signal scopeToggled()
+    signal reconnectRequested()
     property bool showHeader: false
     property string searchText: ""
     // Name of the server a connection is being made to (set by Main while it mounts), "" otherwise.
@@ -692,8 +693,8 @@ FocusScope {
                 Text {
                     width: parent.width
                     textFormat: pane.deep ? Text.RichText : Text.PlainText
-                    text: pane.deep ? pane.highlighted(Style.elide(row.name + (row.isDir ? "/" : ""), font, width), Style.accent)
-                                    : row.name + (row.isDir ? "/" : "")
+                    text: pane.deep ? pane.highlighted(Style.elide(Style.oneLine(row.name) + (row.isDir ? "/" : ""), font, width), Style.accent)
+                                    : Style.oneLine(row.name) + (row.isDir ? "/" : "")
                     color: row.nameColor
                     elide: Text.ElideMiddle
                     font { family: Style.font; pixelSize: Style.fontSize }
@@ -821,7 +822,7 @@ FocusScope {
 
         Text {
             anchors.centerIn: parent
-            visible: list.count === 0 && !dir.loading
+            visible: list.count === 0 && !dir.loading && !dir.lost
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.fontSize }
             text: dir.filter !== "" || pane.searchText !== "" ? "No matches" : (pane.deep ? "Type to search" : "Empty folder")
@@ -849,6 +850,51 @@ FocusScope {
                 color: Style.fg
                 font { family: Style.font; pixelSize: Style.fontSize }
                 text: "Connecting to " + pane.connecting + "…" + connectClock.suffix()
+            }
+        }
+    }
+
+    // The remote's mount died (rclone exited, the network dropped): say so, and offer to bring it back.
+    Rectangle {
+        id: lostBox
+        anchors.centerIn: parent
+        z: 5
+        visible: pane.dir.lost && pane.connecting === ""
+        width: lostCol.implicitWidth + Style.pad * 4
+        height: lostCol.implicitHeight + Style.pad * 3
+        radius: Style.pad
+        color: Style.surface
+        border.color: Style.red
+        Column {
+            id: lostCol
+            anchors.centerIn: parent
+            spacing: Style.pad
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                color: Style.fg
+                font { family: Style.font; pixelSize: Style.fontSize }
+                text: "Lost connection to " + (pane.dir.remote !== "" ? pane.dir.remote : "the server")
+            }
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: reconnectLabel.implicitWidth + Style.pad * 3
+                height: reconnectLabel.implicitHeight + Style.pad
+                radius: 4
+                color: reconnectMouse.containsMouse ? Style.accent : Style.alpha(Style.accent, 0.2)
+                Text {
+                    id: reconnectLabel
+                    anchors.centerIn: parent
+                    color: reconnectMouse.containsMouse ? Style.bg : Style.accent
+                    font { family: Style.font; pixelSize: Style.fontSize }
+                    text: "Reconnect"
+                }
+                MouseArea {
+                    id: reconnectMouse
+                    anchors.fill: parent
+                    hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: pane.reconnectRequested()
+                }
             }
         }
     }
@@ -893,8 +939,11 @@ FocusScope {
             readonly property bool current: grid2.currentIndex === index
             readonly property string ext: name.lastIndexOf(".") > 0 ? name.substring(name.lastIndexOf(".") + 1).toLowerCase() : ""
             readonly property bool isImage: !isDir && ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico", "avif"].indexOf(ext) >= 0
+            // On a remote an image is never read in full for its thumbnail (a folder of photos would pull every
+            // one over the network at once): it gets the desktop's cached thumbnail, like any other file, or its glyph.
+            readonly property bool loadImage: isImage && pane.dir.remote === ""
             property string cached: ""
-            Component.onCompleted: if (pane.icons && !isDir && !isImage) cached = Backend.thumbnail(fullPath)
+            Component.onCompleted: if (pane.icons && !isDir && !loadImage) cached = Backend.thumbnail(fullPath)
             readonly property color nameColor: selected ? Style.yellow : (hidden ? Style.fgDim : Style.fg)
 
             Rectangle {
@@ -922,7 +971,7 @@ FocusScope {
                         id: thumbImage
                         anchors.fill: parent
                         visible: status === Image.Ready
-                        source: cell.isImage ? "file://" + encodeURI(cell.fullPath).replace(/#/g, "%23").replace(/\?/g, "%3F")
+                        source: cell.loadImage ? "file://" + encodeURI(cell.fullPath).replace(/#/g, "%23").replace(/\?/g, "%3F")
                                              : cell.cached
                         asynchronous: true
                         cache: true
@@ -944,7 +993,7 @@ FocusScope {
                     anchors { left: parent.left; right: parent.right; top: thumbBox.bottom; topMargin: Style.pad / 2
                               leftMargin: Style.pad / 2; rightMargin: Style.pad / 2 }
                     // Two wrapped lines hold about twice the width, less a letter lost at the break.
-                    text: Style.elide(cell.name + (cell.isDir ? "/" : ""), font, width * 2 - font.pixelSize)
+                    text: Style.elide(Style.oneLine(cell.name) + (cell.isDir ? "/" : ""), font, width * 2 - font.pixelSize)
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WrapAnywhere
                     maximumLineCount: 2
@@ -971,7 +1020,7 @@ FocusScope {
                 Text {
                     anchors { left: colIcon.right; leftMargin: Style.pad * 0.8; right: parent.right; rightMargin: Style.pad
                               verticalCenter: parent.verticalCenter }
-                    text: cell.name + (cell.isDir ? "/" : "")
+                    text: Style.oneLine(cell.name) + (cell.isDir ? "/" : "")
                     elide: Text.ElideMiddle
                     color: cell.nameColor
                     font { family: Style.font; pixelSize: Style.fontSize }

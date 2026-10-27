@@ -146,7 +146,7 @@ Window {
         const p = pane
         if (!p) return
         if (text.trim() === "") { if (p.deep) p.exitDeep(); return }
-        if (!p.deep) p.dir.deepStart(Backend.mountRoot(p.dir.path))
+        if (!p.deep) p.dir.deepStart(Backend.searchRoot(p.dir.path))
         p.searchText = text
         p.dir.deepQuery(text)
     }
@@ -375,13 +375,46 @@ Window {
         if (pane) pane.connecting = name
     }
 
+    // The remote under the active pane died (see `DirModel.lost`): mount it again and come back to the folder.
+    property bool reconnecting: false
+    property bool openExact: false          // the mount was asked for to open one folder (a pin), not to resume
+    function reconnect() {
+        const p = pane
+        if (!p || !p.dir.lost) { toast("Nothing to reconnect here", "warn"); return }
+        beginMount(p.dir.remote)
+        reconnecting = true
+        Backend.reconnect(p.dir.path)
+    }
+
     function handleMount(json) {
         const r = JSON.parse(json)
+        // Open the result in the pane that showed "Connecting to …", even if another pane is active by now.
+        const target = mountPane ? mountPane : pane
+        const name = mountPane ? mountPane.connecting : ""
         if (mountPane) mountPane.connecting = ""
         mountPane = null
+        const wasReconnect = reconnecting
+        const exact = openExact
+        reconnecting = false
+        openExact = false
+        // A gvfs share cannot be matched to its saved connection from the folder: let the person pick it.
+        if (!r.ok && wasReconnect && r.path === "") { pendingMount = false; toast(r.message, "warn"); connectPicker(); return }
         if (!r.ok) { pendingMount = false; toast(r.message, "error"); return }
-        toast(r.message)
-        if (pendingMount && r.path !== "" && pane) pane.navigate(r.path)
+        if (pendingMount && r.path === "") {
+            // Mounted, but no folder came back to open: say where to find it rather than a bare "Connected".
+            toast(r.message + (name !== "" ? " to " + name : "") + ": open it from the sidebar")
+            Backend.listSidebarDevices()
+        } else toast(r.message)
+        if (pendingMount && r.path !== "" && target) {
+            if (wasReconnect && target.dir.path === r.path) target.dir.reload()
+            else if (exact) target.navigate(r.path)
+            else {
+                // A whole connection opens where you left off inside it last time (if that folder is still there).
+                const last = Backend.lastVisitUnder(r.path)
+                target.navigate(last !== "" && Backend.isDir(last) ? last : r.path)
+            }
+        }
+        sidebar.refreshPinned()
         pendingMount = false
     }
 
@@ -728,9 +761,19 @@ Window {
         const r = JSON.parse(json)
         if (r.cancelled) toast("Cancelled" + (r.ok > 0 ? "  (" + commands.plural(r.ok, "item") + " already " + r.label.toLowerCase() + ")" : ""), "warn")
         else if (r.errors && r.errors.length > 0) toast(r.errors[0] + (r.errors.length > 1 ? "  (+" + (r.errors.length - 1) + " more)" : ""), "error")
-        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.skipped > 0 ? ", skipped " + r.skipped : "") + (r.label === "Trashed" ? "  (u to undo)" : ""))
+        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.skipped > 0 ? ", skipped " + r.skipped : "") + (r.label === "Trashed" && r.undo ? "  (u to undo)" : ""))
         else if (r.skipped > 0) toast("Skipped " + commands.plural(r.skipped, "item"), "warn")
         const p = pane
+        // A remote without a trash: nothing was touched, so ask before deleting for good.
+        if (r.no_trash && r.no_trash.length > 0) {
+            const server = p && p.dir.remote !== "" ? p.dir.remote : "This server"
+            prompt.open({
+                label: server + " has no trash. Permanently delete " + commands.plural(r.no_trash.length, "item") + "?",
+                confirm: true,
+                accept: () => Backend.remove(JSON.stringify(r.no_trash)),
+                cancel: () => refocus()
+            })
+        }
         if (p && r.paths && r.paths.length > 0 && r.label !== "Trashed" && r.label !== "Deleted") {
             p.pendingPath = r.paths[r.paths.length - 1]
             if (p.dir.rowOfPath(p.pendingPath) >= 0) p.restoreCursor()
@@ -1000,6 +1043,8 @@ Window {
                 e.accepted = true
                 return
             }
+            // An open panel owns the keys: what it does not use must not reach the file list behind it.
+            if (app.overlayOpen) { e.accepted = true; return }
             if (engine.handle(e)) e.accepted = true
         }
 
@@ -1097,6 +1142,7 @@ Window {
                         if (Backend.isDir(path)) app.pane.navigate(path); else if (!app.pickMode) Backend.openPath(path)
                     }
                     onConnectRequested: app.connectPrompt()
+                    onConnectPathRequested: (path, name) => { app.beginMount(name); app.openExact = true; app.toast("Connecting to " + name + "…"); Backend.connectFor(path) }
                     armedKey: app.armedKey
                     onUnpinRequested: (path, name) => app.togglePinned(path, name)
                     onDeviceRightClicked: (item) => app.deviceRightClicked(item)
@@ -1154,6 +1200,48 @@ Window {
                                         width: Math.min(implicitWidth, chip.width - Style.pad)
                                         font { family: Style.font; pixelSize: Style.fontSize }
                                     }
+                                    // Files dropped on a tab go into that tab's folder (its active pane); a drag resting on it
+                                    // switches to it, like resting on a folder opens it.
+                                    DropArea {
+                                        id: tabDrop
+                                        anchors.fill: parent
+                                        readonly property string folder: chip.page && chip.page.activePane ? chip.page.activePane.dir.path : ""
+                                        enabled: folder !== "" && !(chip.page.activePane.deep)
+                                        property var hint: ({ kind: "", text: "" })
+                                        onEntered: (drag) => hint = Dnd.hint(drag, folder, chip.page.title, false)
+                                        onPositionChanged: (drag) => hint = Dnd.hint(drag, folder, chip.page.title, false)
+                                        onDropped: (drop) => Dnd.accept(drop, folder, false)
+                                        DropWatch { area: tabDrop; destination: tabDrop.folder; name: chip.page ? chip.page.title : ""; onRefreshed: (h) => tabDrop.hint = h }
+                                        HoverOpen {
+                                            hovering: tabDrop.containsDrag && !chip.current
+                                            onOpened: app.selectTab(chip.index)
+                                        }
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 4
+                                        visible: tabDrop.containsDrag
+                                        color: Style.alpha(Style.accent, 0.25)
+                                        border { width: 1; color: Style.accent }
+                                    }
+                                    // What the drop would do ("Move to Downloads"), under the tab.
+                                    Rectangle {
+                                        visible: tabDrop.containsDrag && tabDrop.hint.kind !== ""
+                                        z: 20
+                                        anchors { top: parent.bottom; topMargin: 4; left: parent.left }
+                                        width: tabHint.implicitWidth + Style.pad * 2
+                                        height: tabHint.implicitHeight + Style.pad
+                                        radius: 4
+                                        color: Style.surface
+                                        border.color: Style.accent
+                                        Text {
+                                            id: tabHint
+                                            anchors.centerIn: parent
+                                            text: tabDrop.hint.text
+                                            color: Style.fg
+                                            font { family: Style.font; pixelSize: Style.smallFont }
+                                        }
+                                    }
                                     MouseArea {
                                         anchors.fill: parent
                                         acceptedButtons: Qt.LeftButton | Qt.RightButton
@@ -1203,8 +1291,9 @@ Window {
                             optSortDesc: app.sortDesc
                             onZoomRequested: (s) => commands.zoom(0.1 * s)
                             onContextRequested: app.rowRightClicked()
+                            onReconnectRequested: app.reconnect()
                             onSortRequested: (key) => commands.setSort(key)
-                            onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
+                            onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.searchRoot(app.pane.dir.path))
                             onPickRequested: app.pickEnterFile()
                         }
                         onItemAdded: (i, item) => {
@@ -1291,8 +1380,10 @@ Window {
                 onClosed: app.refocus()
             }
 
-            // Status line: key hints on the left, index state and zoom on the right.
+            // Status line: key hints on the left, index state and zoom on the right. In a narrow window the index
+            // note goes first, then the hints that no longer fit.
             Rectangle {
+                id: statusBar
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.round(28 * Style.zoom)
                 color: Style.bg
@@ -1321,6 +1412,7 @@ Window {
                             required property int index
                             required property var modelData
                             textFormat: Text.RichText
+                            visible: x + width < statusBar.width - rightStatus.width - Style.pad * 4
                             text: "<font color=\"" + (index === 0 ? Style.accent : Style.fgLight) + "\"><b>" + modelData[0] + "</b></font>"
                                   + "<font color=\"" + Style.fgDim + "\"> " + modelData[1] + "</font>"
                             font { family: Style.font; pixelSize: Style.smallFont + 1 }
@@ -1334,6 +1426,7 @@ Window {
                     spacing: Style.pad * 1.5
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
+                        visible: statusBar.width > Math.round(900 * Style.zoom)
                         color: Style.fgDim
                         font { family: Style.font; pixelSize: Style.smallFont + 1 }
                         text: app.indexText !== "" ? "index live · " + app.indexText + " paths" : "index live · inotify"
@@ -1381,6 +1474,24 @@ Window {
                     }
                 }
             }
+        }
+
+        // A left click outside the palette, jump bar, Settings, Connect or Batch rename closes it. Right clicks pass
+        // through (the double right-click delete lands outside the menu); the panels sit above this, so they get theirs.
+        MouseArea {
+            anchors.fill: parent
+            enabled: pickerBox.visible || jumpBar.visible || (settingsLoader.item !== null && settingsLoader.item.dlg.visible)
+                     || (connectLoader.item !== null && connectLoader.item.dlg.visible)
+                     || (batchLoader.item !== null && batchLoader.item.dlg.visible)
+            acceptedButtons: Qt.LeftButton
+            onPressed: {
+                if (pickerBox.visible) pickerBox.close()
+                else if (jumpBar.visible) jumpBar.close()
+                else if (settingsLoader.item !== null && settingsLoader.item.dlg.visible) settingsLoader.item.dlg.close()
+                else if (connectLoader.item !== null && connectLoader.item.dlg.visible) connectLoader.item.dlg.close()
+                else if (batchLoader.item !== null && batchLoader.item.dlg.visible) batchLoader.item.dlg.close()
+            }
+            onWheel: (w) => { w.accepted = true }
         }
 
         // Overlays
@@ -1498,7 +1609,8 @@ Window {
                 if (f && f.text !== undefined) f.text = f.text + t.substring(1).replace(/_/g, " ")
             } else if (t === "!accept") {
                 const f = app.activeFocusItem
-                if (f && f.accepted) f.accepted()
+                if (promptBar.visible && promptBar.confirmMode) promptBar.accept()     // y on a y/n question
+                else if (f && f.accepted) f.accepted()
             } else if (t.indexOf("!bind:") === 0) {
                 const [cid, seq] = t.substring(6).split("=")
                 bindKey(cid, seq.replace(/_/g, " "))
@@ -1507,6 +1619,13 @@ Window {
             else if (t.indexOf("!clash:") === 0) clashBox.press(t.substring(7))
             else if (t.indexOf("!set:") === 0) lazySettings().press(t.substring(5))
             else if (t.indexOf("!conn:") === 0) lazyConnect().press(t.substring(6))
+            else if (t.indexOf("!click:pin:") === 0) {
+                // Test automation: left-click the pinned sidebar entry whose name contains the text.
+                const it = sidebar.pinned.find(x => x.label.indexOf(t.substring(11)) >= 0)
+                if (!it) toast("No pin “" + t.substring(11) + "”", "error")
+                else if (it.offline) sidebar.connectPathRequested(it.path, it.home)
+                else sidebar.navigate(it.path)
+            }
             else if (t.indexOf("!rclick:") === 0) {
                 // Test automation for the double right-click: !rclick:row, !rclick:tab:N, !rclick:pin:/path, !rclick:fake-remote, !rclick:root
                 const w = t.substring(8)

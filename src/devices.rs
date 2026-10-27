@@ -167,6 +167,40 @@ fn split_gvfs_name(entry: &str) -> (String, Vec<(String, String)>) {
     (scheme.to_owned(), params)
 }
 
+/// The URI `gio mount` takes for a GVfs mount directory name (`smb-share:server=nas,share=media` is
+/// `smb://nas/media`), or `None` for a kind it cannot be rebuilt from (archives, MTP devices...).
+pub fn gvfs_mount_uri(entry: &str) -> Option<String> {
+    let (scheme, params) = split_gvfs_name(entry);
+    let get = |k: &str| {
+        params
+            .iter()
+            .find(|(n, _)| n == k)
+            .map(|(_, v)| v.as_str())
+            .unwrap_or("")
+    };
+    let host = get("host");
+    let port = match get("port") {
+        "" => String::new(),
+        p => format!(":{p}"),
+    };
+    let user = match get("user") {
+        "" => String::new(),
+        u => format!("{u}@"),
+    };
+    match scheme.as_str() {
+        "smb-share" if !get("server").is_empty() => Some(format!(
+            "smb://{user}{}{port}/{}",
+            get("server"),
+            get("share")
+        )),
+        "sftp" | "ftp" | "dav" | "davs" if !host.is_empty() => {
+            let prefix = get("prefix").replace("%2F", "/");
+            Some(format!("{scheme}://{user}{host}{port}{prefix}"))
+        }
+        _ => None,
+    }
+}
+
 /// Human-readable URI for a GVfs mount directory name.
 pub fn gvfs_label(entry: &str) -> String {
     let (scheme, params) = split_gvfs_name(entry);
@@ -299,6 +333,7 @@ pub fn parse_gio_space(text: &str) -> Option<(u64, u64)> {
 fn run_limited(cmd: &str, args: &[&str], limit: std::time::Duration) -> Option<String> {
     let mut child = Command::new(cmd)
         .args(args)
+        .env("LC_ALL", "C") // gio translates its labels ("local path:")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -345,11 +380,22 @@ pub struct SpaceCache {
 
 impl SpaceCache {
     pub const FRESH: std::time::Duration = std::time::Duration::from_secs(60);
+    /// A cloud drive's size barely changes, and asking costs an API call that counts against a shared quota
+    /// (Google answers rclone's shared client id with "Quota exceeded"), so it is asked at most every 10 minutes.
+    pub const FRESH_CLOUD: std::time::Duration = std::time::Duration::from_secs(600);
+
+    fn fresh_for(path: &str) -> std::time::Duration {
+        if crate::remotes::is_cloud_path(path) {
+            Self::FRESH_CLOUD
+        } else {
+            Self::FRESH
+        }
+    }
 
     /// `Some(answer)` when there is a fresh one (the answer itself may be `None`: nothing reported).
     pub fn get(&self, path: &str, now: std::time::Instant) -> Option<Option<(u64, u64)>> {
         let (at, value) = self.map.get(path)?;
-        (now.saturating_duration_since(*at) < Self::FRESH).then_some(*value)
+        (now.saturating_duration_since(*at) < Self::fresh_for(path)).then_some(*value)
     }
 
     pub fn put(&mut self, path: &str, now: std::time::Instant, value: Option<(u64, u64)>) {
@@ -647,7 +693,7 @@ pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult
     let status = child.wait();
     let err = err_reader.join().unwrap_or_default();
     match status {
-        Ok(s) if s.success() => done(find_gvfs_path(uri).unwrap_or_default(), "Connected"),
+        Ok(s) if s.success() => done(mounted_path(uri).unwrap_or_default(), "Connected"),
         _ => {
             let msg = err
                 .trim()
@@ -657,7 +703,7 @@ pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult
                 .to_owned();
             // Already connected is the state the caller wanted: open it.
             if msg.to_lowercase().contains("already mounted") {
-                return match find_gvfs_path(uri) {
+                return match mounted_path(uri) {
                     Some(path) => done(path, "Already connected"),
                     None => failed("Already mounted by gvfs but not browsable; unmount it from the sidebar and retry".into()),
                 };
@@ -731,8 +777,100 @@ pub fn find_gvfs_path(uri: &str) -> Option<String> {
     find_gvfs_entry(uri).map(|e| e.1)
 }
 
+/// The `local path:` line of `gio info` output: the folder gvfs shows a location in.
+pub fn parse_gio_local_path(text: &str) -> Option<String> {
+    text.lines()
+        .find_map(|l| l.strip_prefix("local path:"))
+        .map(|p| p.trim().to_owned())
+        .filter(|p| !p.is_empty())
+}
+
+/// Ask `find` up to `tries` times, `gap` apart, until it has an answer.
+fn retry<T>(tries: u32, gap: Duration, find: impl Fn() -> Option<T>) -> Option<T> {
+    for i in 0..tries {
+        if let Some(found) = find() {
+            return Some(found);
+        }
+        if i + 1 < tries {
+            std::thread::sleep(gap);
+        }
+    }
+    None
+}
+
+/// The folder a just-mounted gvfs `uri` shows in, so the pane can open it. Matching the gvfs folder by host and
+/// share misses when the folder spells the host differently (name against IP) or names no host at all, so gio
+/// itself is asked (`gio info`, its `local path:`); and the folder can appear a moment after `gio mount` exits,
+/// so this waits up to about 3 s for it.
+pub fn mounted_path(uri: &str) -> Option<String> {
+    if let Some(found) = find_gvfs_path(uri) {
+        return Some(found);
+    }
+    let local = run_limited("gio", &["info", "--", uri], Duration::from_secs(4))
+        .and_then(|t| parse_gio_local_path(&t));
+    retry(20, Duration::from_millis(150), || {
+        find_gvfs_path(uri).or_else(|| local.clone().filter(|p| std::path::Path::new(p).is_dir()))
+    })
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn gio_info_names_the_folder_a_location_shows_in() {
+        let text = "display name: media on nas\nuri: smb://nas/media/\nlocal path: /run/user/1000/gvfs/smb-share:server=nas,share=media\nunix mount: gvfsd-fuse /run/user/1000/gvfs fuse.gvfsd-fuse\n";
+        assert_eq!(
+            parse_gio_local_path(text).as_deref(),
+            Some("/run/user/1000/gvfs/smb-share:server=nas,share=media")
+        );
+        assert_eq!(
+            parse_gio_local_path("display name: x\nuri: sftp://h/\n"),
+            None
+        );
+        assert_eq!(parse_gio_local_path("local path: \n"), None);
+    }
+
+    #[test]
+    fn a_folder_that_shows_up_late_is_waited_for() {
+        let asked = std::cell::Cell::new(0);
+        let found = retry(5, Duration::from_millis(1), || {
+            asked.set(asked.get() + 1);
+            (asked.get() == 3).then_some("/run/user/1000/gvfs/x")
+        });
+        assert_eq!((found, asked.get()), (Some("/run/user/1000/gvfs/x"), 3));
+        let never: Option<()> = retry(4, Duration::from_millis(1), || None);
+        assert_eq!(never, None);
+    }
+
+    #[test]
+    fn gvfs_folders_turn_back_into_mount_uris() {
+        assert_eq!(
+            gvfs_mount_uri("smb-share:server=nas,share=media").as_deref(),
+            Some("smb://nas/media")
+        );
+        assert_eq!(
+            gvfs_mount_uri("smb-share:server=nas,share=media,user=bob").as_deref(),
+            Some("smb://bob@nas/media")
+        );
+        assert_eq!(
+            gvfs_mount_uri("sftp:host=nas.local,port=2222,user=bob").as_deref(),
+            Some("sftp://bob@nas.local:2222")
+        );
+        assert_eq!(
+            gvfs_mount_uri("davs:host=cloud.example,prefix=%2Fremote.php%2Fdav").as_deref(),
+            Some("davs://cloud.example/remote.php/dav")
+        );
+        assert_eq!(
+            gvfs_mount_uri("archive:host=file%253A%252F%252F%252Fa.zip"),
+            None
+        );
+        assert_eq!(
+            gvfs_mount_uri("sftp:user=bob"),
+            None,
+            "no host, nothing to mount"
+        );
+    }
+
     use super::*;
 
     const LSBLK: &str = r#"{"blockdevices":[
@@ -908,6 +1046,21 @@ mod more_tests {
                 .get("/a", t0 + std::time::Duration::from_secs(61))
                 .is_none()
         );
+    }
+
+    #[test]
+    fn a_cloud_drive_is_asked_for_its_size_at_most_every_ten_minutes() {
+        let _sb = crate::testutil::Sandbox::new("space-cloud");
+        let drive = crate::state::data_dir()
+            .join("mounts/Photos-d1")
+            .to_string_lossy()
+            .into_owned();
+        let mut cache = SpaceCache::default();
+        let t0 = std::time::Instant::now();
+        cache.put(&drive, t0, Some((1, 2)));
+        let later = |s| t0 + std::time::Duration::from_secs(s);
+        assert_eq!(cache.get(&drive, later(300)), Some(Some((1, 2))));
+        assert!(cache.get(&drive, later(601)).is_none());
     }
 
     #[test]

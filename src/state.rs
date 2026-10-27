@@ -305,6 +305,18 @@ pub fn frecency(r: &Recent, now: i64) -> f64 {
     r.visits as f64 * weight
 }
 
+/// The folder last visited inside `root` (itself excluded), for opening a connection where you left off.
+pub fn last_visit_under(root: &str) -> Option<String> {
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    with_store(|s| {
+        s.recents
+            .iter()
+            .filter(|r| r.path.starts_with(&prefix))
+            .max_by_key(|r| r.last)
+            .map(|r| r.path.clone())
+    })
+}
+
 pub fn record_visit(path: &str) {
     if path.is_empty() || path == "/" {
         return;
@@ -495,6 +507,15 @@ pub fn jump_candidates(query: &str) -> Vec<Candidate> {
 
 /// Walk up from `path` to the top of its filesystem (the "drive" for whole-drive search). A remote answers
 /// with its mount point straight away instead of stat'ing each parent folder over the network.
+/// Where a whole-drive search starts: the top of the drive `path` is on. On a remote it stays in `path`
+/// itself, since the top of a remote is the whole server.
+pub fn search_root(path: &str) -> String {
+    if crate::listing::is_remote(path) {
+        return path.to_owned();
+    }
+    mount_root(path)
+}
+
 pub fn mount_root(path: &str) -> String {
     use std::os::unix::fs::MetadataExt;
     if let Some(root) = crate::listing::remote_root(path) {
@@ -652,6 +673,31 @@ mod store_tests {
         assert_eq!(read_config("settings"), "{}");
         assert!(write_config("settings", "{\"a\":1}"));
         assert_eq!(read_config("settings"), "{\"a\":1}");
+    }
+
+    #[test]
+    fn the_last_folder_inside_a_connection_is_remembered() {
+        let _sb = Sandbox::new("last-visit");
+        record_visit("/mnt/nas/a");
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        record_visit("/mnt/nas/a/b");
+        record_visit("/mnt/nasty/elsewhere");
+        assert_eq!(
+            last_visit_under("/mnt/nas").as_deref(),
+            Some("/mnt/nas/a/b")
+        );
+        assert_eq!(last_visit_under("/mnt/nas/"), last_visit_under("/mnt/nas"));
+        assert_eq!(last_visit_under("/mnt/other"), None);
+    }
+
+    #[test]
+    fn drive_search_on_a_remote_stays_in_the_folder() {
+        let mut sb = Sandbox::new("search-root");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let folder = sb.path("run/gvfs/smb-share:server=nas,share=media/photos/2024");
+        assert_eq!(search_root(&folder), folder);
+        // Locally it is the top of the drive, as before.
+        assert_eq!(search_root(&sb.path("")), mount_root(&sb.path("")));
     }
 
     #[test]

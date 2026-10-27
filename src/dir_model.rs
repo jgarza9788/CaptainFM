@@ -73,6 +73,8 @@ mod qobject {
         #[qproperty(i32, selected_count, cxx_name = "selectedCount")]
         /// Server the folder lives on ("" for a local folder).
         #[qproperty(QString, remote)]
+        /// The remote this folder is on stopped answering for good (its mount is dead): the pane offers to reconnect.
+        #[qproperty(bool, lost)]
         type DirModel = super::DirModelRust;
 
         #[cxx_override]
@@ -243,6 +245,7 @@ pub struct DirModelRust {
     entry_count: i32,
     selected_count: i32,
     remote: QString,
+    lost: bool,
 
     /// Everything read from the folder (or deep results), in read order. Shared with the worker
     /// thread that stats the entries, hence the `Arc`; sizes and times live in `meta`.
@@ -276,6 +279,7 @@ impl Default for DirModelRust {
             entry_count: 0,
             selected_count: 0,
             remote: QString::default(),
+            lost: false,
             all: Arc::new(Vec::new()),
             meta: Vec::new(),
             order: Vec::new(),
@@ -352,6 +356,17 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
         listing::sort_indices(all, meta, &mut idx, opts.key, opts.desc);
         idx
     }
+}
+
+/// Who to name in "Waiting for …" and "Lost connection to …": a saved cloud drive by its own name (its
+/// mount folder is `Name-id`), anything else by its server.
+fn remote_name(dir: &str) -> String {
+    let profiles = crate::remotes::load();
+    listing::remote_root(dir)
+        .and_then(|root| {
+            crate::remotes::profile_for_mount(&root, &profiles).map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| listing::remote_label(dir))
 }
 
 /// First row from `from` (wrapping around) whose name starts with `prefix` (lower case), or -1.
@@ -536,7 +551,7 @@ impl qobject::DirModel {
         self.as_mut().set_filter(QString::default());
         self.as_mut().set_selected_count(0);
         self.as_mut()
-            .set_remote(QString::from(listing::remote_label(&dir).as_str()));
+            .set_remote(QString::from(remote_name(&dir).as_str()));
 
         self.as_mut().rewatch();
         self.refresh(true);
@@ -847,6 +862,18 @@ impl qobject::DirModel {
             } else {
                 listing::list_dir(&path)
             });
+            // An empty remote folder might be a dead mount: ask the folder why (one more read, only then).
+            let lost = remote
+                && entries.is_empty()
+                && std::fs::read_dir(&path).is_err_and(|e| listing::connection_lost(&e));
+            {
+                let g = Arc::clone(&generation);
+                let _ = qt_thread.queue(move |mut model| {
+                    if g.load(Ordering::SeqCst) == ticket {
+                        model.as_mut().set_lost(lost);
+                    }
+                });
+            }
             if std::env::var_os("CFM_DEBUG").is_some() {
                 eprintln!(
                     "[timing] list_dir {} entries: {:?}",

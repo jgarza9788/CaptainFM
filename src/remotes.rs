@@ -571,7 +571,13 @@ fn mount_cloud(p: &Profile, password: &str) -> MountResult {
     let _ = fs::create_dir_all(state::cache_dir());
     let log = state::cache_dir().join(format!("rclone-{}.log", slug(&p.name)));
     let target = format!("{}:{}", remote_name(p), p.path.trim_matches('/'));
-    let out = rclone(p, password)
+    // Errors before rclone forks go to a file, not a pipe: the daemon keeps the stderr it was given, so a
+    // pipe never closes and waiting for its output would hang for as long as the drive stays mounted.
+    let err_path = state::cache_dir().join(format!("rclone-{}.err", slug(&p.name)));
+    let Ok(err_file) = fs::File::create(&err_path) else {
+        return fail("could not write to the cache folder");
+    };
+    let status = rclone(p, password)
         .arg("mount")
         .arg(&target)
         .arg(&mp)
@@ -587,14 +593,15 @@ fn mount_cloud(p: &Profile, password: &str) -> MountResult {
         ])
         .arg(&log)
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .output();
-    let out = match out {
-        Ok(o) => o,
+        .stderr(err_file)
+        .status();
+    let status = match status {
+        Ok(s) => s,
         Err(_) => return fail("rclone is not installed (get it at https://rclone.org/install/)"),
     };
-    if !out.status.success() {
-        return fail(format!("rclone: {}", tail(&out.stderr)));
+    if !status.success() {
+        let why = fs::read(&err_path).unwrap_or_default();
+        return fail(format!("rclone: {}", tail(&why)));
     }
     // --daemon returns once forked; wait for the mount to appear.
     let start = Instant::now();
@@ -772,9 +779,170 @@ pub fn connect_saved(id: &str, ask: impl Fn(&str) -> Option<String>) -> MountRes
     r
 }
 
+/// The connection a path belongs to, mounted or not: a saved cloud drive (by its mount folder), or a
+/// gvfs share (by the gvfs folder name in the path). `None` for anything else.
+#[derive(Debug, PartialEq)]
+pub enum Home {
+    Cloud(Profile),
+    Gvfs {
+        uri: String,
+        profile: Option<Profile>,
+    },
+}
+
+pub fn home_of(path: &str, profiles: &[Profile], gvfs: &Path) -> Option<Home> {
+    let p = Path::new(path);
+    if let Ok(rest) = p.strip_prefix(gvfs) {
+        let entry = rest
+            .components()
+            .next()?
+            .as_os_str()
+            .to_string_lossy()
+            .into_owned();
+        let uri = devices::gvfs_mount_uri(&entry)?;
+        let name = name_for(&uri, profiles);
+        let profile = profiles
+            .iter()
+            .find(|q| !is_cloud(&q.kind) && Some(&q.name) == name.as_ref())
+            .cloned();
+        return Some(Home::Gvfs { uri, profile });
+    }
+    profiles
+        .iter()
+        .filter(|q| is_cloud(&q.kind))
+        .find(|q| mount_points(q).iter().any(|m| p.starts_with(m)))
+        .map(|q| Home::Cloud(q.clone()))
+}
+
+/// What to call the connection `path` belongs to in the sidebar ("" when it is not on one).
+pub fn home_label(path: &str) -> String {
+    match home_of(path, &load(), &devices::gvfs_dir()) {
+        Some(Home::Cloud(p)) => p.name,
+        Some(Home::Gvfs {
+            profile: Some(p), ..
+        }) => p.name,
+        Some(Home::Gvfs { uri, .. }) => uri,
+        None => String::new(),
+    }
+}
+
+/// Connect whatever `path` lives on (a pinned folder on a share that is not mounted), and report `path`
+/// as the place to open.
+pub fn connect_for(path: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult {
+    let mut r = match home_of(path, &load(), &devices::gvfs_dir()) {
+        Some(Home::Cloud(p))
+        | Some(Home::Gvfs {
+            profile: Some(p), ..
+        }) => connect_saved(&p.id, ask),
+        Some(Home::Gvfs { uri, profile: None }) => devices::mount_uri(&uri, ask),
+        None => return fail("Not on a known connection"),
+    };
+    if r.ok {
+        r.path = path.to_owned();
+    }
+    r
+}
+
+/// Whether `path` is in the folder cloud drives are mounted in.
+pub fn is_cloud_path(path: &str) -> bool {
+    Path::new(path).starts_with(mounts_dir())
+}
+
+/// The saved cloud drive mounted at `root`, if any.
+pub fn profile_for_mount<'a>(root: &str, profiles: &'a [Profile]) -> Option<&'a Profile> {
+    profiles
+        .iter()
+        .filter(|p| is_cloud(&p.kind))
+        .find(|p| mount_points(p).iter().any(|m| m == Path::new(root)))
+}
+
+/// Bring back the cloud drive whose mount at `root` died (rclone exited), then report `folder` as the
+/// place to show. A share mounted through gvfs cannot be matched to a saved connection from its folder,
+/// so that fails with a note and the UI offers the Connect list instead.
+pub fn reconnect(folder: &str, root: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult {
+    let profiles = load();
+    let Some(p) = profile_for_mount(root, &profiles) else {
+        return fail("Pick the connection to reconnect");
+    };
+    // The dead mount still holds the folder; rclone cannot mount over it.
+    if fuse_unmount(root).is_err() {
+        let _ = Command::new("fusermount3")
+            .args(["-uz", root])
+            .stdin(Stdio::null())
+            .output();
+    }
+    let mut r = connect_saved(&p.id, ask);
+    if r.ok {
+        r.path = folder.to_owned();
+        r.message = format!("Reconnected to {}", p.name);
+    }
+    r
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pinned_folder_knows_its_connection_while_unmounted() {
+        let mut drive = profile("drive");
+        drive.id = "d1".into();
+        drive.name = "Photos".into();
+        let mut nas = profile("smb");
+        nas.host = "nas".into();
+        nas.path = "media".into();
+        let profiles = [nas.clone(), drive.clone()];
+        let gvfs = Path::new("/run/user/1000/gvfs");
+        let pin = mount_point(&drive).join("2024/trip");
+        assert_eq!(
+            home_of(&pin.to_string_lossy(), &profiles, gvfs),
+            Some(Home::Cloud(drive))
+        );
+        assert_eq!(
+            home_of(
+                "/run/user/1000/gvfs/smb-share:server=nas,share=media/docs",
+                &profiles,
+                gvfs
+            ),
+            Some(Home::Gvfs {
+                uri: "smb://nas/media".into(),
+                profile: Some(nas)
+            })
+        );
+        // A share with no saved connection is still mountable, by its address.
+        assert_eq!(
+            home_of("/run/user/1000/gvfs/sftp:host=other/x", &profiles, gvfs),
+            Some(Home::Gvfs {
+                uri: "sftp://other".into(),
+                profile: None
+            })
+        );
+        assert_eq!(home_of("/home/me/Documents", &profiles, gvfs), None);
+    }
+
+    #[test]
+    fn a_dead_mount_is_matched_to_its_saved_cloud_drive() {
+        let mut drive = profile("drive");
+        drive.name = "Photos".into();
+        let mut nas = profile("smb");
+        nas.id = "other".into();
+        let profiles = [nas, drive.clone()];
+        let root = mount_point(&drive).to_string_lossy().into_owned();
+        assert_eq!(
+            profile_for_mount(&root, &profiles).map(|p| p.id.as_str()),
+            Some(drive.id.as_str())
+        );
+        // The folder name earlier versions used still counts.
+        let old = mounts_dir()
+            .join(slug(&drive.name))
+            .to_string_lossy()
+            .into_owned();
+        assert!(profile_for_mount(&old, &profiles).is_some());
+        assert!(
+            profile_for_mount("/run/user/1000/gvfs/smb-share:server=nas.local", &profiles)
+                .is_none()
+        );
+    }
 
     #[test]
     fn same_named_drives_get_their_own_folder() {

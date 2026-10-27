@@ -69,6 +69,10 @@ pub struct Outcome {
     /// Items left alone because the destination already had one and the answer was skip.
     pub skipped: usize,
     pub cancelled: bool,
+    /// Remote items that were not trashed because the server has no trash: the UI offers to delete them.
+    pub no_trash: Vec<String>,
+    /// Whether undo can reverse this (trashing on a server cannot be undone from here).
+    pub undo: bool,
 }
 
 impl Outcome {
@@ -514,9 +518,9 @@ pub fn paste_tracked(
                 ));
                 continue;
             }
-            // The old one goes to the trash, so replacing is undoable and nothing is lost for good.
-            match trash_one(&wanted.to_string_lossy(), &deletion_date()) {
-                Ok(step) => replaced = Some(step),
+            // The old one goes to the trash, so replacing is undoable (on a remote: see `clear_for_replace`).
+            match clear_for_replace(&wanted.to_string_lossy()) {
+                Ok(step) => replaced = step,
                 Err(e) => {
                     out.errors.push(format!("{name}: {e}"));
                     continue;
@@ -583,11 +587,97 @@ pub fn paste_tracked(
     out
 }
 
+/// Trash on the server itself, for a file on a remote. Moving it into the local trash instead would
+/// download the whole file and then delete it on the server. Only gvfs's Google Drive has a trash;
+/// SMB, SFTP, FTP, WebDAV and rclone mounts fail with `Unsupported`.
+fn server_trash(path: &str) -> io::Result<()> {
+    let root = crate::listing::remote_root(path).unwrap_or_default();
+    if !root
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .starts_with("google-drive:")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this server has no trash",
+        ));
+    }
+    let out = Command::new("gio").arg("trash").arg(path).output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ))
+    }
+}
+
+/// Whether replacing or trashing at `path` would delete for good: it is on a remote with no trash.
+pub fn deletes_for_good(path: &str) -> bool {
+    crate::listing::remote_root(path).is_some_and(|root| {
+        !root
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .starts_with("google-drive:")
+    })
+}
+
+/// Make room for a replacement at `path`. Locally the old item goes to the trash (an undo step); on a remote
+/// it goes to the server's trash, or is deleted for good where there is none (the clash dialog said so).
+fn clear_for_replace(path: &str) -> io::Result<Option<Step>> {
+    if !crate::listing::is_remote(path) {
+        return trash_one(path, &deletion_date()).map(Some);
+    }
+    match server_trash(path) {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+            remove_any(Path::new(path)).map(|()| None)
+        }
+        other => other.map(|()| None),
+    }
+}
+
+/// Undo something this app made at `path`. Locally it goes to the trash. On a remote, a copy or a link is
+/// removed directly (the original is still there, and the local trash would download it), and a new file or
+/// folder only while it is still empty, since there may be no trash to get it back from.
+fn unmake(path: &str, made_empty: bool) -> io::Result<()> {
+    if !crate::listing::is_remote(path) {
+        return trash_one(path, &deletion_date()).map(|_| ());
+    }
+    if made_empty {
+        let p = Path::new(path);
+        let empty = if p.is_dir() {
+            fs::read_dir(p)?.next().is_none()
+        } else {
+            fs::symlink_metadata(p)?.len() == 0
+        };
+        if !empty && server_trash(path).is_err() {
+            return Err(io::Error::other(format!(
+                "{} has changed since it was made and this server has no trash; delete it yourself",
+                base_name(path)
+            )));
+        }
+        if !empty {
+            return Ok(());
+        }
+    }
+    remove_any(Path::new(path))
+}
+
 pub fn trash(paths: &[String]) -> Outcome {
     let mut out = Outcome::new("Trashed");
     let date = deletion_date();
     let mut steps = Vec::new();
     for p in paths {
+        if crate::listing::is_remote(p) {
+            match server_trash(p) {
+                Ok(()) => out.ok += 1,
+                Err(e) if e.kind() == io::ErrorKind::Unsupported => out.no_trash.push(p.clone()),
+                Err(e) => out.errors.push(format!("{}: {e}", base_name(p))),
+            }
+            continue;
+        }
         match trash_one(p, &date) {
             Ok(step) => {
                 steps.push(step);
@@ -596,10 +686,56 @@ pub fn trash(paths: &[String]) -> Outcome {
             Err(e) => out.errors.push(format!("{}: {e}", base_name(p))),
         }
     }
+    out.undo = !steps.is_empty();
     record(Action {
         label: out.label.clone(),
         steps,
     });
+    out
+}
+
+/// How many items are in the trash (the home trash, where `trash` puts things).
+pub fn trash_count() -> usize {
+    fs::read_dir(trash_dirs().0).map_or(0, |d| d.count())
+}
+
+/// Delete everything in the home trash for good. Not undoable, and the undo history that pointed into the
+/// trash goes too, so undo moves on to the next thing it can still do instead of failing on a missing file.
+pub fn empty_trash() -> Outcome {
+    let mut out = Outcome::new("Emptied the trash of");
+    let (files, infos) = trash_dirs();
+    if let Ok(entries) = fs::read_dir(&files) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            match remove_any(&e.path()) {
+                Ok(()) => {
+                    out.ok += 1;
+                    let _ = fs::remove_file(infos.join(format!("{name}.trashinfo")));
+                }
+                Err(err) => out.errors.push(format!("{name}: {err}")),
+            }
+        }
+    }
+    // Records whose item is gone (written by other programs, or left behind by a crash).
+    if let Ok(entries) = fs::read_dir(&infos) {
+        for e in entries.flatten() {
+            let stem = e
+                .file_name()
+                .to_string_lossy()
+                .trim_end_matches(".trashinfo")
+                .to_owned();
+            if fs::symlink_metadata(files.join(stem)).is_err() {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    if let Some(trash) = files.parent() {
+        let _ = fs::remove_file(trash.join("directorysizes"));
+    }
+    let mut j = JOURNAL.lock().unwrap();
+    let keep = |a: &Action| !a.steps.iter().any(|s| matches!(s, Step::Trashed { .. }));
+    j.undo.retain(keep);
+    j.redo.retain(keep);
     out
 }
 
@@ -744,11 +880,11 @@ fn undo_step(step: &Step) -> io::Result<Step> {
         }
         Step::Copied { from: _, to } => {
             // Undoing a copy moves the copy to the trash rather than deleting it outright.
-            trash_one(to, &deletion_date())?;
+            unmake(to, false)?;
             Ok(step.clone())
         }
         Step::Linked { to, .. } => {
-            trash_one(to, &deletion_date())?;
+            unmake(to, false)?;
             Ok(step.clone())
         }
         Step::Trashed { orig, stored, info } => {
@@ -756,7 +892,7 @@ fn undo_step(step: &Step) -> io::Result<Step> {
             Ok(step.clone())
         }
         Step::CreatedFile { path } | Step::CreatedDir { path } => {
-            trash_one(path, &deletion_date())?;
+            unmake(path, true)?;
             Ok(step.clone())
         }
     }
@@ -1007,6 +1143,61 @@ mod journal_tests {
     }
 
     #[test]
+    fn emptying_the_trash_removes_everything_in_it() {
+        let sb = Sandbox::new("empty-trash");
+        assert_eq!(
+            (empty_trash().ok, empty_trash().errors.len()),
+            (0, 0),
+            "an empty trash is fine"
+        );
+        sb.touch("a.txt", "A");
+        sb.touch("b.txt", "B");
+        sb.touch("d/inner.txt", "I");
+        trash(&[p(&sb, "a.txt"), p(&sb, "b.txt"), p(&sb, "d")]);
+        assert_eq!(trash_count(), 3);
+        let (files, infos) = trash_dirs();
+        fs::write(files.parent().unwrap().join("directorysizes"), "").unwrap();
+        fs::write(infos.join("orphan.trashinfo"), "[Trash Info]\n").unwrap();
+        let out = empty_trash();
+        assert_eq!((out.ok, out.errors.len()), (3, 0), "{:?}", out.errors);
+        assert_eq!(trash_count(), 0);
+        assert_eq!(
+            fs::read_dir(&infos).unwrap().count(),
+            0,
+            "records go too, orphans included"
+        );
+        assert!(
+            files.is_dir() && infos.is_dir(),
+            "the trash folders themselves stay"
+        );
+        assert!(!files.parent().unwrap().join("directorysizes").exists());
+    }
+
+    #[test]
+    fn undo_after_emptying_skips_what_was_in_the_trash() {
+        let sb = Sandbox::new("empty-trash-undo");
+        while step_history(false).errors != ["Nothing to undo"] {}
+        sb.touch("a.txt", "A");
+        sb.touch("b.txt", "B");
+        trash(&[p(&sb, "a.txt")]);
+        assert_eq!(rename(&p(&sb, "b.txt"), "c.txt").ok, 1);
+        empty_trash();
+        let undo = step_history(false);
+        assert_eq!(
+            (undo.ok, undo.errors.len()),
+            (1, 0),
+            "the rename is undone: {:?}",
+            undo.errors
+        );
+        assert!(Path::new(&p(&sb, "b.txt")).exists());
+        assert_eq!(
+            step_history(false).errors,
+            ["Nothing to undo"],
+            "the trashing is gone from history"
+        );
+    }
+
+    #[test]
     fn trashing_two_files_with_the_same_name_keeps_both() {
         let sb = Sandbox::new("trash-twins");
         sb.touch("x/a.txt", "from x");
@@ -1082,7 +1273,6 @@ mod journal_tests {
     }
 
     #[test]
-    #[ignore = "fails until todo 17.0: a remote file is downloaded into the local trash"]
     fn a_remote_file_never_lands_in_the_local_trash() {
         let mut sb = Sandbox::new("trash-remote");
         // Anything under the gvfs folder counts as remote (`listing::remote_root`).
@@ -1093,9 +1283,80 @@ mod journal_tests {
             &sb,
             &format!("{share}/a.txt")
         )));
-        trash(&[p(&sb, &format!("{share}/a.txt"))]);
+        let out = trash(&[p(&sb, &format!("{share}/a.txt"))]);
         let (files, _) = trash_dirs();
         assert!(!files.join("a.txt").exists());
+        // An SMB share has no trash: the file stays, and the UI is told so it can offer to delete it.
+        assert_eq!(out.no_trash, [p(&sb, &format!("{share}/a.txt"))]);
+        assert!(Path::new(&p(&sb, &format!("{share}/a.txt"))).exists());
+        assert_eq!((out.ok, out.undo), (0, false));
+    }
+
+    #[test]
+    fn replacing_on_a_remote_never_downloads_the_old_file() {
+        let mut sb = Sandbox::new("replace-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = "run/gvfs/smb-share:server=nas,share=media";
+        sb.touch("src/a.txt", "new");
+        sb.touch(&format!("{share}/a.txt"), "old");
+        let dst = p(&sb, share);
+        assert!(deletes_for_good(&dst));
+        let ctl = Ctl::register("Copied", &dst, 1);
+        let out = paste_tracked(&ctl, &[p(&sb, "src/a.txt")], &dst, false, Policy::Replace);
+        assert_eq!(out.ok, 1, "{:?}", out.errors);
+        assert_eq!(fs::read_to_string(format!("{dst}/a.txt")).unwrap(), "new");
+        let (files, _) = trash_dirs();
+        assert!(
+            !files.join("a.txt").exists(),
+            "the old file must not come down into the local trash"
+        );
+        // Undo removes the copy, on the server, without downloading it either.
+        assert_eq!(step_history(false).ok, 1);
+        assert!(!Path::new(&format!("{dst}/a.txt")).exists());
+        assert!(!files.join("a.txt").exists());
+        assert!(
+            !deletes_for_good(&p(&sb, "src")),
+            "local folders have a trash"
+        );
+    }
+
+    #[test]
+    fn undoing_a_new_remote_file_spares_one_that_was_written_to() {
+        let mut sb = Sandbox::new("unmake-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = p(&sb, "run/gvfs/sftp:host=nas");
+        fs::create_dir_all(&share).unwrap();
+        assert_eq!(create(&share, "empty.txt", false).ok, 1);
+        assert_eq!(step_history(false).ok, 1);
+        assert!(
+            !Path::new(&format!("{share}/empty.txt")).exists(),
+            "an untouched new file is removed"
+        );
+        assert_eq!(create(&share, "notes.txt", false).ok, 1);
+        fs::write(format!("{share}/notes.txt"), "work in progress").unwrap();
+        let undo = step_history(false);
+        assert_eq!(undo.ok, 0);
+        assert!(undo.errors[0].contains("no trash"), "{:?}", undo.errors);
+        assert_eq!(
+            fs::read_to_string(format!("{share}/notes.txt")).unwrap(),
+            "work in progress"
+        );
+    }
+
+    #[test]
+    fn local_and_remote_together_trash_the_local_part_only() {
+        let mut sb = Sandbox::new("trash-mixed");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let remote = "run/gvfs/sftp:host=nas/b.txt";
+        sb.touch(remote, "B");
+        sb.touch("a.txt", "A");
+        let out = trash(&[p(&sb, "a.txt"), p(&sb, remote)]);
+        assert_eq!((out.ok, out.undo), (1, true));
+        assert_eq!(out.no_trash, [p(&sb, remote)]);
+        assert!(!Path::new(&p(&sb, "a.txt")).exists());
+        // Undo brings back the local file; the remote one was never touched.
+        assert_eq!(step_history(false).ok, 1);
+        assert!(Path::new(&p(&sb, "a.txt")).exists() && Path::new(&p(&sb, remote)).exists());
     }
 
     #[test]

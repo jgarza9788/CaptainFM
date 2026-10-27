@@ -391,6 +391,16 @@ fn build_preview(path: &str) -> Value {
         );
     }
 
+    // A link whose target is gone has nothing to show but where it points.
+    if meta.file_type().is_symlink() && fs::metadata(path).is_err() {
+        v["kind"] = json!("none");
+        v["message"] = json!(format!(
+            "Broken link to {}",
+            v["linkTarget"].as_str().unwrap_or("")
+        ));
+        return v;
+    }
+
     if target_meta.is_dir() {
         let mut entries = listing::list_dir(path);
         listing::sort_entries(&mut entries, "name", false);
@@ -705,6 +715,16 @@ mod preview_tests {
         let v = preview(&sb.path("link.txt"));
         assert_eq!(v["isLink"], true);
         assert_eq!(v["linkTarget"], sb.path("real.txt"));
+    }
+
+    #[test]
+    fn a_broken_link_says_where_it_points() {
+        let sb = Sandbox::new("preview-broken-link");
+        std::os::unix::fs::symlink("/nonexistent/gone", sb.path("dead")).unwrap();
+        let v = preview(&sb.path("dead"));
+        assert_eq!(v["kind"], "none");
+        assert_eq!(v["isLink"], true);
+        assert_eq!(v["message"], "Broken link to /nonexistent/gone");
     }
 }
 

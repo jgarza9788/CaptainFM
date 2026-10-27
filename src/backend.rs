@@ -5,6 +5,7 @@
 
 use std::pin::Pin;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
@@ -31,6 +32,9 @@ mod qobject {
 
         #[qinvokable]
         fn home(&self) -> QString;
+        /// The version from Cargo.toml, the one number every place shows.
+        #[qinvokable]
+        fn version(&self) -> QString;
         #[qinvokable]
         fn env(&self, name: &QString) -> QString;
         /// Milliseconds since the program started, for the `CFM_DEBUG` startup timings.
@@ -62,6 +66,9 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "mount_root"]
         fn mountRoot(&self, path: &QString) -> QString;
+        #[qinvokable]
+        #[rust_name = "search_root"]
+        fn searchRoot(&self, path: &QString) -> QString;
 
         /// Copy or move `paths` (JSON array) into `dest`. Names that `dest` already has are asked about
         /// first (`pasteConflicts`); with none, it starts at once. Reports through `opDone`.
@@ -101,6 +108,14 @@ mod qobject {
         /// Permanently delete `paths`. Not undoable.
         #[qinvokable]
         fn remove(self: Pin<&mut Self>, paths: &QString);
+        /// How many items are in the home trash.
+        #[qinvokable]
+        #[rust_name = "trash_count"]
+        fn trashCount(&self) -> i32;
+        /// Delete everything in the home trash for good; reports through `opDone`.
+        #[qinvokable]
+        #[rust_name = "empty_trash"]
+        fn emptyTrash(self: Pin<&mut Self>);
         #[qinvokable]
         #[rust_name = "rename_to"]
         fn renameTo(self: Pin<&mut Self>, path: &QString, new_name: &QString);
@@ -331,6 +346,21 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "connect_saved"]
         fn connectSaved(self: Pin<&mut Self>, id: &QString);
+        /// Connect whatever `path` lives on (a pin on a share that is not mounted); answers through `mountDone`.
+        #[qinvokable]
+        #[rust_name = "connect_for"]
+        fn connectFor(self: Pin<&mut Self>, path: &QString);
+        /// The connection `path` belongs to, mounted or not ("" for none). Reads no remote.
+        #[qinvokable]
+        #[rust_name = "home_label"]
+        fn homeLabel(&self, path: &QString) -> QString;
+        /// The folder last visited inside `root`, or "".
+        #[qinvokable]
+        #[rust_name = "last_visit_under"]
+        fn lastVisitUnder(&self, root: &QString) -> QString;
+        /// Bring back the dead remote `folder` is on; answers through `mountDone` (its path is `folder`).
+        #[qinvokable]
+        fn reconnect(self: Pin<&mut Self>, folder: &QString);
         /// Saved connections as a JSON array (never includes passwords).
         #[qinvokable]
         #[rust_name = "saved_connections"]
@@ -446,20 +476,40 @@ fn drag_payload(paths: &[String]) -> serde_json::Value {
     serde_json::json!({"uriList": uri_list, "plain": paths.join("\n")})
 }
 
-/// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
-/// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
 /// A yes/no lookup QML waits for. On a remote it gets about 150 ms on a helper thread and is then taken as
 /// yes, so a slow server never freezes the UI; whoever acts on the answer finds out soon enough.
 fn bounded_lookup(path: String, look: fn(&str) -> bool) -> bool {
-    if !listing::is_remote(&path) {
-        return look(&path);
+    match listing::remote_root(&path) {
+        None => look(&path),
+        Some(root) => bounded_lookup_on(&root, path, look, Duration::from_millis(150)),
+    }
+}
+
+/// Remotes that did not answer in time, and when. For a while after, lookups there do not wait at all:
+/// the sidebar asks about every pin in turn, and five pins on a hung server would otherwise freeze it
+/// for five waits, each leaving a thread stuck behind.
+static SLOW_REMOTES: std::sync::Mutex<Vec<(String, Instant)>> = std::sync::Mutex::new(Vec::new());
+const SLOW_FOR: Duration = Duration::from_secs(10);
+
+fn bounded_lookup_on(root: &str, path: String, look: fn(&str) -> bool, wait: Duration) -> bool {
+    let recently_slow = |slow: &mut Vec<(String, Instant)>| {
+        slow.retain(|(_, at)| at.elapsed() < SLOW_FOR);
+        slow.iter().any(|(r, _)| r == root)
+    };
+    if recently_slow(&mut SLOW_REMOTES.lock().unwrap()) {
+        return true;
     }
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = tx.send(look(&path));
     });
-    rx.recv_timeout(std::time::Duration::from_millis(150))
-        .unwrap_or(true)
+    rx.recv_timeout(wait).unwrap_or_else(|_| {
+        let mut slow = SLOW_REMOTES.lock().unwrap();
+        if !recently_slow(&mut slow) {
+            slow.push((root.to_owned(), Instant::now()));
+        }
+        true
+    })
 }
 
 /// Whether moving `paths` into `dest` stays on one filesystem. Remote mounts are compared by their mount
@@ -483,6 +533,8 @@ fn same_device(paths: &[String], dest: &str) -> bool {
         })
 }
 
+/// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
+/// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
 fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     let local = |s: &str| -> Option<String> {
         let s = s.trim();
@@ -554,6 +606,10 @@ impl qobject::Backend {
         q(&state::home().to_string_lossy())
     }
 
+    fn version(&self) -> QString {
+        q(env!("CARGO_PKG_VERSION"))
+    }
+
     fn since_start_ms(&self) -> i32 {
         crate::START
             .get()
@@ -595,6 +651,10 @@ impl qobject::Backend {
         q(&state::mount_root(&path.to_string()))
     }
 
+    fn search_root(&self, path: &QString) -> QString {
+        q(&state::search_root(&path.to_string()))
+    }
+
     /// Run `work` off the UI thread and deliver its outcome through `opDone`.
     /// Operations run one at a time in submission order, so undo always sees finished work.
     fn run_op(self: Pin<&mut Self>, work: impl FnOnce() -> ops::Outcome + Send + 'static) {
@@ -634,7 +694,8 @@ impl qobject::Backend {
         if names.is_empty() {
             self.start_paste(list, dest, cut, Policy::Both);
         } else {
-            let json = serde_json::json!({"paths": list, "dest": dest, "cut": cut, "names": names});
+            let json = serde_json::json!({"paths": list, "dest": dest, "cut": cut, "names": names,
+                "replaceDeletes": ops::deletes_for_good(&dest)});
             self.as_mut().paste_conflicts(q(&json.to_string()));
         }
     }
@@ -678,6 +739,14 @@ impl qobject::Backend {
     fn remove(self: Pin<&mut Self>, paths: &QString) {
         let paths = parse_paths(paths);
         self.run_op(move || ops::delete(&paths));
+    }
+
+    fn trash_count(&self) -> i32 {
+        ops::trash_count() as i32
+    }
+
+    fn empty_trash(self: Pin<&mut Self>) {
+        self.run_op(ops::empty_trash);
     }
 
     fn rename_to(self: Pin<&mut Self>, path: &QString, new_name: &QString) {
@@ -946,6 +1015,25 @@ impl qobject::Backend {
     fn connect_saved(self: Pin<&mut Self>, id: &QString) {
         let id = id.to_string();
         self.connect_job(move |ask| remotes::connect_saved(&id, ask));
+    }
+
+    fn connect_for(self: Pin<&mut Self>, path: &QString) {
+        let path = path.to_string();
+        self.connect_job(move |ask| remotes::connect_for(&path, ask));
+    }
+
+    fn home_label(&self, path: &QString) -> QString {
+        q(&remotes::home_label(&path.to_string()))
+    }
+
+    fn last_visit_under(&self, root: &QString) -> QString {
+        q(&state::last_visit_under(&root.to_string()).unwrap_or_default())
+    }
+
+    fn reconnect(self: Pin<&mut Self>, folder: &QString) {
+        let folder = folder.to_string();
+        let root = listing::remote_root(&folder).unwrap_or_else(|| folder.clone());
+        self.connect_job(move |ask| remotes::reconnect(&folder, &root, ask));
     }
 
     fn saved_connections(&self) -> QString {
@@ -1222,10 +1310,50 @@ impl qobject::Backend {
     fn request_preview(self: Pin<&mut Self>, path: &QString) {
         let path = path.to_string();
         let qt_thread = self.qt_thread();
-        std::thread::spawn(move || {
+        let deliver = move |path: String| {
             let json = preview::preview(&path).to_string();
             let _ = qt_thread.queue(move |backend| backend.preview_ready(q(&path), q(&json)));
-        });
+        };
+        if !listing::is_remote(&path) {
+            std::thread::spawn(move || deliver(path));
+            return;
+        }
+        // On a remote, one preview read at a time: moving the cursor along queues only the latest file.
+        static REMOTE: LatestOnly<String> = LatestOnly::new();
+        if REMOTE.offer(path) {
+            std::thread::spawn(move || {
+                while let Some(path) = REMOTE.next() {
+                    deliver(path);
+                }
+            });
+        }
+    }
+}
+
+/// A one-slot queue with a single worker: a new item replaces the one waiting, so the worker only ever
+/// picks up the latest. `offer` says whether to start the worker; the worker calls `next` until `None`.
+struct LatestOnly<T> {
+    state: std::sync::Mutex<(bool, Option<T>)>,
+}
+
+impl<T> LatestOnly<T> {
+    const fn new() -> Self {
+        LatestOnly {
+            state: std::sync::Mutex::new((false, None)),
+        }
+    }
+
+    fn offer(&self, item: T) -> bool {
+        let mut s = self.state.lock().unwrap();
+        s.1 = Some(item);
+        !std::mem::replace(&mut s.0, true)
+    }
+
+    fn next(&self) -> Option<T> {
+        let mut s = self.state.lock().unwrap();
+        let item = s.1.take();
+        s.0 = item.is_some();
+        item
     }
 }
 
@@ -1286,6 +1414,66 @@ mod tests {
         assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
         assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
         assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
+    }
+
+    static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn hung_lookup(_: &str) -> bool {
+        LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(400));
+        false
+    }
+
+    fn quick_no(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn a_remote_that_does_not_answer_is_not_waited_on_again() {
+        let wait = Duration::from_millis(60);
+        let root = "/test/slow-remote";
+        let t = Instant::now();
+        assert!(
+            bounded_lookup_on(root, format!("{root}/a"), hung_lookup, wait),
+            "no answer counts as yes"
+        );
+        assert!(t.elapsed() >= wait);
+        // The second and third lookups there return at once, without asking the server.
+        let t = Instant::now();
+        assert!(bounded_lookup_on(
+            root,
+            format!("{root}/b"),
+            hung_lookup,
+            wait
+        ));
+        assert!(bounded_lookup_on(
+            root,
+            format!("{root}/c"),
+            hung_lookup,
+            wait
+        ));
+        assert!(t.elapsed() < wait);
+        assert_eq!(LOOKS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Another remote still gets its real answer.
+        assert!(!bounded_lookup_on(
+            "/test/other-remote",
+            "/test/other-remote/x".into(),
+            quick_no,
+            wait
+        ));
+    }
+
+    #[test]
+    fn only_the_latest_preview_waits_while_one_is_read() {
+        let q = LatestOnly::new();
+        assert!(q.offer("a"), "the first offer starts the worker");
+        assert_eq!(q.next(), Some("a"));
+        // While "a" is being read, the cursor moves on: only the last one waits.
+        assert!(!q.offer("b"));
+        assert!(!q.offer("c"));
+        assert_eq!(q.next(), Some("c"));
+        assert_eq!(q.next(), None, "the worker stops");
+        assert!(q.offer("d"), "and the next offer starts a new one");
     }
 
     #[test]

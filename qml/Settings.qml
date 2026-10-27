@@ -183,10 +183,20 @@ Rectangle {
         }
     }
 
+    // A screenful of rows at a time; Home and End jump to the first and last row.
+    function page(dir) {
+        const n = Math.max(1, Math.floor(list.height / Math.round(40 * Style.zoom)) - 1)
+        for (let i = 0; i < n; i++) move(dir)
+    }
+
     Keys.onPressed: (e) => {
         if (editing) return
         switch (e.key) {
         case Qt.Key_Escape: close(); break
+        case Qt.Key_PageDown: page(1); break
+        case Qt.Key_PageUp: page(-1); break
+        case Qt.Key_Home: current = 0; move(1); list.positionViewAtBeginning(); break
+        case Qt.Key_End: current = rows.length; move(-1); break
         case Qt.Key_Down: case Qt.Key_J: move(1); break
         case Qt.Key_Up: case Qt.Key_K: move(-1); break
         case Qt.Key_Left: case Qt.Key_H: step(-1); break
@@ -207,7 +217,7 @@ Rectangle {
         }
         Text {
             x: Style.pad * 2; y: Style.pad + Math.round(Style.fontSize * 1.7)
-            text: "↑↓ choose · ←→ or Enter change · Esc close"
+            text: "↑↓ PgUp PgDn choose · ←→ or Enter change · Esc close"
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont }
         }
@@ -226,7 +236,8 @@ Rectangle {
             height: Math.round(52 * Style.zoom)
             Text {
                 anchors.centerIn: parent
-                text: "CaptainFM v0.02 *Blackbeard (Edward Teach), 🏴‍☠️*"
+                // The number comes from Cargo.toml; the codename changes by hand with each release.
+                text: "CaptainFM v" + Backend.version() + " *Blackbeard (Edward Teach), 🏴‍☠️*"
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.smallFont }
             }

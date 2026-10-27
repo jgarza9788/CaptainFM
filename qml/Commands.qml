@@ -87,6 +87,18 @@ QtObject {
         })
     }
 
+    // Everything in the trash, for good: asks first, with the count.
+    function emptyTrash() {
+        const n = Backend.trashCount()
+        if (n === 0) { app.toast("The trash is already empty"); return }
+        app.prompt.open({
+            label: "Permanently delete the " + plural(n, "item") + " in the trash? (y/n)",
+            confirm: true,
+            accept: () => Backend.emptyTrash(),
+            cancel: () => app.refocus()
+        })
+    }
+
     function remove() {
         const paths = targets()
         if (paths.length === 0) return
@@ -153,11 +165,13 @@ QtObject {
     function search(drive) {
         const p = pane()
         if (!p) return
-        const root = drive ? Backend.mountRoot(p.dir.path) : (p.deep ? p.dir.path : p.dir.path)
+        const root = drive ? Backend.searchRoot(p.dir.path) : p.dir.path
+        // On a remote a drive search stays in this folder (Backend.searchRoot), so say "search" there.
+        const wholeDrive = drive && root !== p.dir.path
         p.searchText = ""
         p.dir.deepStart(root)
         app.prompt.open({
-            label: (drive ? "drive " : "search ") + p.pretty(root) + " ›",
+            label: (wholeDrive ? "drive " : "search ") + p.pretty(root) + (drive && !wholeDrive && p.dir.remote !== "" ? " (remote: this folder)" : "") + " ›",
             text: "",
             live: (t) => { p.searchText = t; p.dir.deepQuery(t) },
             accept: () => {},
@@ -304,6 +318,7 @@ QtObject {
         { id: "file.cut", title: "Cut", fp: ["<C-x>"], keys: ["d d", "<C-x>"], run: () => yank(true) },
         { id: "file.paste", title: "Paste", fp: ["<C-v>"], keys: ["p", "<C-v>"], run: () => paste() },
         { id: "file.trash", title: "Move to trash", fp: ["<Del>"], keys: ["d t", "<Del>"], run: () => trash() },
+        { id: "file.emptyTrash", title: "Empty trash…", words: ["trash", "bin", "recycle", "wastebasket", "clear trash"], keys: [], run: () => emptyTrash() },
         { id: "file.delete", title: "Delete permanently…", fp: ["<S-Del>"], keys: ["d D", "<S-Del>"], run: () => remove() },
         { id: "file.rename", title: "Rename", fp: ["<F2>"], keys: ["r", "<F2>", "c w"], run: () => rename() },
         { id: "file.newFile", title: "New file", fp: ["<C-n>"], keys: ["a"], run: () => create(false) },
@@ -425,6 +440,7 @@ QtObject {
 
         { id: "devices.open", title: "Devices and remotes…", keys: [", g d"], run: () => app.devicesPicker("open") },
         { id: "devices.eject", title: "Unmount / disconnect / eject device…", words: ["unconnect"], keys: [", g e"], run: () => app.devicesPicker("eject") },
+        { id: "remote.reconnect", title: "Reconnect lost connection", words: ["reconnect", "connection lost", "remount", "dead mount"], run: () => app.reconnect() },
         { id: "remote.connect", title: "Connect to server or cloud drive…", words: ["login", "add server"], keys: [", g c"], run: () => app.connectPrompt() },
         { id: "remote.edit", title: "Edit connection…", words: ["view connection", "rename connection", "saved connections", "manage connections", "connection settings", "properties", "forget connection", "change password"],
           run: () => app.manageConnections() },

@@ -132,7 +132,12 @@ Rectangle {
                 const ctrl = e.modifiers & Qt.ControlModifier
                 if (picker.keyHook && list.currentIndex >= 0 && list.currentIndex < picker.shown.length
                     && picker.keyHook(e, picker.items[picker.shown[list.currentIndex]])) { e.accepted = true; return }
-                if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { list.currentIndex = Math.min(list.count - 1, list.currentIndex + 1); e.accepted = true }
+                if (e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) {
+                    const page = Math.max(1, Math.floor(list.height / Math.max(1, list.currentItem ? list.currentItem.height : Math.round(30 * Style.zoom))) - 1)
+                    list.currentIndex = e.key === Qt.Key_PageDown ? Math.min(list.count - 1, list.currentIndex + page) : Math.max(0, list.currentIndex - page)
+                    e.accepted = true
+                }
+                else if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { list.currentIndex = Math.min(list.count - 1, list.currentIndex + 1); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_P) { list.currentIndex = Math.max(0, list.currentIndex - 1); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_K && picker.onRebind) { picker.startCapture(); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_X && picker.onUnbind) {
@@ -300,7 +305,7 @@ Rectangle {
             textFormat: Text.RichText
             text: {
                 const k = s => "<font color=\"" + Style.fgLight + "\">" + s + "</font>"
-                return k("↑↓") + " move   " + k("enter") + " run" + (picker.onRebind ? "   " + k("tab") + " bind key" : "") + "   " + k("esc") + " close"
+                return k("↑↓ PgUp PgDn") + " move   " + k("enter") + " run" + (picker.onRebind ? "   " + k("tab") + " bind key" : "") + "   " + k("esc") + " close"
             }
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont + 1 }

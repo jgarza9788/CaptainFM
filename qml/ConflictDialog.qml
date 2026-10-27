@@ -19,7 +19,8 @@ Rectangle {
     property int current: 2
     readonly property var names: request.names ?? []
     readonly property var choices: [
-        { policy: "replace", label: "Replace", key: "R", tip: "old ones go to the trash" },
+        { policy: "replace", label: "Replace", key: "R",
+          tip: request.replaceDeletes ? "old ones are deleted for good (no trash on this server)" : "old ones go to the trash" },
         { policy: "skip", label: "Skip", key: "S", tip: "leave what is there" },
         { policy: "both", label: "Keep both", key: "K", tip: "new ones get (copy)" }
     ]
@@ -67,6 +68,7 @@ Rectangle {
             x: Style.pad * 2; y: Style.pad
             text: dlg.names.length === 1 ? "“" + dlg.names[0] + "” is already in this folder" : dlg.names.length + " names are already in this folder"
             width: parent.width - Style.pad * 4
+            textFormat: Text.PlainText
             elide: Text.ElideMiddle
             color: Style.fg
             font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.15); bold: true }
@@ -74,6 +76,7 @@ Rectangle {
         Text {
             x: Style.pad * 2; y: Style.pad + Math.round(Style.fontSize * 1.7)
             text: (dlg.request.cut ? "Moving" : "Copying") + " to " + String(dlg.request.dest ?? "").split("/").filter(s => s !== "").pop()
+            textFormat: Text.PlainText
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont }
         }
@@ -90,6 +93,7 @@ Rectangle {
                 required property string modelData
                 x: Style.pad * 2; width: list.width - Style.pad * 4
                 text: modelData
+                textFormat: Text.PlainText
                 elide: Text.ElideMiddle
                 color: Style.fg
                 font { family: Style.font; pixelSize: Style.fontSize }

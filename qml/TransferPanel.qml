@@ -110,6 +110,7 @@ Rectangle {
                     x: Style.pad * 1.5; y: Style.pad / 2
                     width: parent.width - Style.pad * 3 - buttons.width
                     text: panel.title(row.modelData)
+                    textFormat: Text.PlainText
                     elide: Text.ElideRight
                     color: row.over ? Style.fgDim : Style.fg
                     font { family: Style.font; pixelSize: Style.fontSize }
@@ -137,6 +138,7 @@ Rectangle {
                     x: Style.pad * 1.5; y: Math.round(Style.fontSize * 1.6) + Style.pad / 2
                     width: parent.width - Style.pad * 3
                     text: row.modelData.current
+                    textFormat: Text.PlainText
                     visible: !row.over
                     elide: Text.ElideMiddle
                     color: Style.fgDim

@@ -51,6 +51,12 @@ Rectangle {
 
     function close() { visible = false; closed() }
 
+    // Page Up / Page Down scroll the preview list.
+    function scrollPreview(dir) {
+        const max = Math.max(0, list.contentHeight - list.height)
+        list.contentY = Math.max(0, Math.min(max, list.contentY + dir * list.height * 0.9))
+    }
+
     function setMode(m) {
         mode = m
         refresh()
@@ -164,6 +170,7 @@ Rectangle {
                 Keys.onTabPressed: br.nextField(false)
                 Keys.onBacktabPressed: br.nextField(true)
                 Keys.onPressed: (e) => {
+                    if (e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) { br.scrollPreview(e.key === Qt.Key_PageDown ? 1 : -1); e.accepted = true; return }
                     if (e.modifiers & Qt.AltModifier) {
                         const n = e.key - Qt.Key_1
                         if (n >= 0 && n < 4) { br.setMode(br.modes[n]); e.accepted = true }
@@ -345,6 +352,7 @@ Rectangle {
                     width: parent.width * 0.46
                     anchors.verticalCenter: parent.verticalCenter
                     text: modelData.name
+                    textFormat: Text.PlainText
                     elide: Text.ElideMiddle
                     color: Style.fgLight
                     font { family: Style.font; pixelSize: Style.fontSize }

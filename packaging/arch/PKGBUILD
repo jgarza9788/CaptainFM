@@ -1,13 +1,14 @@
 # Maintainer: Justin Garza <jgarza9788@gmail.com>
 # Built by scripts/release.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
 pkgname=captainfm
-pkgver=0.1.0
+pkgver=0.0.2
 pkgrel=1
 pkgdesc='Fast, keyboard-first file manager for Omarchy (Qt6/QML, Rust)'
 arch=('x86_64')
 url='https://github.com/jgarza9788/CaptainFM'
 license=('MIT')
-depends=('qt6-declarative' 'qt6-multimedia' 'fuse3')
+# ttf-font: any font (DejaVu, Noto, Liberation...); a system with none draws every letter as a box.
+depends=('qt6-declarative' 'qt6-multimedia' 'fuse3' 'ttf-font')
 makedepends=('rust' 'cmake')
 options=('!lto')   # makepkg's -flto objects can't be read by rust-lld: undefined cxx-qt bridge symbols at link time
 optdepends=('gvfs: remote servers and phones'

@@ -94,7 +94,11 @@ Rectangle {
             Keys.onTabPressed: jump.complete()
             Keys.onPressed: (e) => {
                 const ctrl = e.modifiers & Qt.ControlModifier
-                if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { jump.step(1); e.accepted = true }
+                if (e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) {
+                    const page = Math.max(1, Math.floor(list.height / Math.max(1, list.currentItem ? list.currentItem.height : Math.round(30 * Style.zoom))) - 1)
+                    jump.step(e.key === Qt.Key_PageDown ? page : -page); e.accepted = true
+                }
+                else if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { jump.step(1); e.accepted = true }
                 else if (ctrl && (e.key === Qt.Key_P || e.key === Qt.Key_K)) { jump.step(-1); e.accepted = true }
             }
         }

@@ -167,7 +167,7 @@ CFM_SIZE=1400x860 CFM_KEYS="<Down> <Down> @view.tree <Right>" CFM_SHOT=/tmp/shot
 ```
 
 `CFM_KEYS` is a space-separated list of key tokens (`j`, `<C-d>`, `<Insert>`), `@command.id`, `=text` (types into
-the focused field; `_` is a space), `!accept`, `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
+the focused field; `_` is a space), `!accept` (also answers yes on a y/n question), `!click:pin:<name>` (clicks a pinned sidebar entry), `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
 a window image and quits, `CFM_DEBUG=1` prints timings, `CFM_KEYMAP=vim|fp` picks the keymap. Point
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` somewhere temporary to keep test runs away from your state.
 

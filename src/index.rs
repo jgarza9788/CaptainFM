@@ -24,6 +24,32 @@ const MAX_RESULTS: usize = 500;
 /// How long a finished index is trusted before its folders are checked for changes.
 const CHECK_AFTER: Duration = Duration::from_secs(30);
 
+/// How far and how wide a walk goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Walk {
+    threads: usize,
+    /// Folder levels read below the root (`None`: all of them).
+    max_depth: Option<u16>,
+}
+
+/// On a remote every folder read is a request over one shared connection, which every other lookup waits
+/// behind: walk two levels below the search folder on two threads, never the whole server.
+const REMOTE_WALK: Walk = Walk {
+    threads: 2,
+    max_depth: Some(2),
+};
+
+fn walk_for(root: &str) -> Walk {
+    if crate::listing::is_remote(root) {
+        REMOTE_WALK
+    } else {
+        Walk {
+            threads: std::thread::available_parallelism().map_or(4, |n| n.get().min(8)),
+            max_depth: None,
+        }
+    }
+}
+
 /// A folder in the index; entries point at it by position.
 struct DirInfo {
     abs: Box<str>,
@@ -87,7 +113,9 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
     if let Some(existing) = guard.get(root) {
         let index = Arc::clone(existing);
         drop(guard);
-        let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER;
+        // Not on a remote: the check re-reads every indexed folder's time over the network.
+        let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER
+            && !crate::listing::is_remote(&index.root);
         if stale
             && index.done.load(Ordering::SeqCst)
             && !index.refreshing.swap(true, Ordering::SeqCst)
@@ -96,7 +124,7 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
             std::thread::spawn(move || {
                 if changed(&refresh) {
                     let fresh = RwLock::new(Store::default());
-                    scan(&refresh.root, &fresh, &|| {});
+                    scan(&refresh.root, &fresh, &|| {}, walk_for(&refresh.root));
                     *refresh.store.write().unwrap() = fresh.into_inner().unwrap();
                     on_progress();
                 }
@@ -127,7 +155,12 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
     let building = Arc::clone(&index);
     std::thread::spawn(move || {
         let t0 = Instant::now();
-        scan(&building.root, &building.store, &on_progress);
+        scan(
+            &building.root,
+            &building.store,
+            &on_progress,
+            walk_for(&building.root),
+        );
         *building.checked.lock().unwrap() = Instant::now();
         building.done.store(true, Ordering::SeqCst);
         if std::env::var_os("CFM_DEBUG").is_some() {
@@ -157,6 +190,8 @@ struct Job {
     dir: u32,
     path: PathBuf,
     hidden: bool,
+    /// Levels below the root (the root is 0).
+    depth: u16,
 }
 
 struct Queue {
@@ -166,7 +201,7 @@ struct Queue {
 }
 
 /// Walk `root` on several threads, adding what it finds to `store` as it goes.
-fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync)) {
+fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync), walk: Walk) {
     let Ok(meta) = fs::metadata(root) else { return };
     store.write().unwrap().dirs.push(DirInfo {
         abs: root.into(),
@@ -177,20 +212,21 @@ fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync)) {
             dir: 0,
             path: PathBuf::from(root),
             hidden: false,
+            depth: 0,
         }],
         active: 0,
     });
     let wake = Condvar::new();
     let last_progress = Mutex::new(Instant::now());
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     std::thread::scope(|scope| {
-        for _ in 0..threads {
+        for _ in 0..walk.threads.max(1) {
             scope.spawn(|| {
                 worker(
                     &queue,
                     &wake,
                     store,
                     meta.dev(),
+                    walk.max_depth,
                     &last_progress,
                     on_progress,
                 )
@@ -204,6 +240,7 @@ fn worker(
     wake: &Condvar,
     store: &RwLock<Store>,
     root_dev: u64,
+    max_depth: Option<u16>,
     last_progress: &Mutex<Instant>,
     on_progress: &(dyn Fn() + Sync),
 ) {
@@ -230,6 +267,7 @@ fn worker(
         let mut batch: Vec<IEntry> = Vec::new();
         // Folders to read next: (path, hidden, modified time).
         let mut subdirs: Vec<(PathBuf, bool, (i64, i64))> = Vec::new();
+        let descend = max_depth.is_none_or(|max| job.depth < max);
         if let Ok(read) = fs::read_dir(&job.path) {
             for e in read.flatten() {
                 let Ok(kind) = e.file_type() else { continue };
@@ -244,6 +282,7 @@ fn worker(
                 }
                 let hidden = job.hidden || name.starts_with('.');
                 if is_dir
+                    && descend
                     && let Ok(m) = e.metadata()
                     && m.dev() == root_dev
                 {
@@ -279,6 +318,7 @@ fn worker(
                         dir: s.dirs.len() as u32 - 1,
                         path,
                         hidden,
+                        depth: job.depth + 1,
                     }
                 })
                 .collect::<Vec<_>>()
@@ -414,7 +454,8 @@ pub fn search(
                 name,
                 rel: dir.get(root_len + 1..).unwrap_or("").to_owned(),
                 is_dir: e.is_dir,
-                is_link: false,
+                // Only the shown results are looked at, so this is a few hundred lstat calls at most.
+                is_link: fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
                 depth: 0,
             };
             (entry, meta_of(&path))
@@ -475,6 +516,20 @@ mod tests {
     }
 
     #[test]
+    fn search_results_know_which_ones_are_links() {
+        let sb = Sandbox::new("index-links");
+        sb.touch("real.txt", "x");
+        std::os::unix::fs::symlink(sb.path("real.txt"), sb.path("linkto.txt")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/gone", sb.path("linkdead.txt")).unwrap();
+        let index = built(&sb.path(""));
+        let found = search(&index, "link", false, &|| false).0;
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|e| e.is_link));
+        let plain = search(&index, "real", false, &|| false).0;
+        assert!(!plain[0].is_link);
+    }
+
+    #[test]
     fn regex_queries_and_results_are_bounded() {
         let sb = Sandbox::new("index-regex");
         for i in 0..40 {
@@ -499,6 +554,39 @@ mod tests {
         assert_eq!(names(&hits), ["big.dat"]);
         assert_eq!(metas[0].size, 5000);
         assert_eq!(search(&index, "dat", false, &|| false).0.len(), 2);
+    }
+
+    #[test]
+    fn a_depth_limit_stops_the_walk() {
+        let sb = Sandbox::new("index-depth");
+        sb.touch("top.txt", "");
+        sb.touch("a/one.txt", "");
+        sb.touch("a/b/two.txt", "");
+        sb.touch("a/b/c/three.txt", "");
+        let store = RwLock::new(Store::default());
+        let walk = Walk {
+            threads: 2,
+            max_depth: Some(1),
+        };
+        scan(&sb.path(""), &store, &|| {}, walk);
+        let s = store.read().unwrap();
+        let mut found: Vec<&str> = s.entries.iter().map(|e| s.name(e)).collect();
+        found.sort();
+        // The root and one level below are read: "b" is seen, its contents are not.
+        assert_eq!(found, ["a", "b", "one.txt", "top.txt"]);
+    }
+
+    #[test]
+    fn remote_folders_get_a_shallow_narrow_walk() {
+        let mut sb = Sandbox::new("index-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        assert_eq!(
+            walk_for(&sb.path("run/gvfs/sftp:host=nas/photos")),
+            REMOTE_WALK
+        );
+        let local = walk_for(&sb.path(""));
+        assert_eq!(local.max_depth, None);
+        assert!(local.threads >= 1);
     }
 
     #[test]
