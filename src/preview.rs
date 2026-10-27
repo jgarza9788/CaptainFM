@@ -25,10 +25,13 @@ const MAX_TEXT_LINES: usize = 200;
 /// Decoded by Qt directly.
 const IMAGE_EXT: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg", "ico"];
 const FONT_EXT: &[&str] = &["ttf", "otf", "woff", "woff2", "ttc"];
-const OFFICE_EXT: &[&str] = &["docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm", "odt", "ods", "odp"];
+const OFFICE_EXT: &[&str] = &[
+    "docx", "docm", "dotx", "xlsx", "xlsm", "pptx", "pptm", "odt", "ods", "odp",
+];
 const COVER_EXT: &[&str] = &["epub", "cbz", "cbr"];
 const ARCHIVE_EXT: &[&str] = &[
-    "zip", "tar", "tgz", "gz", "xz", "bz2", "zst", "7z", "rar", "iso", "txz", "tbz2", "jar", "apk", "whl",
+    "zip", "tar", "tgz", "gz", "xz", "bz2", "zst", "7z", "rar", "iso", "txz", "tbz2", "jar", "apk",
+    "whl",
 ];
 const AUDIO_EXT: &[&str] = &["mp3", "flac", "ogg", "opus", "wav", "m4a", "aac", "wma"];
 const VIDEO_EXT: &[&str] = &["mp4", "mkv", "webm", "mov", "avi", "m4v", "wmv", "flv"];
@@ -44,7 +47,10 @@ fn syntaxes() -> &'static SyntaxSet {
 }
 
 fn ext_of(path: &str) -> String {
-    Path::new(path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 fn html_escape(s: &str, out: &mut String) {
@@ -101,7 +107,9 @@ fn highlight_html(text: &str, path: &str) -> String {
     let syntax = ss
         .find_syntax_by_extension(&ext_of(path))
         .or_else(|| {
-            Path::new(path).file_name().and_then(|n| ss.find_syntax_by_extension(&n.to_string_lossy()))
+            Path::new(path)
+                .file_name()
+                .and_then(|n| ss.find_syntax_by_extension(&n.to_string_lossy()))
         })
         .or_else(|| ss.find_syntax_by_first_line(text.lines().next().unwrap_or("")));
     let text = text.strip_suffix('\n').unwrap_or(text);
@@ -114,7 +122,9 @@ fn highlight_html(text: &str, path: &str) -> String {
     let number = |n: usize, out: &mut String| {
         let digits = n.to_string();
         let pad = "&nbsp;".repeat(3usize.saturating_sub(digits.len()));
-        out.push_str(&format!("<span style=\"color:{dim}\">{pad}{digits}</span>&nbsp;&nbsp;"));
+        out.push_str(&format!(
+            "<span style=\"color:{dim}\">{pad}{digits}</span>&nbsp;&nbsp;"
+        ));
     };
     number(line_no, &mut out);
     // Emit `piece` in colour `key`, starting a numbered line after every newline (even inside a span).
@@ -161,16 +171,23 @@ fn highlight_html(text: &str, path: &str) -> String {
 
 fn read_head(path: &str, max: usize) -> Option<Vec<u8>> {
     let mut buf = Vec::new();
-    fs::File::open(path).ok()?.take(max as u64).read_to_end(&mut buf).ok()?;
+    fs::File::open(path)
+        .ok()?
+        .take(max as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
     Some(buf)
 }
 
 fn looks_binary(bytes: &[u8]) -> bool {
-    bytes.contains(&0) || std::str::from_utf8(bytes).is_err() && {
-        // A multibyte char cut at the end of the buffer is not binary.
-        let valid = std::str::from_utf8(bytes).err().map_or(0, |e| e.valid_up_to());
-        bytes.len() - valid > 3
-    }
+    bytes.contains(&0)
+        || std::str::from_utf8(bytes).is_err() && {
+            // A multibyte char cut at the end of the buffer is not binary.
+            let valid = std::str::from_utf8(bytes)
+                .err()
+                .map_or(0, |e| e.valid_up_to());
+            bytes.len() - valid > 3
+        }
 }
 
 fn cmd_lines(cmd: &str, args: &[&str], limit: usize) -> Vec<String> {
@@ -178,7 +195,13 @@ fn cmd_lines(cmd: &str, args: &[&str], limit: usize) -> Vec<String> {
         .args(args)
         .output()
         .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).lines().take(limit).map(str::to_owned).collect())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .take(limit)
+                .map(str::to_owned)
+                .collect()
+        })
         .unwrap_or_default()
 }
 
@@ -191,7 +214,17 @@ fn pdf_page_png(path: &str, mtime: i64) -> Option<String> {
     let png = stem.with_extension("png");
     if !png.exists() {
         let ok = Command::new("pdftoppm")
-            .args(["-png", "-r", "90", "-f", "1", "-l", "1", "-singlefile", path])
+            .args([
+                "-png",
+                "-r",
+                "90",
+                "-f",
+                "1",
+                "-l",
+                "1",
+                "-singlefile",
+                path,
+            ])
             .arg(&stem)
             .status()
             .ok()
@@ -206,14 +239,26 @@ fn pdf_page_png(path: &str, mtime: i64) -> Option<String> {
 fn fmt_duration(secs: f64) -> String {
     let total = secs.round() as i64;
     let (h, m, s) = (total / 3600, (total / 60) % 60, total % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+    if h > 0 {
+        format!("{h}:{m:02}:{s:02}")
+    } else {
+        format!("{m}:{s:02}")
+    }
 }
 
 /// A few readable lines about an audio/video file, from ffprobe's JSON, plus its duration in seconds
 /// and the picture size of its first video stream.
 fn media_probe(path: &str) -> (Vec<String>, f64, Option<(i64, i64)>) {
     let out = Command::new("ffprobe")
-        .args(["-v", "error", "-show_format", "-show_streams", "-of", "json", path])
+        .args([
+            "-v",
+            "error",
+            "-show_format",
+            "-show_streams",
+            "-of",
+            "json",
+            path,
+        ])
         .output()
         .ok()
         .filter(|o| o.status.success());
@@ -225,7 +270,12 @@ fn media_probe(path: &str) -> (Vec<String>, f64, Option<(i64, i64)>) {
     let mut dims = None;
     let text = |x: &Value, k: &str| x.get(k).and_then(Value::as_str).map(str::to_owned);
     let num = |x: &Value, k: &str| x.get(k).and_then(Value::as_i64);
-    for st in v.get("streams").and_then(Value::as_array).into_iter().flatten() {
+    for st in v
+        .get("streams")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         let codec = text(st, "codec_name").unwrap_or_default();
         match text(st, "codec_type").as_deref() {
             Some("video") if num(st, "disposition_attached_pic").is_none() => {
@@ -237,7 +287,14 @@ fn media_probe(path: &str) -> (Vec<String>, f64, Option<(i64, i64)>) {
                     _ => String::new(),
                 };
                 let fps = text(st, "avg_frame_rate")
-                    .and_then(|r| r.split_once('/').map(|(a, b)| (a.parse::<f64>().unwrap_or(0.0), b.parse::<f64>().unwrap_or(1.0))))
+                    .and_then(|r| {
+                        r.split_once('/').map(|(a, b)| {
+                            (
+                                a.parse::<f64>().unwrap_or(0.0),
+                                b.parse::<f64>().unwrap_or(1.0),
+                            )
+                        })
+                    })
                     .filter(|(_, b)| *b > 0.0)
                     .map(|(a, b)| a / b)
                     .filter(|f| *f > 0.0)
@@ -246,9 +303,19 @@ fn media_probe(path: &str) -> (Vec<String>, f64, Option<(i64, i64)>) {
                 lines.push(format!("Video: {codec}{size}{fps}"));
             }
             Some("audio") => {
-                let rate = text(st, "sample_rate").map(|r| format!(" {r} Hz")).unwrap_or_default();
+                let rate = text(st, "sample_rate")
+                    .map(|r| format!(" {r} Hz"))
+                    .unwrap_or_default();
                 let ch = num(st, "channels")
-                    .map(|c| if c == 1 { " mono".to_owned() } else if c == 2 { " stereo".to_owned() } else { format!(" {c} ch") })
+                    .map(|c| {
+                        if c == 1 {
+                            " mono".to_owned()
+                        } else if c == 2 {
+                            " stereo".to_owned()
+                        } else {
+                            format!(" {c} ch")
+                        }
+                    })
                     .unwrap_or_default();
                 lines.push(format!("Audio: {codec}{rate}{ch}"));
             }
@@ -267,7 +334,9 @@ fn media_probe(path: &str) -> (Vec<String>, f64, Option<(i64, i64)>) {
         if let Some(tags) = f.get("tags") {
             for key in ["title", "artist", "album", "date", "genre"] {
                 // Tag names vary in case between containers.
-                let found = tags.as_object().and_then(|m| m.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)));
+                let found = tags
+                    .as_object()
+                    .and_then(|m| m.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)));
                 if let Some((_, val)) = found.and_then(|(k, v)| v.as_str().map(|s| (k, s))) {
                     lines.push(format!("{}: {}", key[..1].to_uppercase() + &key[1..], val));
                 }
@@ -302,7 +371,9 @@ fn build_preview(path: &str) -> Value {
         return json!({"kind": "none", "path": path, "message": "Cannot read this item"});
     };
     let target_meta = fs::metadata(path).unwrap_or_else(|_| meta.clone());
-    let name = Path::new(path).file_name().map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
+    let name = Path::new(path)
+        .file_name()
+        .map_or_else(|| path.to_owned(), |n| n.to_string_lossy().into_owned());
     let ext = ext_of(path);
     let mut v = json!({
         "path": path,
@@ -313,7 +384,21 @@ fn build_preview(path: &str) -> Value {
         "isLink": meta.file_type().is_symlink(),
     });
     if meta.file_type().is_symlink() {
-        v["linkTarget"] = json!(fs::read_link(path).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default());
+        v["linkTarget"] = json!(
+            fs::read_link(path)
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+    }
+
+    // A link whose target is gone has nothing to show but where it points.
+    if meta.file_type().is_symlink() && fs::metadata(path).is_err() {
+        v["kind"] = json!("none");
+        v["message"] = json!(format!(
+            "Broken link to {}",
+            v["linkTarget"].as_str().unwrap_or("")
+        ));
+        return v;
     }
 
     if target_meta.is_dir() {
@@ -325,7 +410,11 @@ fn build_preview(path: &str) -> Value {
         v["total"] = json!(total);
         v["dirs"] = json!(dirs);
         v["entries"] = json!(
-            entries.iter().take(200).map(|e| json!({"name": e.name, "isDir": e.is_dir})).collect::<Vec<_>>()
+            entries
+                .iter()
+                .take(200)
+                .map(|e| json!({"name": e.name, "isDir": e.is_dir}))
+                .collect::<Vec<_>>()
         );
         return v;
     }
@@ -377,9 +466,15 @@ fn build_preview(path: &str) -> Value {
             Some(png) => {
                 v["url"] = json!(file_url(&png));
                 let info = cmd_lines("pdfinfo", &[path], 40);
-                let pages = info.iter().find_map(|l| l.strip_prefix("Pages:")).map(|s| s.trim().to_owned());
+                let pages = info
+                    .iter()
+                    .find_map(|l| l.strip_prefix("Pages:"))
+                    .map(|s| s.trim().to_owned());
                 if let Some(p) = pages {
-                    v["note"] = json!(format!("{p} {} · showing page 1", if p.trim() == "1" { "page" } else { "pages" }));
+                    v["note"] = json!(format!(
+                        "{p} {} · showing page 1",
+                        if p.trim() == "1" { "page" } else { "pages" }
+                    ));
                 }
             }
             None => {
@@ -391,12 +486,16 @@ fn build_preview(path: &str) -> Value {
     }
     // Word processors, spreadsheets, presentations: extracted text.
     if OFFICE_EXT.contains(&ext.as_str())
-        && let Some(text) = office_text(path, &ext) {
-            fill_text(&mut v, &text, "x.txt", false);
-            v["note"] = json!("extracted text");
-            return v;
-        }
-    if ARCHIVE_EXT.contains(&ext.as_str()) || COVER_EXT.contains(&ext.as_str()) || OFFICE_EXT.contains(&ext.as_str()) {
+        && let Some(text) = office_text(path, &ext)
+    {
+        fill_text(&mut v, &text, "x.txt", false);
+        v["note"] = json!("extracted text");
+        return v;
+    }
+    if ARCHIVE_EXT.contains(&ext.as_str())
+        || COVER_EXT.contains(&ext.as_str())
+        || OFFICE_EXT.contains(&ext.as_str())
+    {
         v["kind"] = json!("archive");
         let lines = cmd_lines("bsdtar", &["-tf", path], 300);
         v["entries"] = json!(lines);
@@ -416,7 +515,9 @@ fn build_preview(path: &str) -> Value {
                 v["poster"] = json!(poster);
             }
         } else {
-            let accent = palette().get("accent").map_or("89b4fa".to_owned(), |c| c.trim_start_matches('#').to_owned());
+            let accent = palette().get("accent").map_or("89b4fa".to_owned(), |c| {
+                c.trim_start_matches('#').to_owned()
+            });
             if let Some((poster, what)) = audio_art(path, mtime, &accent) {
                 v["poster"] = json!(poster);
                 v["posterNote"] = json!(what);
@@ -447,20 +548,35 @@ fn build_preview(path: &str) -> Value {
                     v["note"] = json!("table");
                 }
                 _ => {
-                    let shown = if matches!(ext.as_str(), "json" | "geojson" | "ipynb") && !truncated {
-                        pretty_json(&text).unwrap_or(text)
-                    } else {
-                        text
-                    };
+                    let shown =
+                        if matches!(ext.as_str(), "json" | "geojson" | "ipynb") && !truncated {
+                            pretty_json(&text).unwrap_or(text)
+                        } else {
+                            text
+                        };
                     fill_text(&mut v, &shown, path, truncated);
                 }
             }
         }
         Some(bytes) => {
             // Binary: a description plus the first bytes as a hex dump.
-            let desc = cmd_lines("file", &["-b", path], 1).pop().unwrap_or_default();
-            fill_text(&mut v, &hex_dump(&bytes[..bytes.len().min(2048)]), "x.txt", bytes.len() >= 2048);
-            v["note"] = json!(format!("hex dump{}", if desc.is_empty() { String::new() } else { format!(" · {desc}") }));
+            let desc = cmd_lines("file", &["-b", path], 1)
+                .pop()
+                .unwrap_or_default();
+            fill_text(
+                &mut v,
+                &hex_dump(&bytes[..bytes.len().min(2048)]),
+                "x.txt",
+                bytes.len() >= 2048,
+            );
+            v["note"] = json!(format!(
+                "hex dump{}",
+                if desc.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {desc}")
+                }
+            ));
             v["binary"] = json!(true);
         }
         None => {
@@ -556,7 +672,10 @@ mod preview_tests {
         sb.touch("d/b.txt", "x");
         let v = preview(&sb.path("d"));
         assert_eq!(v["kind"], "dir");
-        assert_eq!((v["total"].as_i64(), v["dirs"].as_i64()), (Some(3), Some(1)));
+        assert_eq!(
+            (v["total"].as_i64(), v["dirs"].as_i64()),
+            (Some(3), Some(1))
+        );
         assert_eq!(v["entries"][0]["name"], "sub", "folders sort first");
     }
 
@@ -580,7 +699,9 @@ mod preview_tests {
     #[test]
     fn long_text_is_truncated() {
         let sb = Sandbox::new("preview-long");
-        let body: String = (0..MAX_TEXT_LINES + 50).map(|i| format!("line {i}\n")).collect();
+        let body: String = (0..MAX_TEXT_LINES + 50)
+            .map(|i| format!("line {i}\n"))
+            .collect();
         let v = preview(&sb.touch("long.txt", &body).to_string_lossy());
         assert_eq!(v["truncated"], true);
         assert!(v["lines"].as_i64().unwrap() <= MAX_TEXT_LINES as i64);
@@ -595,6 +716,16 @@ mod preview_tests {
         assert_eq!(v["isLink"], true);
         assert_eq!(v["linkTarget"], sb.path("real.txt"));
     }
+
+    #[test]
+    fn a_broken_link_says_where_it_points() {
+        let sb = Sandbox::new("preview-broken-link");
+        std::os::unix::fs::symlink("/nonexistent/gone", sb.path("dead")).unwrap();
+        let v = preview(&sb.path("dead"));
+        assert_eq!(v["kind"], "none");
+        assert_eq!(v["isLink"], true);
+        assert_eq!(v["message"], "Broken link to /nonexistent/gone");
+    }
 }
 
 #[cfg(test)]
@@ -603,7 +734,12 @@ mod format_tests {
     use crate::testutil::Sandbox;
 
     fn have(tool: &str) -> bool {
-        Command::new(tool).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok()
+        Command::new(tool)
+            .arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok()
     }
 
     #[test]
@@ -637,10 +773,21 @@ mod format_tests {
             return;
         }
         let sb = Sandbox::new("pv-docx");
-        sb.touch("src/word/document.xml", "<w:p><w:r><w:t>Hello docx</w:t></w:r></w:p>");
+        sb.touch(
+            "src/word/document.xml",
+            "<w:p><w:r><w:t>Hello docx</w:t></w:r></w:p>",
+        );
         let out = sb.path("a.docx");
         let made = Command::new("bsdtar")
-            .args(["--format", "zip", "-cf", &out, "-C", &sb.path("src"), "word"])
+            .args([
+                "--format",
+                "zip",
+                "-cf",
+                &out,
+                "-C",
+                &sb.path("src"),
+                "word",
+            ])
             .status()
             .is_ok_and(|s| s.success());
         if !made {
@@ -679,7 +826,18 @@ mod format_tests {
         let sb = Sandbox::new("pv-video");
         let clip = sb.path("c.mp4");
         let made = Command::new("ffmpeg")
-            .args(["-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=duration=2:size=160x90:rate=10", "-pix_fmt", "yuv420p", &clip])
+            .args([
+                "-v",
+                "error",
+                "-y",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc=duration=2:size=160x90:rate=10",
+                "-pix_fmt",
+                "yuv420p",
+                &clip,
+            ])
             .status()
             .is_ok_and(|s| s.success());
         if !made {
@@ -688,6 +846,12 @@ mod format_tests {
         let v = preview(&clip);
         assert_eq!(v["kind"], "video");
         assert!(v["poster"].as_str().unwrap().ends_with(".png"));
-        assert!(v["info"].as_array().unwrap().iter().any(|l| l.as_str().unwrap().starts_with("Video: h264")));
+        assert!(
+            v["info"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|l| l.as_str().unwrap().starts_with("Video: h264"))
+        );
     }
 }

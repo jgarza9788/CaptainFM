@@ -1,7 +1,7 @@
 import QtQuick
 import CaptainFM
 
-// Modal key handling: counts, multi-key sequences (including the <Space> leader) and the
+// Modal key handling: counts, multi-key sequences (including the "," leader) and the
 // which-key hints. Bindings map a space-separated key sequence to a command id.
 QtObject {
     id: eng
@@ -9,7 +9,10 @@ QtObject {
     property var commands            // Commands object
     // fp = File Pilot style (Ctrl shortcuts, arrows, type-ahead); vim = modal keys with a leader.
     property string profile: "fp"
-    onProfileChanged: reset()
+    property var userKeys: ({})      // the user's keys.json overrides
+    // Rebuild here, after the profile has its new value: a handler on the owner's `keymap` can run before this
+    // property is updated and would build the bindings of the old profile (Vim keys dead when started with Vim).
+    onProfileChanged: { reset(); rebuild(userKeys) }
     property var bindings: ({})      // "g g" -> "cursor.top"
     property var prefixes: ({})      // "g" -> true (proper prefix of some binding)
     property var seq: []
@@ -20,17 +23,17 @@ QtObject {
     readonly property string hintPrefix: seq.join(" ")
 
     readonly property var groups: ({
-        "<Space>": "leader",
-        "<Space> f": "find",
-        "<Space> p": "pins",
-        "<Space> t": "tabs",
-        "<Space> w": "panes",
-        "<Space> o": "order by",
-        "<Space> v": "view",
-        "<Space> l": "layouts",
-        "<Space> g": "go to",
-        "<Space> y": "yank",
-        "<Space> r": "rename / run",
+        ",": "leader",
+        ", f": "find",
+        ", p": "pins",
+        ", t": "tabs",
+        ", w": "panes",
+        ", o": "order by",
+        ", v": "view",
+        ", l": "layouts",
+        ", g": "go to",
+        ", y": "yank",
+        ", r": "rename / run",
         "g": "go to",
         "y": "yank",
         "d": "delete / cut",
@@ -40,7 +43,7 @@ QtObject {
 
     readonly property var special: ({
         [Qt.Key_Escape]: "Esc", [Qt.Key_Return]: "CR", [Qt.Key_Enter]: "CR", [Qt.Key_Tab]: "Tab",
-        [Qt.Key_Backtab]: "S-Tab", [Qt.Key_Backspace]: "BS", [Qt.Key_Delete]: "Del", [Qt.Key_Space]: "Space",
+        [Qt.Key_Backtab]: "S-Tab", [Qt.Key_Backspace]: "BS", [Qt.Key_Delete]: "Del", [Qt.Key_Space]: "Space", [Qt.Key_Insert]: "Insert",
         [Qt.Key_Up]: "Up", [Qt.Key_Down]: "Down", [Qt.Key_Left]: "Left", [Qt.Key_Right]: "Right",
         [Qt.Key_Home]: "Home", [Qt.Key_End]: "End", [Qt.Key_PageUp]: "PageUp", [Qt.Key_PageDown]: "PageDown",
         [Qt.Key_F1]: "F1", [Qt.Key_F2]: "F2", [Qt.Key_F3]: "F3", [Qt.Key_F4]: "F4", [Qt.Key_F5]: "F5",
@@ -153,7 +156,7 @@ QtObject {
     }
 
     property Timer hintTimer: Timer {
-        interval: eng.seq.length > 0 && eng.seq[0] === "<Space>" ? 120 : 450
+        interval: eng.seq.length > 0 && eng.seq[0] === "," ? 120 : 450
         onTriggered: {
             if (eng.seq.length === 0) return
             eng.hintItems = eng.describe()

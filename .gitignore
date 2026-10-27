@@ -1,3 +1,4 @@
 /target
 .qmlls.ini
 __pycache__/
+dist-release/

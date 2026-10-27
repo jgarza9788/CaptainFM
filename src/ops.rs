@@ -17,12 +17,29 @@ use crate::transfer::{Ctl, Policy, State};
 
 #[derive(Clone, Debug)]
 enum Step {
-    Moved { from: String, to: String },
-    Copied { from: String, to: String },
-    Linked { target: String, to: String },
-    Trashed { orig: String, stored: String, info: String },
-    CreatedFile { path: String },
-    CreatedDir { path: String },
+    Moved {
+        from: String,
+        to: String,
+    },
+    Copied {
+        from: String,
+        to: String,
+    },
+    Linked {
+        target: String,
+        to: String,
+    },
+    Trashed {
+        orig: String,
+        stored: String,
+        info: String,
+    },
+    CreatedFile {
+        path: String,
+    },
+    CreatedDir {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -37,7 +54,10 @@ struct Journal {
     redo: Vec<Action>,
 }
 
-static JOURNAL: Mutex<Journal> = Mutex::new(Journal { undo: Vec::new(), redo: Vec::new() });
+static JOURNAL: Mutex<Journal> = Mutex::new(Journal {
+    undo: Vec::new(),
+    redo: Vec::new(),
+});
 
 #[derive(Serialize, Default, Debug)]
 pub struct Outcome {
@@ -49,11 +69,18 @@ pub struct Outcome {
     /// Items left alone because the destination already had one and the answer was skip.
     pub skipped: usize,
     pub cancelled: bool,
+    /// Remote items that were not trashed because the server has no trash: the UI offers to delete them.
+    pub no_trash: Vec<String>,
+    /// Whether undo can reverse this (trashing on a server cannot be undone from here).
+    pub undo: bool,
 }
 
 impl Outcome {
     fn new(label: &str) -> Self {
-        Outcome { label: label.to_owned(), ..Default::default() }
+        Outcome {
+            label: label.to_owned(),
+            ..Default::default()
+        }
     }
 
     pub fn json(&self) -> String {
@@ -82,13 +109,19 @@ pub fn link(paths: &[String], dest_dir: &str) -> Outcome {
             Ok(()) => {
                 let to = dst.to_string_lossy().into_owned();
                 out.paths.push(to.clone());
-                steps.push(Step::Linked { target: src.clone(), to });
+                steps.push(Step::Linked {
+                    target: src.clone(),
+                    to,
+                });
                 out.ok += 1;
             }
             Err(e) => out.errors.push(format!("{}: {e}", base_name(src))),
         }
     }
-    record(Action { label: out.label.clone(), steps });
+    record(Action {
+        label: out.label.clone(),
+        steps,
+    });
     out
 }
 
@@ -98,9 +131,16 @@ pub fn url_file_name(url: &str) -> String {
     let path = rest.split(['?', '#']).next().unwrap_or("");
     let path = path.split_once('/').map_or("", |(_, p)| p);
     let name = crate::dbus::percent_decode(path.rsplit('/').next().unwrap_or(""));
-    let name: String = name.chars().filter(|c| !c.is_control() && *c != '/').collect();
+    let name: String = name
+        .chars()
+        .filter(|c| !c.is_control() && *c != '/')
+        .collect();
     let name = name.trim();
-    if name.is_empty() || name == "." || name == ".." { "download".to_owned() } else { name.to_owned() }
+    if name.is_empty() || name == "." || name == ".." {
+        "download".to_owned()
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Download http(s) URLs into `dest_dir` with curl, e.g. an image or link dragged out of a browser.
@@ -122,7 +162,10 @@ pub fn download(urls: &[String], dest_dir: &str) -> Outcome {
             }
             Ok(_) => {
                 let _ = fs::remove_file(&dst);
-                out.errors.push(format!("{}: download failed", base_name(&dst.to_string_lossy())));
+                out.errors.push(format!(
+                    "{}: download failed",
+                    base_name(&dst.to_string_lossy())
+                ));
             }
             Err(e) => out.errors.push(format!("curl: {e}")),
         }
@@ -135,7 +178,10 @@ pub fn archive_stem(name: &str) -> String {
     let mut stem = name;
     while let Some((head, ext)) = stem.rsplit_once('.') {
         let ext = ext.to_lowercase();
-        let known = ["zip", "tar", "tgz", "gz", "xz", "bz2", "zst", "7z", "rar", "iso", "txz", "tbz2", "jar", "apk", "whl"];
+        let known = [
+            "zip", "tar", "tgz", "gz", "xz", "bz2", "zst", "7z", "rar", "iso", "txz", "tbz2",
+            "jar", "apk", "whl",
+        ];
         if head.is_empty() || !known.contains(&ext.as_str()) {
             break;
         }
@@ -151,7 +197,11 @@ pub fn extract(paths: &[String], into_folder: bool) -> Outcome {
     for src in paths {
         let name = base_name(src);
         let parent = Path::new(src).parent().unwrap_or(Path::new("/"));
-        let dest = if into_folder { unique_dest(parent, &archive_stem(&name)) } else { parent.to_path_buf() };
+        let dest = if into_folder {
+            unique_dest(parent, &archive_stem(&name))
+        } else {
+            parent.to_path_buf()
+        };
         if into_folder && let Err(e) = fs::create_dir(&dest) {
             out.errors.push(format!("{name}: {e}"));
             continue;
@@ -173,7 +223,10 @@ pub fn extract(paths: &[String], into_folder: bool) -> Outcome {
                     let _ = fs::remove_dir(&dest);
                 }
                 let msg = String::from_utf8_lossy(&o.stderr);
-                out.errors.push(format!("{name}: {}", msg.lines().next().unwrap_or("not an archive")));
+                out.errors.push(format!(
+                    "{name}: {}",
+                    msg.lines().next().unwrap_or("not an archive")
+                ));
             }
             Err(e) => out.errors.push(format!("bsdtar: {e}")),
         }
@@ -184,7 +237,9 @@ pub fn extract(paths: &[String], into_folder: bool) -> Outcome {
 // ---- helpers ---------------------------------------------------------------------------
 
 fn base_name(p: &str) -> String {
-    Path::new(p).file_name().map_or_else(|| p.to_owned(), |n| n.to_string_lossy().into_owned())
+    Path::new(p)
+        .file_name()
+        .map_or_else(|| p.to_owned(), |n| n.to_string_lossy().into_owned())
 }
 
 /// `dir/name`, or `dir/name (copy)`, `dir/name (copy 2)`... when taken.
@@ -198,7 +253,11 @@ fn unique_dest(dir: &Path, name: &str) -> PathBuf {
         _ => (name, ""),
     };
     for n in 1.. {
-        let tag = if n == 1 { " (copy)".to_owned() } else { format!(" (copy {n})") };
+        let tag = if n == 1 {
+            " (copy)".to_owned()
+        } else {
+            format!(" (copy {n})")
+        };
         let candidate = dir.join(format!("{stem}{tag}{ext}"));
         if fs::symlink_metadata(&candidate).is_err() {
             return candidate;
@@ -239,7 +298,10 @@ fn copy_file(src: &Path, dst: &Path, meta: &fs::Metadata, ctl: &Ctl) -> io::Resu
     use std::os::fd::AsRawFd;
     const CHUNK: usize = 8 << 20;
     let mut input = fs::File::open(src)?;
-    let mut output = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
+    let mut output = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dst)?;
     let mut kernel = true;
     let mut buf = Vec::new();
     loop {
@@ -247,7 +309,14 @@ fn copy_file(src: &Path, dst: &Path, meta: &fs::Metadata, ctl: &Ctl) -> io::Resu
         let n = if kernel {
             // SAFETY: both descriptors are open files owned by this function; null offsets use and advance each file position.
             let r = unsafe {
-                libc::copy_file_range(input.as_raw_fd(), std::ptr::null_mut(), output.as_raw_fd(), std::ptr::null_mut(), CHUNK, 0)
+                libc::copy_file_range(
+                    input.as_raw_fd(),
+                    std::ptr::null_mut(),
+                    output.as_raw_fd(),
+                    std::ptr::null_mut(),
+                    CHUNK,
+                    0,
+                )
             };
             if r >= 0 {
                 r as usize
@@ -271,7 +340,11 @@ fn copy_file(src: &Path, dst: &Path, meta: &fs::Metadata, ctl: &Ctl) -> io::Resu
 }
 
 fn remove_any(p: &Path) -> io::Result<()> {
-    if fs::symlink_metadata(p)?.is_dir() { fs::remove_dir_all(p) } else { fs::remove_file(p) }
+    if fs::symlink_metadata(p)?.is_dir() {
+        fs::remove_dir_all(p)
+    } else {
+        fs::remove_file(p)
+    }
 }
 
 /// Rename, falling back to copy + delete across filesystems.
@@ -316,7 +389,9 @@ pub fn percent_encode_path(p: &str) -> String {
     let mut out = String::new();
     for b in p.bytes() {
         match b {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(b as char)
+            }
             _ => out.push_str(&format!("%{b:02X}")),
         }
     }
@@ -339,7 +414,13 @@ fn trash_one(orig: &str, date: &str) -> io::Result<Step> {
     let dest = unique_dest(&files, &base_name(orig));
     let name = dest.file_name().unwrap().to_string_lossy().into_owned();
     let info = infos.join(format!("{name}.trashinfo"));
-    fs::write(&info, format!("[Trash Info]\nPath={}\nDeletionDate={date}\n", percent_encode_path(orig)))?;
+    fs::write(
+        &info,
+        format!(
+            "[Trash Info]\nPath={}\nDeletionDate={date}\n",
+            percent_encode_path(orig)
+        ),
+    )?;
     if let Err(e) = move_any(Path::new(orig), &dest) {
         let _ = fs::remove_file(&info);
         return Err(e);
@@ -382,7 +463,13 @@ pub fn paste(paths: &[String], dest_dir: &str, cut: bool) -> Outcome {
 }
 
 /// Copy or move as the transfer `ctl`, reporting progress through it.
-pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, policy: Policy) -> Outcome {
+pub fn paste_tracked(
+    ctl: &Ctl,
+    paths: &[String],
+    dest_dir: &str,
+    cut: bool,
+    policy: Policy,
+) -> Outcome {
     use std::os::unix::fs::MetadataExt;
     let mut out = Outcome::new(if cut { "Moved" } else { "Copied" });
     if ctl.cancelled() {
@@ -391,14 +478,20 @@ pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, pol
         return out;
     }
     ctl.set_state(State::Running);
+    let started = std::time::Instant::now();
     // Sizes for the progress bar. A move on one filesystem is a rename and has no bytes to count.
     let dest_dev = fs::metadata(dest_dir).map(|m| m.dev()).ok();
     let bytes: u64 = paths
         .iter()
-        .filter(|p| !cut || fs::symlink_metadata(p).map(|m| Some(m.dev()) != dest_dev).unwrap_or(false))
+        .filter(|p| {
+            !cut || fs::symlink_metadata(p)
+                .map(|m| Some(m.dev()) != dest_dev)
+                .unwrap_or(false)
+        })
         .map(|p| tree_bytes(Path::new(p)))
         .sum();
-    ctl.bytes_total.store(bytes, std::sync::atomic::Ordering::Relaxed);
+    ctl.bytes_total
+        .store(bytes, std::sync::atomic::Ordering::Relaxed);
     let mut steps = Vec::new();
     for src in paths {
         let name = base_name(src);
@@ -406,7 +499,8 @@ pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, pol
         let same_folder = Path::new(src).parent() == Some(Path::new(dest_dir));
         // Moving into the folder it is already in is a no-op.
         if cut && same_folder {
-            ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            ctl.items_done
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         }
         let wanted = Path::new(dest_dir).join(&name);
@@ -414,16 +508,19 @@ pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, pol
         let mut replaced = None;
         let dst = if clash && policy == Policy::Skip {
             out.skipped += 1;
-            ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            ctl.items_done
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         } else if clash && policy == Policy::Replace {
             if Path::new(src).starts_with(&wanted) {
-                out.errors.push(format!("{name}: cannot replace a folder with something inside it"));
+                out.errors.push(format!(
+                    "{name}: cannot replace a folder with something inside it"
+                ));
                 continue;
             }
-            // The old one goes to the trash, so replacing is undoable and nothing is lost for good.
-            match trash_one(&wanted.to_string_lossy(), &deletion_date()) {
-                Ok(step) => replaced = Some(step),
+            // The old one goes to the trash, so replacing is undoable (on a remote: see `clear_for_replace`).
+            match clear_for_replace(&wanted.to_string_lossy()) {
+                Ok(step) => replaced = step,
                 Err(e) => {
                     out.errors.push(format!("{name}: {e}"));
                     continue;
@@ -433,15 +530,24 @@ pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, pol
         } else {
             unique_dest(Path::new(dest_dir), &name)
         };
-        let result = if cut { move_tracked(Path::new(src), &dst, ctl) } else { copy_tracked(Path::new(src), &dst, ctl) };
+        let result = if cut {
+            move_tracked(Path::new(src), &dst, ctl)
+        } else {
+            copy_tracked(Path::new(src), &dst, ctl)
+        };
         match result {
             Ok(()) => {
                 let (from, to) = (src.clone(), dst.to_string_lossy().into_owned());
                 out.paths.push(to.clone());
                 steps.extend(replaced);
-                steps.push(if cut { Step::Moved { from, to } } else { Step::Copied { from, to } });
+                steps.push(if cut {
+                    Step::Moved { from, to }
+                } else {
+                    Step::Copied { from, to }
+                });
                 out.ok += 1;
-                ctl.items_done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                ctl.items_done
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             Err(e) => {
                 // Do not leave half a copy behind, and put back what was replaced.
@@ -460,9 +566,106 @@ pub fn paste_tracked(ctl: &Ctl, paths: &[String], dest_dir: &str, cut: bool, pol
             }
         }
     }
-    ctl.set_state(if out.cancelled { State::Cancelled } else { State::Done });
-    record(Action { label: out.label.clone(), steps });
+    ctl.set_errors(out.errors.len(), out.errors.first().map_or("", |e| e));
+    ctl.set_state(if out.cancelled {
+        State::Cancelled
+    } else if out.ok == 0 && !out.errors.is_empty() {
+        State::Failed
+    } else {
+        State::Done
+    });
+    if std::env::var_os("CFM_DEBUG").is_some() {
+        eprintln!(
+            "[timing] {} {} items, {} bytes: {:?}",
+            out.label.to_lowercase(),
+            out.ok,
+            ctl.bytes_done.load(std::sync::atomic::Ordering::Relaxed),
+            started.elapsed()
+        );
+    }
+    record(Action {
+        label: out.label.clone(),
+        steps,
+    });
     out
+}
+
+/// Trash on the server itself, for a file on a remote. Moving it into the local trash instead would
+/// download the whole file and then delete it on the server. Only gvfs's Google Drive has a trash;
+/// SMB, SFTP, FTP, WebDAV and rclone mounts fail with `Unsupported`.
+fn server_trash(path: &str) -> io::Result<()> {
+    let root = crate::listing::remote_root(path).unwrap_or_default();
+    if !root
+        .rsplit('/')
+        .next()
+        .unwrap_or("")
+        .starts_with("google-drive:")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this server has no trash",
+        ));
+    }
+    let out = Command::new("gio").arg("trash").arg(path).output()?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            String::from_utf8_lossy(&out.stderr).trim().to_owned(),
+        ))
+    }
+}
+
+/// Whether replacing or trashing at `path` would delete for good: it is on a remote with no trash.
+pub fn deletes_for_good(path: &str) -> bool {
+    crate::listing::remote_root(path).is_some_and(|root| {
+        !root
+            .rsplit('/')
+            .next()
+            .unwrap_or("")
+            .starts_with("google-drive:")
+    })
+}
+
+/// Make room for a replacement at `path`. Locally the old item goes to the trash (an undo step); on a remote
+/// it goes to the server's trash, or is deleted for good where there is none (the clash dialog said so).
+fn clear_for_replace(path: &str) -> io::Result<Option<Step>> {
+    if !crate::listing::is_remote(path) {
+        return trash_one(path, &deletion_date()).map(Some);
+    }
+    match server_trash(path) {
+        Err(e) if e.kind() == io::ErrorKind::Unsupported => {
+            remove_any(Path::new(path)).map(|()| None)
+        }
+        other => other.map(|()| None),
+    }
+}
+
+/// Undo something this app made at `path`. Locally it goes to the trash. On a remote, a copy or a link is
+/// removed directly (the original is still there, and the local trash would download it), and a new file or
+/// folder only while it is still empty, since there may be no trash to get it back from.
+fn unmake(path: &str, made_empty: bool) -> io::Result<()> {
+    if !crate::listing::is_remote(path) {
+        return trash_one(path, &deletion_date()).map(|_| ());
+    }
+    if made_empty {
+        let p = Path::new(path);
+        let empty = if p.is_dir() {
+            fs::read_dir(p)?.next().is_none()
+        } else {
+            fs::symlink_metadata(p)?.len() == 0
+        };
+        if !empty && server_trash(path).is_err() {
+            return Err(io::Error::other(format!(
+                "{} has changed since it was made and this server has no trash; delete it yourself",
+                base_name(path)
+            )));
+        }
+        if !empty {
+            return Ok(());
+        }
+    }
+    remove_any(Path::new(path))
 }
 
 pub fn trash(paths: &[String]) -> Outcome {
@@ -470,6 +673,14 @@ pub fn trash(paths: &[String]) -> Outcome {
     let date = deletion_date();
     let mut steps = Vec::new();
     for p in paths {
+        if crate::listing::is_remote(p) {
+            match server_trash(p) {
+                Ok(()) => out.ok += 1,
+                Err(e) if e.kind() == io::ErrorKind::Unsupported => out.no_trash.push(p.clone()),
+                Err(e) => out.errors.push(format!("{}: {e}", base_name(p))),
+            }
+            continue;
+        }
         match trash_one(p, &date) {
             Ok(step) => {
                 steps.push(step);
@@ -478,7 +689,56 @@ pub fn trash(paths: &[String]) -> Outcome {
             Err(e) => out.errors.push(format!("{}: {e}", base_name(p))),
         }
     }
-    record(Action { label: out.label.clone(), steps });
+    out.undo = !steps.is_empty();
+    record(Action {
+        label: out.label.clone(),
+        steps,
+    });
+    out
+}
+
+/// How many items are in the trash (the home trash, where `trash` puts things).
+pub fn trash_count() -> usize {
+    fs::read_dir(trash_dirs().0).map_or(0, |d| d.count())
+}
+
+/// Delete everything in the home trash for good. Not undoable, and the undo history that pointed into the
+/// trash goes too, so undo moves on to the next thing it can still do instead of failing on a missing file.
+pub fn empty_trash() -> Outcome {
+    let mut out = Outcome::new("Emptied the trash of");
+    let (files, infos) = trash_dirs();
+    if let Ok(entries) = fs::read_dir(&files) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            match remove_any(&e.path()) {
+                Ok(()) => {
+                    out.ok += 1;
+                    let _ = fs::remove_file(infos.join(format!("{name}.trashinfo")));
+                }
+                Err(err) => out.errors.push(format!("{name}: {err}")),
+            }
+        }
+    }
+    // Records whose item is gone (written by other programs, or left behind by a crash).
+    if let Ok(entries) = fs::read_dir(&infos) {
+        for e in entries.flatten() {
+            let stem = e
+                .file_name()
+                .to_string_lossy()
+                .trim_end_matches(".trashinfo")
+                .to_owned();
+            if fs::symlink_metadata(files.join(stem)).is_err() {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    if let Some(trash) = files.parent() {
+        let _ = fs::remove_file(trash.join("directorysizes"));
+    }
+    let mut j = JOURNAL.lock().unwrap();
+    let keep = |a: &Action| !a.steps.iter().any(|s| matches!(s, Step::Trashed { .. }));
+    j.undo.retain(keep);
+    j.redo.retain(keep);
     out
 }
 
@@ -517,7 +777,13 @@ pub fn rename(path: &str, new_name: &str) -> Outcome {
             let to = dst.to_string_lossy().into_owned();
             out.ok = 1;
             out.paths.push(to.clone());
-            record(Action { label: out.label.clone(), steps: vec![Step::Moved { from: path.to_owned(), to }] });
+            record(Action {
+                label: out.label.clone(),
+                steps: vec![Step::Moved {
+                    from: path.to_owned(),
+                    to,
+                }],
+            });
         }
         Err(e) => out.errors.push(e.to_string()),
     }
@@ -543,7 +809,8 @@ pub fn rename_many(pairs: &[(String, String)]) -> Outcome {
     for (from, tmp, to) in staged {
         if fs::symlink_metadata(&to).is_ok() {
             let _ = fs::rename(&tmp, &from);
-            out.errors.push(format!("{}: target exists", base_name(&to)));
+            out.errors
+                .push(format!("{}: target exists", base_name(&to)));
             continue;
         }
         match fs::rename(&tmp, &to) {
@@ -558,12 +825,19 @@ pub fn rename_many(pairs: &[(String, String)]) -> Outcome {
             }
         }
     }
-    record(Action { label: out.label.clone(), steps });
+    record(Action {
+        label: out.label.clone(),
+        steps,
+    });
     out
 }
 
 pub fn create(dir: &str, name: &str, is_dir: bool) -> Outcome {
-    let mut out = Outcome::new(if is_dir { "Created folder" } else { "Created file" });
+    let mut out = Outcome::new(if is_dir {
+        "Created folder"
+    } else {
+        "Created file"
+    });
     if name.is_empty() || name.contains('/') {
         out.errors.push("invalid name".into());
         return out;
@@ -572,15 +846,26 @@ pub fn create(dir: &str, name: &str, is_dir: bool) -> Outcome {
     let result = if is_dir {
         fs::create_dir(&path)
     } else {
-        fs::OpenOptions::new().write(true).create_new(true).open(&path).map(|_| ())
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .map(|_| ())
     };
     match result {
         Ok(()) => {
             let p = path.to_string_lossy().into_owned();
             out.ok = 1;
             out.paths.push(p.clone());
-            let step = if is_dir { Step::CreatedDir { path: p } } else { Step::CreatedFile { path: p } };
-            record(Action { label: out.label.clone(), steps: vec![step] });
+            let step = if is_dir {
+                Step::CreatedDir { path: p }
+            } else {
+                Step::CreatedFile { path: p }
+            };
+            record(Action {
+                label: out.label.clone(),
+                steps: vec![step],
+            });
         }
         Err(e) => out.errors.push(e.to_string()),
     }
@@ -598,11 +883,11 @@ fn undo_step(step: &Step) -> io::Result<Step> {
         }
         Step::Copied { from: _, to } => {
             // Undoing a copy moves the copy to the trash rather than deleting it outright.
-            trash_one(to, &deletion_date())?;
+            unmake(to, false)?;
             Ok(step.clone())
         }
         Step::Linked { to, .. } => {
-            trash_one(to, &deletion_date())?;
+            unmake(to, false)?;
             Ok(step.clone())
         }
         Step::Trashed { orig, stored, info } => {
@@ -610,7 +895,7 @@ fn undo_step(step: &Step) -> io::Result<Step> {
             Ok(step.clone())
         }
         Step::CreatedFile { path } | Step::CreatedDir { path } => {
-            trash_one(path, &deletion_date())?;
+            unmake(path, true)?;
             Ok(step.clone())
         }
     }
@@ -632,7 +917,10 @@ fn redo_step(step: &Step) -> io::Result<Step> {
         }
         Step::Trashed { orig, .. } => trash_one(orig, &deletion_date()),
         Step::CreatedFile { path } => {
-            fs::OpenOptions::new().write(true).create_new(true).open(path)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(path)?;
             Ok(step.clone())
         }
         Step::CreatedDir { path } => {
@@ -658,16 +946,32 @@ pub fn step_history(redo: bool) -> Outcome {
         if redo { j.redo.pop() } else { j.undo.pop() }
     };
     let Some(action) = action else {
-        let mut out = Outcome::new(if redo { "Nothing to redo" } else { "Nothing to undo" });
+        let mut out = Outcome::new(if redo {
+            "Nothing to redo"
+        } else {
+            "Nothing to undo"
+        });
         out.errors.push(out.label.clone());
         return out;
     };
-    let mut out = Outcome::new(&format!("{} {}", if redo { "Redid" } else { "Undid" }, action.label.to_lowercase()));
+    let mut out = Outcome::new(&format!(
+        "{} {}",
+        if redo { "Redid" } else { "Undid" },
+        action.label.to_lowercase()
+    ));
     let mut done = Vec::new();
     // Undo walks steps in reverse so dependent steps unwind in order.
-    let ordered: Vec<&Step> = if redo { action.steps.iter().collect() } else { action.steps.iter().rev().collect() };
+    let ordered: Vec<&Step> = if redo {
+        action.steps.iter().collect()
+    } else {
+        action.steps.iter().rev().collect()
+    };
     for step in ordered {
-        match if redo { redo_step(step) } else { undo_step(step) } {
+        match if redo {
+            redo_step(step)
+        } else {
+            undo_step(step)
+        } {
             Ok(new_step) => {
                 out.ok += 1;
                 out.paths.extend(step_paths(step));
@@ -679,12 +983,19 @@ pub fn step_history(redo: bool) -> Outcome {
     if !redo {
         done.reverse();
     }
-    let inverse = Action { label: action.label, steps: done };
+    let inverse = Action {
+        label: action.label,
+        steps: done,
+    };
     let mut j = JOURNAL.lock().unwrap();
     if inverse.steps.is_empty() {
         return out;
     }
-    if redo { j.undo.push(inverse) } else { j.redo.push(inverse) }
+    if redo {
+        j.undo.push(inverse)
+    } else {
+        j.redo.push(inverse)
+    }
     out
 }
 
@@ -716,7 +1027,10 @@ mod tests {
 
     #[test]
     fn download_names_come_from_the_url() {
-        assert_eq!(url_file_name("https://example.com/a/b%20c.png?x=1#top"), "b c.png");
+        assert_eq!(
+            url_file_name("https://example.com/a/b%20c.png?x=1#top"),
+            "b c.png"
+        );
         assert_eq!(url_file_name("https://example.com/"), "download");
         assert_eq!(url_file_name("https://example.com"), "download");
         assert_eq!(url_file_name("http://h/dir/.."), "download");
@@ -744,10 +1058,10 @@ mod tests {
         if made.is_err() {
             return;
         }
-        let o = extract(&[zip.clone()], true);
+        let o = extract(std::slice::from_ref(&zip), true);
         assert_eq!(o.errors.len(), 0, "{:?}", o.errors);
         assert!(d.join("pack/f.txt").exists());
-        let o = extract(&[zip.clone()], true);
+        let o = extract(std::slice::from_ref(&zip), true);
         assert!(d.join("pack (copy)/f.txt").exists(), "{:?}", o.errors);
         fs::remove_file(d.join("pack/f.txt")).unwrap();
         fs::remove_dir(d.join("pack")).unwrap();
@@ -816,7 +1130,10 @@ mod journal_tests {
         let (files, infos) = trash_dirs();
         assert!(files.join("a.txt").exists());
         let info = fs::read_to_string(infos.join("a.txt.trashinfo")).unwrap();
-        assert!(info.contains("[Trash Info]") && info.contains(&format!("Path={}", percent_encode_path(&p(&sb, "a.txt")))));
+        assert!(
+            info.contains("[Trash Info]")
+                && info.contains(&format!("Path={}", percent_encode_path(&p(&sb, "a.txt"))))
+        );
 
         let undo = step_history(false);
         assert_eq!(undo.ok, 1, "{:?}", undo.errors);
@@ -826,6 +1143,223 @@ mod journal_tests {
         let redo = step_history(true);
         assert_eq!(redo.ok, 1, "{:?}", redo.errors);
         assert!(!Path::new(&p(&sb, "a.txt")).exists());
+    }
+
+    #[test]
+    fn emptying_the_trash_removes_everything_in_it() {
+        let sb = Sandbox::new("empty-trash");
+        assert_eq!(
+            (empty_trash().ok, empty_trash().errors.len()),
+            (0, 0),
+            "an empty trash is fine"
+        );
+        sb.touch("a.txt", "A");
+        sb.touch("b.txt", "B");
+        sb.touch("d/inner.txt", "I");
+        trash(&[p(&sb, "a.txt"), p(&sb, "b.txt"), p(&sb, "d")]);
+        assert_eq!(trash_count(), 3);
+        let (files, infos) = trash_dirs();
+        fs::write(files.parent().unwrap().join("directorysizes"), "").unwrap();
+        fs::write(infos.join("orphan.trashinfo"), "[Trash Info]\n").unwrap();
+        let out = empty_trash();
+        assert_eq!((out.ok, out.errors.len()), (3, 0), "{:?}", out.errors);
+        assert_eq!(trash_count(), 0);
+        assert_eq!(
+            fs::read_dir(&infos).unwrap().count(),
+            0,
+            "records go too, orphans included"
+        );
+        assert!(
+            files.is_dir() && infos.is_dir(),
+            "the trash folders themselves stay"
+        );
+        assert!(!files.parent().unwrap().join("directorysizes").exists());
+    }
+
+    #[test]
+    fn undo_after_emptying_skips_what_was_in_the_trash() {
+        let sb = Sandbox::new("empty-trash-undo");
+        while step_history(false).errors != ["Nothing to undo"] {}
+        sb.touch("a.txt", "A");
+        sb.touch("b.txt", "B");
+        trash(&[p(&sb, "a.txt")]);
+        assert_eq!(rename(&p(&sb, "b.txt"), "c.txt").ok, 1);
+        empty_trash();
+        let undo = step_history(false);
+        assert_eq!(
+            (undo.ok, undo.errors.len()),
+            (1, 0),
+            "the rename is undone: {:?}",
+            undo.errors
+        );
+        assert!(Path::new(&p(&sb, "b.txt")).exists());
+        assert_eq!(
+            step_history(false).errors,
+            ["Nothing to undo"],
+            "the trashing is gone from history"
+        );
+    }
+
+    #[test]
+    fn trashing_two_files_with_the_same_name_keeps_both() {
+        let sb = Sandbox::new("trash-twins");
+        sb.touch("x/a.txt", "from x");
+        sb.touch("y/a.txt", "from y");
+        let out = trash(&[p(&sb, "x/a.txt"), p(&sb, "y/a.txt")]);
+        assert_eq!(out.ok, 2, "{:?}", out.errors);
+        let (files, infos) = trash_dirs();
+        let mut stored: Vec<String> = fs::read_dir(&files)
+            .unwrap()
+            .map(|e| fs::read_to_string(e.unwrap().path()).unwrap())
+            .collect();
+        stored.sort();
+        assert_eq!(stored, ["from x", "from y"]);
+        assert_eq!(fs::read_dir(&infos).unwrap().count(), 2);
+        // One undo puts each back in its own folder.
+        assert_eq!(step_history(false).ok, 2);
+        assert_eq!(fs::read_to_string(p(&sb, "x/a.txt")).unwrap(), "from x");
+        assert_eq!(fs::read_to_string(p(&sb, "y/a.txt")).unwrap(), "from y");
+    }
+
+    #[test]
+    fn trashing_a_folder_and_undo_brings_its_contents_back() {
+        let sb = Sandbox::new("trash-dir");
+        sb.touch("d/sub/deep.txt", "deep");
+        sb.touch("d/top.txt", "top");
+        assert_eq!(trash(&[p(&sb, "d")]).ok, 1);
+        assert!(!Path::new(&p(&sb, "d")).exists());
+        assert_eq!(step_history(false).ok, 1);
+        assert_eq!(
+            fs::read_to_string(p(&sb, "d/sub/deep.txt")).unwrap(),
+            "deep"
+        );
+        assert_eq!(fs::read_to_string(p(&sb, "d/top.txt")).unwrap(), "top");
+    }
+
+    #[test]
+    fn a_missing_file_does_not_stop_the_rest_of_the_trash() {
+        let sb = Sandbox::new("trash-partial");
+        sb.touch("a.txt", "A");
+        let out = trash(&[p(&sb, "gone.txt"), p(&sb, "a.txt")]);
+        assert_eq!((out.ok, out.errors.len()), (1, 1));
+        assert!(out.errors[0].starts_with("gone.txt"), "{:?}", out.errors);
+        // No .trashinfo is left behind for the one that failed.
+        let (_, infos) = trash_dirs();
+        assert!(!infos.join("gone.txt.trashinfo").exists());
+        assert_eq!(step_history(false).ok, 1);
+        assert!(Path::new(&p(&sb, "a.txt")).exists());
+    }
+
+    #[test]
+    fn moving_across_drives_copies_then_removes() {
+        use std::os::unix::fs::MetadataExt;
+        let sb = Sandbox::new("xdev");
+        // Needs a second filesystem; /dev/shm is a separate tmpfs on most systems.
+        let other = Path::new("/dev/shm").join(format!("cfm-xdev-{}", std::process::id()));
+        if fs::create_dir_all(&other).is_err()
+            || fs::metadata(&other).unwrap().dev() == fs::metadata(&sb.root).unwrap().dev()
+        {
+            eprintln!("skipped: no second filesystem at /dev/shm");
+            return;
+        }
+        sb.touch("d/inner.txt", "inner");
+        sb.touch("f.txt", "file");
+        move_any(Path::new(&p(&sb, "d")), &other.join("d")).unwrap();
+        move_any(Path::new(&p(&sb, "f.txt")), &other.join("f.txt")).unwrap();
+        let moved = (
+            fs::read_to_string(other.join("d/inner.txt")).ok(),
+            fs::read_to_string(other.join("f.txt")).ok(),
+        );
+        let _ = fs::remove_dir_all(&other);
+        assert_eq!(moved, (Some("inner".into()), Some("file".into())));
+        assert!(!Path::new(&p(&sb, "d")).exists() && !Path::new(&p(&sb, "f.txt")).exists());
+    }
+
+    #[test]
+    fn a_remote_file_never_lands_in_the_local_trash() {
+        let mut sb = Sandbox::new("trash-remote");
+        // Anything under the gvfs folder counts as remote (`listing::remote_root`).
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = "run/gvfs/smb-share:server=nas,share=media";
+        sb.touch(&format!("{share}/a.txt"), "A");
+        assert!(crate::listing::is_remote(&p(
+            &sb,
+            &format!("{share}/a.txt")
+        )));
+        let out = trash(&[p(&sb, &format!("{share}/a.txt"))]);
+        let (files, _) = trash_dirs();
+        assert!(!files.join("a.txt").exists());
+        // An SMB share has no trash: the file stays, and the UI is told so it can offer to delete it.
+        assert_eq!(out.no_trash, [p(&sb, &format!("{share}/a.txt"))]);
+        assert!(Path::new(&p(&sb, &format!("{share}/a.txt"))).exists());
+        assert_eq!((out.ok, out.undo), (0, false));
+    }
+
+    #[test]
+    fn replacing_on_a_remote_never_downloads_the_old_file() {
+        let mut sb = Sandbox::new("replace-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = "run/gvfs/smb-share:server=nas,share=media";
+        sb.touch("src/a.txt", "new");
+        sb.touch(&format!("{share}/a.txt"), "old");
+        let dst = p(&sb, share);
+        assert!(deletes_for_good(&dst));
+        let ctl = Ctl::register("Copied", &dst, 1);
+        let out = paste_tracked(&ctl, &[p(&sb, "src/a.txt")], &dst, false, Policy::Replace);
+        assert_eq!(out.ok, 1, "{:?}", out.errors);
+        assert_eq!(fs::read_to_string(format!("{dst}/a.txt")).unwrap(), "new");
+        let (files, _) = trash_dirs();
+        assert!(
+            !files.join("a.txt").exists(),
+            "the old file must not come down into the local trash"
+        );
+        // Undo removes the copy, on the server, without downloading it either.
+        assert_eq!(step_history(false).ok, 1);
+        assert!(!Path::new(&format!("{dst}/a.txt")).exists());
+        assert!(!files.join("a.txt").exists());
+        assert!(
+            !deletes_for_good(&p(&sb, "src")),
+            "local folders have a trash"
+        );
+    }
+
+    #[test]
+    fn undoing_a_new_remote_file_spares_one_that_was_written_to() {
+        let mut sb = Sandbox::new("unmake-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let share = p(&sb, "run/gvfs/sftp:host=nas");
+        fs::create_dir_all(&share).unwrap();
+        assert_eq!(create(&share, "empty.txt", false).ok, 1);
+        assert_eq!(step_history(false).ok, 1);
+        assert!(
+            !Path::new(&format!("{share}/empty.txt")).exists(),
+            "an untouched new file is removed"
+        );
+        assert_eq!(create(&share, "notes.txt", false).ok, 1);
+        fs::write(format!("{share}/notes.txt"), "work in progress").unwrap();
+        let undo = step_history(false);
+        assert_eq!(undo.ok, 0);
+        assert!(undo.errors[0].contains("no trash"), "{:?}", undo.errors);
+        assert_eq!(
+            fs::read_to_string(format!("{share}/notes.txt")).unwrap(),
+            "work in progress"
+        );
+    }
+
+    #[test]
+    fn local_and_remote_together_trash_the_local_part_only() {
+        let mut sb = Sandbox::new("trash-mixed");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        let remote = "run/gvfs/sftp:host=nas/b.txt";
+        sb.touch(remote, "B");
+        sb.touch("a.txt", "A");
+        let out = trash(&[p(&sb, "a.txt"), p(&sb, remote)]);
+        assert_eq!((out.ok, out.undo), (1, true));
+        assert_eq!(out.no_trash, [p(&sb, remote)]);
+        assert!(!Path::new(&p(&sb, "a.txt")).exists());
+        // Undo brings back the local file; the remote one was never touched.
+        assert_eq!(step_history(false).ok, 1);
+        assert!(Path::new(&p(&sb, "a.txt")).exists() && Path::new(&p(&sb, remote)).exists());
     }
 
     #[test]
@@ -889,7 +1423,10 @@ mod journal_tests {
         assert_eq!(create(&p(&sb, ""), "new.txt", false).ok, 1);
         assert_eq!(create(&p(&sb, ""), "newdir", true).ok, 1);
         assert!(Path::new(&p(&sb, "newdir")).is_dir());
-        assert!(!create(&p(&sb, ""), "new.txt", false).errors.is_empty(), "must not clobber");
+        assert!(
+            !create(&p(&sb, ""), "new.txt", false).errors.is_empty(),
+            "must not clobber"
+        );
 
         let gone = delete(&[p(&sb, "newdir"), p(&sb, "new.txt")]);
         assert_eq!(gone.ok, 2);
@@ -904,12 +1441,18 @@ mod journal_tests {
         for n in ["a", "b", "c"] {
             sb.touch(n, n);
         }
-        let pairs: Vec<(String, String)> =
-            ["a", "b", "c"].iter().map(|n| (p(&sb, n), p(&sb, &format!("{n}.bak")))).collect();
+        let pairs: Vec<(String, String)> = ["a", "b", "c"]
+            .iter()
+            .map(|n| (p(&sb, n), p(&sb, &format!("{n}.bak"))))
+            .collect();
         assert_eq!(rename_many(&pairs).ok, 3);
         let undo = step_history(false);
         assert_eq!(undo.ok, 3, "{:?}", undo.errors);
-        assert!(["a", "b", "c"].iter().all(|n| Path::new(&p(&sb, n)).exists()));
+        assert!(
+            ["a", "b", "c"]
+                .iter()
+                .all(|n| Path::new(&p(&sb, n)).exists())
+        );
     }
 
     #[test]
@@ -928,10 +1471,10 @@ mod journal_tests {
         sb.touch("src/a.txt", "new");
         sb.touch("dst/a.txt", "old");
         let (src, dst) = (sb.path("src/a.txt"), sb.path("dst"));
-        assert_eq!(conflicts(&[src.clone()], &dst), ["a.txt"]);
+        assert_eq!(conflicts(std::slice::from_ref(&src), &dst), ["a.txt"]);
         let run = |policy| {
             let ctl = Ctl::register("Copied", &dst, 1);
-            paste_tracked(&ctl, &[src.clone()], &dst, false, policy)
+            paste_tracked(&ctl, std::slice::from_ref(&src), &dst, false, policy)
         };
         let out = run(Policy::Skip);
         assert_eq!((out.ok, out.skipped), (0, 1));
@@ -953,7 +1496,13 @@ mod journal_tests {
         let ctl = Ctl::register("Copied", &sb.path("d"), 1);
         fs::create_dir(sb.path("d")).unwrap();
         crate::transfer::cancel_ctl(&ctl);
-        let out = paste_tracked(&ctl, &[sb.path("a.txt")], &sb.path("d"), false, Policy::Both);
+        let out = paste_tracked(
+            &ctl,
+            &[sb.path("a.txt")],
+            &sb.path("d"),
+            false,
+            Policy::Both,
+        );
         assert!(out.cancelled);
         assert!(!Path::new(&sb.path("d/a.txt")).exists());
     }
@@ -965,5 +1514,25 @@ mod journal_tests {
         let out = paste(&[p(&sb, "d")], &p(&sb, "d"), false);
         assert_eq!(out.ok, 0);
         assert!(!out.errors.is_empty());
+    }
+
+    #[test]
+    fn a_paste_where_every_item_fails_ends_failed_and_a_mixed_one_ends_done() {
+        use crate::transfer::State;
+        let sb = Sandbox::new("failed-job");
+        sb.touch("d/f", "x");
+        sb.touch("ok.txt", "y");
+        fs::create_dir(sb.path("dest")).unwrap();
+
+        let ctl = Ctl::register("Copied", &sb.path("d"), 1);
+        let out = paste_tracked(&ctl, &[sb.path("d")], &sb.path("d"), false, Policy::Both);
+        assert_eq!(out.ok, 0);
+        assert_eq!(ctl.state(), State::Failed);
+
+        let ctl = Ctl::register("Copied", &sb.path("dest"), 2);
+        let both = [sb.path("ok.txt"), sb.path("missing.txt")];
+        let out = paste_tracked(&ctl, &both, &sb.path("dest"), false, Policy::Both);
+        assert_eq!((out.ok, out.errors.len()), (1, 1));
+        assert_eq!(ctl.state(), State::Done);
     }
 }

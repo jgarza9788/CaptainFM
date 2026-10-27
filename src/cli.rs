@@ -59,7 +59,10 @@ pub fn handle(args: &[String]) -> Action {
         Some("--tab") => {
             let paths: Vec<String> = args[1..]
                 .iter()
-                .map(|p| std::fs::canonicalize(p).map_or_else(|_| p.clone(), |c| c.to_string_lossy().into_owned()))
+                .map(|p| {
+                    std::fs::canonicalize(p)
+                        .map_or_else(|_| p.clone(), |c| c.to_string_lossy().into_owned())
+                })
                 .collect();
             if paths.is_empty() {
                 Action::Run
@@ -78,7 +81,11 @@ pub fn handle(args: &[String]) -> Action {
         Some("--install-dbus") => Action::Exit(report(install_dbus())),
         Some("--default") => {
             let off = args.get(1).map(String::as_str) == Some("off");
-            Action::Exit(report(if off { restore_default() } else { make_default() }))
+            Action::Exit(report(if off {
+                restore_default()
+            } else {
+                make_default()
+            }))
         }
         _ => Action::Run,
     }
@@ -106,7 +113,10 @@ fn applications_dir() -> PathBuf {
 }
 
 fn icons_dir() -> PathBuf {
-    applications_dir().parent().unwrap().join("icons/hicolor/scalable/apps")
+    applications_dir()
+        .parent()
+        .unwrap()
+        .join("icons/hicolor/scalable/apps")
 }
 
 fn desktop_entry(exe: &str) -> String {
@@ -132,15 +142,20 @@ fn install() -> Result<String, String> {
     let icons = icons_dir();
     fs::create_dir_all(&apps).map_err(|e| e.to_string())?;
     fs::create_dir_all(&icons).map_err(|e| e.to_string())?;
-    fs::write(apps.join(DESKTOP_ID), desktop_entry(&exe.to_string_lossy())).map_err(|e| e.to_string())?;
+    fs::write(apps.join(DESKTOP_ID), desktop_entry(&exe.to_string_lossy()))
+        .map_err(|e| e.to_string())?;
     fs::write(icons.join("captainfm.svg"), ICON_SVG).map_err(|e| e.to_string())?;
     // Panels and docks that recolour symbolic icons look for this one.
     let symbolic = icons.join("../../symbolic/apps");
     fs::create_dir_all(&symbolic).map_err(|e| e.to_string())?;
-    fs::write(symbolic.join("captainfm-symbolic.svg"), ICON_SYMBOLIC_SVG).map_err(|e| e.to_string())?;
+    fs::write(symbolic.join("captainfm-symbolic.svg"), ICON_SYMBOLIC_SVG)
+        .map_err(|e| e.to_string())?;
     // Best effort: refresh the desktop database so launchers notice the new entry.
     let _ = Command::new("update-desktop-database").arg(&apps).status();
-    Ok(format!("Installed {} and its icon", apps.join(DESKTOP_ID).display()))
+    Ok(format!(
+        "Installed {} and its icon",
+        apps.join(DESKTOP_ID).display()
+    ))
 }
 
 fn write_file(path: &std::path::Path, text: &str) -> Result<(), String> {
@@ -150,7 +165,9 @@ fn write_file(path: &std::path::Path, text: &str) -> Result<(), String> {
 
 /// Register CaptainFM as an xdg-desktop-portal backend and make it the file chooser.
 fn install_portal() -> Result<String, String> {
-    use crate::dbus::{PORTAL_NAME, portal_definition, portal_file, portal_service_file, service_definition};
+    use crate::dbus::{
+        PORTAL_NAME, portal_definition, portal_file, portal_service_file, service_definition,
+    };
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     write_file(&portal_file(), &portal_definition())?;
     write_file(
@@ -178,10 +195,16 @@ fn uninstall_portal() -> Result<String, String> {
 
 /// Install or remove the portal, then restart xdg-desktop-portal so the change applies at once.
 pub fn set_portal(on: bool) -> Result<String, String> {
-    let msg = if on { install_portal() } else { uninstall_portal() }?;
+    let msg = if on {
+        install_portal()
+    } else {
+        uninstall_portal()
+    }?;
     // CFM_NO_RESTART=1 leaves the running portal alone (packaging and tests on a private bus).
     if std::env::var_os("CFM_NO_RESTART").is_none() {
-        let _ = Command::new("systemctl").args(["--user", "restart", "xdg-desktop-portal"]).status();
+        let _ = Command::new("systemctl")
+            .args(["--user", "restart", "xdg-desktop-portal"])
+            .status();
     }
     Ok(msg)
 }
@@ -189,14 +212,18 @@ pub fn set_portal(on: bool) -> Result<String, String> {
 /// Whether CaptainFM is currently configured as the file chooser.
 pub fn portal_installed() -> bool {
     crate::dbus::portal_file().exists()
-        && fs::read_to_string(crate::dbus::portals_conf_path()).is_ok_and(|c| crate::dbus::file_chooser_preferred(&c))
+        && fs::read_to_string(crate::dbus::portals_conf_path())
+            .is_ok_and(|c| crate::dbus::file_chooser_preferred(&c))
 }
 
 fn install_dbus() -> Result<String, String> {
     use crate::dbus::{FILE_MANAGER_NAME, file_manager_service_file, service_definition};
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let path = file_manager_service_file();
-    write_file(&path, &service_definition(FILE_MANAGER_NAME, &exe.to_string_lossy()))?;
+    write_file(
+        &path,
+        &service_definition(FILE_MANAGER_NAME, &exe.to_string_lossy()),
+    )?;
     Ok(format!(
         "Installed {}: \"Show in folder\" requests will start CaptainFM when no file manager owns org.freedesktop.FileManager1.",
         path.display()
@@ -229,16 +256,85 @@ fn make_default() -> Result<String, String> {
         fs::write(previous_file(), &current).map_err(|e| e.to_string())?;
     }
     xdg_mime(&["default", DESKTOP_ID, "inode/directory"]);
+    let keys = set_bindings(true)?;
     Ok(format!(
-        "CaptainFM now opens folders (was: {}). Undo with: captainfm --default off",
-        if current.is_empty() { "unset" } else { &current }
+        "CaptainFM now opens folders (was: {}){keys}. Undo with: captainfm --default off",
+        if current.is_empty() {
+            "unset"
+        } else {
+            &current
+        }
     ))
 }
 
+const BINDINGS_BEGIN: &str = "-- captainfm --default: begin.";
+const BINDINGS_END: &str = "-- captainfm --default: end.";
+
+fn bindings_path() -> PathBuf {
+    home().join(".config/hypr/bindings.lua")
+}
+
+/// `old` without our managed block, so it can be added again or dropped.
+fn without_bindings_block(old: &str) -> String {
+    let Some(start) = old.find(BINDINGS_BEGIN) else {
+        return old.to_owned();
+    };
+    let Some(end) = old[start..]
+        .find(BINDINGS_END)
+        .map(|i| start + i + BINDINGS_END.len())
+    else {
+        return old.to_owned();
+    };
+    let (head, tail) = (old[..start].trim_end(), old[end..].trim_start());
+    if head.is_empty() && tail.is_empty() {
+        String::new()
+    } else if tail.is_empty() {
+        format!("{head}\n")
+    } else {
+        format!("{head}\n\n{tail}")
+    }
+}
+
+/// Add (or replace) the block that points the file manager keys at CaptainFM. It goes last so it
+/// wins over earlier blocks other tools wrote for the same keys.
+fn with_bindings_block(old: &str, exe: &str) -> String {
+    let mut text = without_bindings_block(old).trim_end().to_owned();
+    text.push_str(&format!(
+        "\n\n{BINDINGS_BEGIN} Written by `captainfm --default`; `captainfm --default off` removes the block whole.\n\
+         hl.unbind(\"SUPER + SHIFT + F\")\n\
+         o.bind(\"SUPER + SHIFT + F\", \"File manager\", {{ launch = '{exe}' }})\n\
+         hl.unbind(\"SUPER + ALT + SHIFT + F\")\n\
+         o.bind(\"SUPER + ALT + SHIFT + F\", \"File manager (cwd)\", {{ launch = '{exe} \"$(omarchy-cmd-terminal-cwd)\"' }})\n\
+         {BINDINGS_END}\n"
+    ));
+    text
+}
+
+/// Point Super+Shift+F at CaptainFM (or hand the keys back). Returns a note for the report; a
+/// machine without Hyprland bindings is left alone.
+fn set_bindings(on: bool) -> Result<String, String> {
+    let path = bindings_path();
+    let Ok(old) = fs::read_to_string(&path) else {
+        return Ok(String::new());
+    };
+    let new = if on {
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        with_bindings_block(&old, &exe.to_string_lossy())
+    } else {
+        without_bindings_block(&old)
+    };
+    if new != old {
+        fs::write(&path, new).map_err(|e| e.to_string())?;
+    }
+    Ok(format!(", Super+Shift+F in {}", path.display()))
+}
+
 fn restore_default() -> Result<String, String> {
-    let previous = fs::read_to_string(previous_file()).map_err(|_| "no previous handler was recorded".to_owned())?;
+    let previous = fs::read_to_string(previous_file())
+        .map_err(|_| "no previous handler was recorded".to_owned())?;
     xdg_mime(&["default", previous.trim(), "inode/directory"]);
     let _ = fs::remove_file(previous_file());
+    set_bindings(false)?;
     Ok(format!("Folder handler restored to {}", previous.trim()))
 }
 
@@ -251,6 +347,18 @@ mod tests {
         let e = desktop_entry("/usr/bin/captainfm");
         assert!(e.contains("Exec=/usr/bin/captainfm %F"));
         assert!(e.contains("MimeType=inode/directory;"));
+    }
+
+    #[test]
+    fn bindings_block_is_added_once_and_removed_whole() {
+        let old = "o.bind(\"X\", \"x\", {})\n";
+        let once = with_bindings_block(old, "/bin/captainfm");
+        assert!(
+            once.contains("launch = '/bin/captainfm'")
+                && once.contains("'/bin/captainfm \"$(omarchy-cmd-terminal-cwd)\"'")
+        );
+        assert_eq!(with_bindings_block(&once, "/bin/captainfm"), once);
+        assert_eq!(without_bindings_block(&once).trim_end(), old.trim_end());
     }
 
     #[test]
@@ -271,11 +379,23 @@ mod install_tests {
         let sb = Sandbox::new("cli-install");
         let msg = install().unwrap();
         assert!(msg.contains("captainfm.desktop"));
-        let entry = fs::read_to_string(sb.root.join(".local/share/applications/captainfm.desktop")).unwrap();
-        assert!(entry.contains("MimeType=inode/directory;") && entry.contains("StartupWMClass=captainfm"));
-        let icon = fs::read_to_string(sb.root.join(".local/share/icons/hicolor/scalable/apps/captainfm.svg")).unwrap();
+        let entry = fs::read_to_string(sb.root.join(".local/share/applications/captainfm.desktop"))
+            .unwrap();
+        assert!(
+            entry.contains("MimeType=inode/directory;")
+                && entry.contains("StartupWMClass=captainfm")
+        );
+        let icon = fs::read_to_string(
+            sb.root
+                .join(".local/share/icons/hicolor/scalable/apps/captainfm.svg"),
+        )
+        .unwrap();
         assert!(icon.starts_with("<svg"));
-        assert!(sb.root.join(".local/share/icons/hicolor/symbolic/apps/captainfm-symbolic.svg").exists());
+        assert!(
+            sb.root
+                .join(".local/share/icons/hicolor/symbolic/apps/captainfm-symbolic.svg")
+                .exists()
+        );
     }
 
     #[test]
@@ -288,7 +408,9 @@ mod install_tests {
         let service = fs::read_to_string(crate::dbus::portal_service_file()).unwrap();
         assert!(service.contains("--portal"));
         uninstall_portal().unwrap();
-        assert!(!crate::dbus::portal_file().exists() && !crate::dbus::portal_service_file().exists());
+        assert!(
+            !crate::dbus::portal_file().exists() && !crate::dbus::portal_service_file().exists()
+        );
         assert!(!portal_installed());
         drop(sb);
     }
@@ -310,6 +432,9 @@ mod install_tests {
     #[test]
     fn flags_are_recognised() {
         assert!(matches!(handle(&["--help".to_owned()]), Action::Exit(0)));
-        assert!(matches!(handle(&["--select".to_owned(), "/tmp/x".to_owned()]), Action::Run));
+        assert!(matches!(
+            handle(&["--select".to_owned(), "/tmp/x".to_owned()]),
+            Action::Run
+        ));
     }
 }

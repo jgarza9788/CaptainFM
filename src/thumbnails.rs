@@ -31,7 +31,12 @@ pub fn lookup(path: &str) -> Option<String> {
         .iter()
         .map(|size| cache_root().join(size).join(&name))
         .find(|p| p.is_file())
-        .map(|p| format!("file://{}", crate::ops::percent_encode_path(&p.to_string_lossy())))
+        .map(|p| {
+            format!(
+                "file://{}",
+                crate::ops::percent_encode_path(&p.to_string_lossy())
+            )
+        })
 }
 
 #[cfg(test)]
@@ -42,7 +47,10 @@ mod tests {
     #[test]
     fn cache_name_matches_the_spec_hash() {
         // md5("file:///home/user/My%20Pics/a.png")
-        assert_eq!(cache_name("/home/user/My Pics/a.png"), "0c5d5dbf41ce352ec994d8dee8f783f1.png");
+        assert_eq!(
+            cache_name("/home/user/My Pics/a.png"),
+            "0c5d5dbf41ce352ec994d8dee8f783f1.png"
+        );
     }
 
     #[test]

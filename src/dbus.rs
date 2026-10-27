@@ -32,12 +32,14 @@ pub fn percent_decode(s: &str) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len()
-            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(b);
+            i += 3;
+            continue;
+        }
         out.push(bytes[i]);
         i += 1;
     }
@@ -75,12 +77,19 @@ impl FileManager {
 
 /// Own `org.freedesktop.FileManager1` for the lifetime of the returned connection. Returns `None`
 /// when another file manager already owns the name (that one keeps serving it).
-pub fn serve_file_manager(on_request: impl Fn(String) + Send + Sync + 'static) -> Option<Connection> {
+pub fn serve_file_manager(
+    on_request: impl Fn(String) + Send + Sync + 'static,
+) -> Option<Connection> {
     Builder::session()
         .ok()?
         .name(FILE_MANAGER_NAME)
         .ok()?
-        .serve_at("/org/freedesktop/FileManager1", FileManager { on_request: Arc::new(on_request) })
+        .serve_at(
+            "/org/freedesktop/FileManager1",
+            FileManager {
+                on_request: Arc::new(on_request),
+            },
+        )
         .ok()?
         .build()
         .ok()
@@ -92,7 +101,12 @@ pub fn serve_app(on_request: impl Fn(String) + Send + Sync + 'static) -> Option<
         .ok()?
         .name(APP_NAME)
         .ok()?
-        .serve_at("/org/captainfm/App", FileManager { on_request: Arc::new(on_request) })
+        .serve_at(
+            "/org/captainfm/App",
+            FileManager {
+                on_request: Arc::new(on_request),
+            },
+        )
         .ok()?
         .build()
         .ok()
@@ -100,8 +114,13 @@ pub fn serve_app(on_request: impl Fn(String) + Send + Sync + 'static) -> Option<
 
 /// Ask a running CaptainFM to open `paths` as tabs. Returns false when none is running.
 pub fn forward_to_running(paths: &[String]) -> bool {
-    let Ok(conn) = Connection::session() else { return false };
-    let uris: Vec<String> = paths.iter().map(|p| format!("file://{}", crate::ops::percent_encode_path(p))).collect();
+    let Ok(conn) = Connection::session() else {
+        return false;
+    };
+    let uris: Vec<String> = paths
+        .iter()
+        .map(|p| format!("file://{}", crate::ops::percent_encode_path(p)))
+        .collect();
     conn.call_method(
         Some(APP_NAME),
         "/org/captainfm/App",
@@ -132,7 +151,10 @@ fn opt<T>(options: &HashMap<String, OwnedValue>, key: &str) -> Option<T>
 where
     T: TryFrom<OwnedValue>,
 {
-    options.get(key).and_then(|v| v.try_clone().ok()).and_then(|v| T::try_from(v).ok())
+    options
+        .get(key)
+        .and_then(|v| v.try_clone().ok())
+        .and_then(|v| T::try_from(v).ok())
 }
 
 fn bytes_to_path(mut bytes: Vec<u8>) -> String {
@@ -142,19 +164,33 @@ fn bytes_to_path(mut bytes: Vec<u8>) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-pub fn request_from_options(title: &str, save: bool, options: &HashMap<String, OwnedValue>) -> PickRequest {
+pub fn request_from_options(
+    title: &str,
+    save: bool,
+    options: &HashMap<String, OwnedValue>,
+) -> PickRequest {
     let filters: Vec<(String, Vec<(u32, String)>)> = opt(options, "filters").unwrap_or_default();
     PickRequest {
         title: title.to_owned(),
         save,
         directory: opt::<bool>(options, "directory").unwrap_or(false),
         multiple: opt::<bool>(options, "multiple").unwrap_or(false),
-        folder: opt::<Vec<u8>>(options, "current_folder").map(bytes_to_path).unwrap_or_default(),
+        folder: opt::<Vec<u8>>(options, "current_folder")
+            .map(bytes_to_path)
+            .unwrap_or_default(),
         name: opt::<String>(options, "current_name").unwrap_or_default(),
         accept_label: opt::<String>(options, "accept_label").unwrap_or_default(),
         filters: filters
             .into_iter()
-            .map(|(name, pats)| (name, pats.into_iter().filter(|(kind, _)| *kind == 0).map(|(_, p)| p).collect()))
+            .map(|(name, pats)| {
+                (
+                    name,
+                    pats.into_iter()
+                        .filter(|(kind, _)| *kind == 0)
+                        .map(|(_, p)| p)
+                        .collect(),
+                )
+            })
             .collect(),
     }
 }
@@ -179,7 +215,9 @@ impl PickRequest {
 fn running_exe() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let text = exe.to_string_lossy();
-    Some(PathBuf::from(text.strip_suffix(" (deleted)").unwrap_or(&text)))
+    Some(PathBuf::from(
+        text.strip_suffix(" (deleted)").unwrap_or(&text),
+    ))
 }
 
 /// Modification time and size of the installed executable, to notice an upgrade.
@@ -291,7 +329,13 @@ pub fn run_portal() -> i32 {
                 return 0;
             }
             let alive = connection
-                .call_method(Some("org.freedesktop.DBus"), "/org/freedesktop/DBus", Some("org.freedesktop.DBus"), "GetId", &())
+                .call_method(
+                    Some("org.freedesktop.DBus"),
+                    "/org/freedesktop/DBus",
+                    Some("org.freedesktop.DBus"),
+                    "GetId",
+                    &(),
+                )
                 .is_ok();
             if !alive {
                 return 0;
@@ -333,7 +377,11 @@ pub fn current_desktops() -> Vec<String> {
         .filter(|d| !d.is_empty())
         .map(str::to_owned)
         .collect();
-    if names.is_empty() { vec!["Hyprland".to_owned()] } else { names }
+    if names.is_empty() {
+        vec!["Hyprland".to_owned()]
+    } else {
+        names
+    }
 }
 
 pub fn portal_definition() -> String {
@@ -348,7 +396,11 @@ const FILE_CHOOSER_KEY: &str = "org.freedesktop.impl.portal.FileChooser";
 /// The portal configuration file that applies to this desktop: the first existing
 /// `<desktop>-portals.conf`, else `portals.conf`.
 pub fn portals_conf_path() -> PathBuf {
-    let dir = crate::state::config_dir().parent().map(PathBuf::from).unwrap_or_default().join("xdg-desktop-portal");
+    let dir = crate::state::config_dir()
+        .parent()
+        .map(PathBuf::from)
+        .unwrap_or_default()
+        .join("xdg-desktop-portal");
     current_desktops()
         .iter()
         .map(|d| dir.join(format!("{}-portals.conf", d.to_lowercase())))
@@ -359,14 +411,21 @@ pub fn portals_conf_path() -> PathBuf {
 /// Whether `conf` already names CaptainFM as the file chooser.
 pub fn file_chooser_preferred(conf: &str) -> bool {
     conf.lines().any(|l| {
-        l.split_once('=')
-            .is_some_and(|(k, v)| k.trim() == FILE_CHOOSER_KEY && v.split(';').any(|b| b.trim() == "captainfm"))
+        l.split_once('=').is_some_and(|(k, v)| {
+            k.trim() == FILE_CHOOSER_KEY && v.split(';').any(|b| b.trim() == "captainfm")
+        })
     })
 }
 
 /// `conf` with the file chooser preference set to CaptainFM (`on`) or removed; every other line is kept.
 pub fn with_file_chooser(conf: &str, on: bool) -> String {
-    let mut lines: Vec<&str> = conf.lines().filter(|l| l.split_once('=').is_none_or(|(k, _)| k.trim() != FILE_CHOOSER_KEY)).collect();
+    let mut lines: Vec<&str> = conf
+        .lines()
+        .filter(|l| {
+            l.split_once('=')
+                .is_none_or(|(k, _)| k.trim() != FILE_CHOOSER_KEY)
+        })
+        .collect();
     if on {
         let entry = format!("{FILE_CHOOSER_KEY}=captainfm");
         match lines.iter().position(|l| l.trim() == "[preferred]") {
@@ -380,12 +439,19 @@ pub fn with_file_chooser(conf: &str, on: bool) -> String {
     }
     // Drop a `[preferred]` header that is now empty.
     if let Some(i) = lines.iter().position(|l| l.trim() == "[preferred]")
-        && lines[i + 1..].iter().take_while(|l| !l.trim_start().starts_with('[')).all(|l| l.trim().is_empty())
+        && lines[i + 1..]
+            .iter()
+            .take_while(|l| !l.trim_start().starts_with('['))
+            .all(|l| l.trim().is_empty())
     {
         lines.remove(i);
     }
     let text = lines.join("\n");
-    if text.trim().is_empty() { String::new() } else { text + "\n" }
+    if text.trim().is_empty() {
+        String::new()
+    } else {
+        text + "\n"
+    }
 }
 
 pub fn service_definition(name: &str, exec: &str) -> String {
@@ -398,15 +464,27 @@ mod tests {
 
     #[test]
     fn uris_decode_to_paths() {
-        let uris = vec!["file:///home/u/My%20Docs/a.txt".to_owned(), "/plain/path".to_owned()];
-        assert_eq!(uris_to_paths(&uris), ["/home/u/My Docs/a.txt", "/plain/path"]);
+        let uris = vec![
+            "file:///home/u/My%20Docs/a.txt".to_owned(),
+            "/plain/path".to_owned(),
+        ];
+        assert_eq!(
+            uris_to_paths(&uris),
+            ["/home/u/My Docs/a.txt", "/plain/path"]
+        );
     }
 
     #[test]
     fn options_become_a_pick_request() {
         let mut options: HashMap<String, OwnedValue> = HashMap::new();
-        options.insert("multiple".into(), OwnedValue::try_from(Value::from(true)).unwrap());
-        options.insert("current_name".into(), OwnedValue::try_from(Value::from("report.pdf")).unwrap());
+        options.insert(
+            "multiple".into(),
+            OwnedValue::try_from(Value::from(true)).unwrap(),
+        );
+        options.insert(
+            "current_name".into(),
+            OwnedValue::try_from(Value::from("report.pdf")).unwrap(),
+        );
         options.insert(
             "current_folder".into(),
             OwnedValue::try_from(Value::from(b"/home/u\0".to_vec())).unwrap(),
@@ -429,18 +507,27 @@ mod tests {
     fn file_chooser_preference_is_added_and_removed() {
         let conf = "[preferred]\ndefault=hyprland;gtk\n";
         let on = with_file_chooser(conf, true);
-        assert_eq!(on, "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\ndefault=hyprland;gtk\n");
+        assert_eq!(
+            on,
+            "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\ndefault=hyprland;gtk\n"
+        );
         assert!(file_chooser_preferred(&on) && !file_chooser_preferred(conf));
         assert_eq!(with_file_chooser(&on, true), on, "idempotent");
         assert_eq!(with_file_chooser(&on, false), conf);
-        assert_eq!(with_file_chooser("", true), "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\n");
+        assert_eq!(
+            with_file_chooser("", true),
+            "[preferred]\norg.freedesktop.impl.portal.FileChooser=captainfm\n"
+        );
         assert_eq!(with_file_chooser(&with_file_chooser("", true), false), "");
     }
 
     #[test]
     fn running_exe_ignores_the_deleted_marker() {
         // The test binary is not deleted, so the path is returned as is and exists.
-        assert!(running_exe().is_some_and(|p| p.exists() && !p.to_string_lossy().ends_with("(deleted)")));
+        assert!(
+            running_exe()
+                .is_some_and(|p| p.exists() && !p.to_string_lossy().ends_with("(deleted)"))
+        );
         assert!(exe_stamp().is_some());
     }
 

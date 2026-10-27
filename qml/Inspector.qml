@@ -30,7 +30,12 @@ Rectangle {
     }
     function toggleMute() { muted = !muted }
     function toggleLoop() { looping = !looping }
-    readonly property alias mediaPlayer: player
+    // The player is made the first time something is played or previewed, not at start-up: creating it loads
+    // the FFmpeg backend, about 90 ms of the interface's start (QML Profiler, todo 17.6). Kept once made.
+    property bool mediaUsed: false
+    onHasMediaChanged: if (hasMedia) mediaUsed = true
+    readonly property var player: playerLoader.item
+    readonly property var mediaPlayer: player
 
     onPathChanged: {
         if (path === "") { info = null; return }
@@ -74,7 +79,8 @@ Rectangle {
             id: nameText
             anchors { left: kindIcon.right; leftMargin: Style.pad / 2; right: actions.left; rightMargin: Style.pad
                       top: parent.top; topMargin: Style.pad }
-            text: insp.info ? insp.info.name : ""
+            text: insp.info ? Style.oneLine(insp.info.name) : ""
+            textFormat: Text.PlainText
             elide: Text.ElideMiddle
             color: Style.fg
             font { family: Style.font; pixelSize: Style.fontSize + 1; bold: true }
@@ -82,6 +88,7 @@ Rectangle {
         Text {
             anchors { left: nameText.left; right: parent.right; rightMargin: Style.pad
                       top: nameText.bottom; topMargin: 2 }
+            textFormat: Text.PlainText
             elide: Text.ElideRight
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont }
@@ -185,8 +192,9 @@ Rectangle {
                 readonly property bool isDir: isObj ? modelData.isDir : label.endsWith("/")
                 width: ListView.view.width
                 height: Math.round(22 * Style.zoom)
-                elide: Text.ElideRight
+                elide: Text.ElideMiddle
                 text: Style.glyph(label, isDir, false) + "  " + label
+                textFormat: Text.PlainText
                 color: isDir ? Style.accent : Style.fgLight
                 font { family: Style.font; pixelSize: Style.smallFont }
             }
@@ -198,7 +206,9 @@ Rectangle {
             anchors.fill: parent
             visible: insp.hasMedia
             property bool scrubbed: false          // the video frame (not the poster) is on screen
-            readonly property bool playing: player.playbackState === MediaPlayer.PlayingState
+            readonly property bool playing: insp.player !== null && insp.player.playbackState === MediaPlayer.PlayingState
+            readonly property real duration: insp.player ? insp.player.duration : 0
+            readonly property real position: insp.player ? insp.player.position : 0
             readonly property bool isVideo: insp.info !== null && insp.info.kind === "video"
             readonly property bool showVideo: isVideo && (playing || scrubbed)
             Connections { target: insp; function onInfoChanged() { media.scrubbed = false } }
@@ -209,17 +219,21 @@ Rectangle {
                 return Math.floor(s / 60) + ":" + pad(s % 60)
             }
 
-            MediaPlayer {
-                id: player
-                source: media.visible ? insp.info.url : ""
-                videoOutput: video
-                audioOutput: AudioOutput { volume: 0.8; muted: insp.muted }
-                loops: insp.looping ? MediaPlayer.Infinite : MediaPlayer.Once
-                property bool primed: false
-                onSourceChanged: primed = false
-                onMediaStatusChanged: {
-                    // Load the first frame once per file, without playing (re-entering here would loop).
-                    if (mediaStatus === MediaPlayer.LoadedMedia && !primed) { primed = true; player.play(); player.pause() }
+            Loader {
+                id: playerLoader
+                active: insp.mediaUsed
+                sourceComponent: MediaPlayer {
+                    id: mp
+                    source: media.visible ? insp.info.url : ""
+                    videoOutput: videoLoader.item
+                    audioOutput: AudioOutput { volume: 0.8; muted: insp.muted }
+                    loops: insp.looping ? MediaPlayer.Infinite : MediaPlayer.Once
+                    property bool primed: false
+                    onSourceChanged: primed = false
+                    onMediaStatusChanged: {
+                        // Load the first frame once per file, without playing (re-entering here would loop).
+                        if (mediaStatus === MediaPlayer.LoadedMedia && !primed) { primed = true; mp.play(); mp.pause() }
+                    }
                 }
             }
 
@@ -244,11 +258,13 @@ Rectangle {
                     fillMode: Image.PreserveAspectFit
                     asynchronous: true
                 }
-                VideoOutput {
-                    id: video
+                // Made with the player, on first use: the first multimedia object, whichever it is, loads the backend.
+                Loader {
+                    id: videoLoader
                     anchors { fill: parent; margins: 2 }
+                    active: insp.mediaUsed
                     visible: media.showVideo
-                    fillMode: VideoOutput.PreserveAspectFit
+                    sourceComponent: VideoOutput { fillMode: VideoOutput.PreserveAspectFit }
                 }
                 // Audio without art: a big note glyph.
                 Text {
@@ -278,9 +294,9 @@ Rectangle {
                     cursorShape: Qt.PointingHandCursor
                     // Hovering a paused video scrubs through it.
                     onPositionChanged: (m) => {
-                        if (media.isVideo && player.duration > 0 && !media.playing) {
+                        if (media.isVideo && media.duration > 0 && !media.playing) {
                             media.scrubbed = true
-                            player.position = Math.max(0, Math.min(1, m.x / width)) * player.duration
+                            player.position = Math.max(0, Math.min(1, m.x / width)) * media.duration
                         }
                     }
                     onClicked: insp.togglePlayback()
@@ -292,7 +308,7 @@ Rectangle {
                 id: seek
                 anchors { left: parent.left; right: parent.right; top: stage.bottom; topMargin: Style.pad }
                 height: Math.round(20 * Style.zoom)
-                readonly property real fraction: player.duration > 0 ? Math.min(1, player.position / player.duration) : 0
+                readonly property real fraction: media.duration > 0 ? Math.min(1, media.position / media.duration) : 0
                 Rectangle {
                     id: track
                     anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter }
@@ -304,15 +320,15 @@ Rectangle {
                     anchors.verticalCenter: parent.verticalCenter
                     width: Math.round(12 * Style.zoom); height: width; radius: width / 2
                     color: Style.fg
-                    visible: player.duration > 0
+                    visible: media.duration > 0
                 }
                 MouseArea {
                     anchors { fill: parent; topMargin: -4; bottomMargin: -4 }
                     cursorShape: Qt.PointingHandCursor
                     function seekTo(x) {
-                        if (player.duration <= 0) return
+                        if (media.duration <= 0) return
                         media.scrubbed = true
-                        player.position = Math.max(0, Math.min(1, x / width)) * player.duration
+                        player.position = Math.max(0, Math.min(1, x / width)) * media.duration
                     }
                     onPressed: (m) => seekTo(m.x)
                     onPositionChanged: (m) => { if (pressed) seekTo(m.x) }
@@ -342,7 +358,7 @@ Rectangle {
                 anchors { right: parent.right; verticalCenter: controls.verticalCenter }
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.smallFont }
-                text: media.fmt(player.position) + " / " + media.fmt(player.duration)
+                text: media.fmt(media.position) + " / " + media.fmt(media.duration)
             }
 
             // Stream info, then the hotkeys that drive the player.

@@ -40,6 +40,7 @@ Item {
             width: Math.min(implicitWidth, Math.round(260 * Style.zoom))
             elide: Text.ElideMiddle
             text: ghost.name
+            textFormat: Text.PlainText
             color: Style.fg
             font { family: Style.font; pixelSize: Style.fontSize }
         }

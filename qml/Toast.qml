@@ -22,6 +22,7 @@ Rectangle {
     Text {
         id: label
         anchors.centerIn: parent
+        textFormat: Text.PlainText
         color: Style.fg
         font { family: Style.font; pixelSize: Style.fontSize }
     }

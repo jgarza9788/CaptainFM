@@ -54,7 +54,8 @@ Rectangle {
     function detail(t) {
         if (t.state === "queued") return "Waiting"
         if (t.state === "cancelled") return "Cancelled"
-        if (t.state === "done") return "Done"
+        if (t.state === "failed") return "Failed: " + t.error
+        if (t.state === "done") return t.errors > 0 ? "Done · " + t.errors + " failed (" + t.error + ")" : "Done"
         if (t.paused) return "Paused · " + Style.humanSize(t.bytesDone) + " of " + Style.humanSize(t.bytesTotal)
         const parts = []
         if (t.bytesTotal > 0) parts.push(Style.humanSize(t.bytesDone) + " of " + Style.humanSize(t.bytesTotal))
@@ -102,7 +103,7 @@ Rectangle {
             delegate: Item {
                 id: row
                 required property var modelData
-                readonly property bool over: modelData.state === "done" || modelData.state === "cancelled"
+                readonly property bool over: modelData.state === "done" || modelData.state === "cancelled" || modelData.state === "failed"
                 width: col.width
                 height: Math.round(66 * Style.zoom)
 
@@ -110,6 +111,7 @@ Rectangle {
                     x: Style.pad * 1.5; y: Style.pad / 2
                     width: parent.width - Style.pad * 3 - buttons.width
                     text: panel.title(row.modelData)
+                    textFormat: Text.PlainText
                     elide: Text.ElideRight
                     color: row.over ? Style.fgDim : Style.fg
                     font { family: Style.font; pixelSize: Style.fontSize }
@@ -137,6 +139,7 @@ Rectangle {
                     x: Style.pad * 1.5; y: Math.round(Style.fontSize * 1.6) + Style.pad / 2
                     width: parent.width - Style.pad * 3
                     text: row.modelData.current
+                    textFormat: Text.PlainText
                     visible: !row.over
                     elide: Text.ElideMiddle
                     color: Style.fgDim
@@ -148,15 +151,18 @@ Rectangle {
                     color: Style.surface
                     Rectangle {
                         width: parent.width * row.modelData.fraction; height: parent.height; radius: 2
-                        color: row.modelData.state === "cancelled" ? Style.red : (row.modelData.paused ? Style.yellow : Style.accent)
+                        color: row.modelData.state === "cancelled" || row.modelData.state === "failed" ? Style.red : (row.modelData.paused ? Style.yellow : Style.accent)
                         Behavior on width { NumberAnimation { duration: Style.anim(300) } }
                     }
                 }
                 Text {
                     x: Style.pad * 1.5
                     anchors { bottom: parent.bottom; bottomMargin: Style.pad / 2 }
+                    width: parent.width - Style.pad * 3
                     text: panel.detail(row.modelData)
-                    color: Style.fgDim
+                    textFormat: Text.PlainText
+                    elide: Text.ElideMiddle
+                    color: row.modelData.state === "failed" ? Style.red : Style.fgDim
                     font { family: Style.font; pixelSize: Style.smallFont }
                 }
             }

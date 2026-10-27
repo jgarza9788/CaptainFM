@@ -24,6 +24,32 @@ const MAX_RESULTS: usize = 500;
 /// How long a finished index is trusted before its folders are checked for changes.
 const CHECK_AFTER: Duration = Duration::from_secs(30);
 
+/// How far and how wide a walk goes.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Walk {
+    threads: usize,
+    /// Folder levels read below the root (`None`: all of them).
+    max_depth: Option<u16>,
+}
+
+/// On a remote every folder read is a request over one shared connection, which every other lookup waits
+/// behind: walk two levels below the search folder on two threads, never the whole server.
+const REMOTE_WALK: Walk = Walk {
+    threads: 2,
+    max_depth: Some(2),
+};
+
+fn walk_for(root: &str) -> Walk {
+    if crate::listing::is_remote(root) {
+        REMOTE_WALK
+    } else {
+        Walk {
+            threads: std::thread::available_parallelism().map_or(4, |n| n.get().min(8)),
+            max_depth: None,
+        }
+    }
+}
+
 /// A folder in the index; entries point at it by position.
 struct DirInfo {
     abs: Box<str>,
@@ -73,10 +99,11 @@ fn mtime_of(m: &fs::Metadata) -> (i64, i64) {
 
 /// Total number of paths in all cached indexes (shown in the status bar).
 pub fn total_paths() -> usize {
-    CACHE
-        .get()
-        .and_then(|c| c.lock().ok())
-        .map_or(0, |g| g.values().map(|i| i.store.read().map_or(0, |s| s.entries.len())).sum())
+    CACHE.get().and_then(|c| c.lock().ok()).map_or(0, |g| {
+        g.values()
+            .map(|i| i.store.read().map_or(0, |s| s.entries.len()))
+            .sum()
+    })
 }
 
 /// Get the cached index for `root` or start building one. `on_progress` fires as it fills.
@@ -86,13 +113,18 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
     if let Some(existing) = guard.get(root) {
         let index = Arc::clone(existing);
         drop(guard);
-        let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER;
-        if stale && index.done.load(Ordering::SeqCst) && !index.refreshing.swap(true, Ordering::SeqCst) {
+        // Not on a remote: the check re-reads every indexed folder's time over the network.
+        let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER
+            && !crate::listing::is_remote(&index.root);
+        if stale
+            && index.done.load(Ordering::SeqCst)
+            && !index.refreshing.swap(true, Ordering::SeqCst)
+        {
             let refresh = Arc::clone(&index);
             std::thread::spawn(move || {
                 if changed(&refresh) {
                     let fresh = RwLock::new(Store::default());
-                    scan(&refresh.root, &fresh, &|| {});
+                    scan(&refresh.root, &fresh, &|| {}, walk_for(&refresh.root));
                     *refresh.store.write().unwrap() = fresh.into_inner().unwrap();
                     on_progress();
                 }
@@ -103,9 +135,13 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
         return index;
     }
     if guard.len() >= 3
-        && let Some(oldest) = guard.iter().min_by_key(|(_, i)| *i.checked.lock().unwrap()).map(|(k, _)| k.clone()) {
-            guard.remove(&oldest);
-        }
+        && let Some(oldest) = guard
+            .iter()
+            .min_by_key(|(_, i)| *i.checked.lock().unwrap())
+            .map(|(k, _)| k.clone())
+    {
+        guard.remove(&oldest);
+    }
     let index = Arc::new(Index {
         root: root.to_owned(),
         store: RwLock::new(Store::default()),
@@ -119,11 +155,21 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
     let building = Arc::clone(&index);
     std::thread::spawn(move || {
         let t0 = Instant::now();
-        scan(&building.root, &building.store, &on_progress);
+        scan(
+            &building.root,
+            &building.store,
+            &on_progress,
+            walk_for(&building.root),
+        );
         *building.checked.lock().unwrap() = Instant::now();
         building.done.store(true, Ordering::SeqCst);
         if std::env::var_os("CFM_DEBUG").is_some() {
-            eprintln!("[timing] indexed {} entries under {} in {:?}", building.store.read().unwrap().entries.len(), building.root, t0.elapsed());
+            eprintln!(
+                "[timing] indexed {} entries under {} in {:?}",
+                building.store.read().unwrap().entries.len(),
+                building.root,
+                t0.elapsed()
+            );
         }
         on_progress();
     });
@@ -134,13 +180,18 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
 /// time changes when something inside it is created, deleted or renamed.
 fn changed(index: &Index) -> bool {
     let store = index.store.read().unwrap();
-    store.dirs.iter().any(|d| fs::symlink_metadata(&*d.abs).ok().map(|m| mtime_of(&m)) != Some(d.mtime))
+    store
+        .dirs
+        .iter()
+        .any(|d| fs::symlink_metadata(&*d.abs).ok().map(|m| mtime_of(&m)) != Some(d.mtime))
 }
 
 struct Job {
     dir: u32,
     path: PathBuf,
     hidden: bool,
+    /// Levels below the root (the root is 0).
+    depth: u16,
 }
 
 struct Queue {
@@ -150,16 +201,36 @@ struct Queue {
 }
 
 /// Walk `root` on several threads, adding what it finds to `store` as it goes.
-fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync)) {
+fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync), walk: Walk) {
     let Ok(meta) = fs::metadata(root) else { return };
-    store.write().unwrap().dirs.push(DirInfo { abs: root.into(), mtime: mtime_of(&meta) });
-    let queue = Mutex::new(Queue { stack: vec![Job { dir: 0, path: PathBuf::from(root), hidden: false }], active: 0 });
+    store.write().unwrap().dirs.push(DirInfo {
+        abs: root.into(),
+        mtime: mtime_of(&meta),
+    });
+    let queue = Mutex::new(Queue {
+        stack: vec![Job {
+            dir: 0,
+            path: PathBuf::from(root),
+            hidden: false,
+            depth: 0,
+        }],
+        active: 0,
+    });
     let wake = Condvar::new();
     let last_progress = Mutex::new(Instant::now());
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get().min(8));
     std::thread::scope(|scope| {
-        for _ in 0..threads {
-            scope.spawn(|| worker(&queue, &wake, store, meta.dev(), &last_progress, on_progress));
+        for _ in 0..walk.threads.max(1) {
+            scope.spawn(|| {
+                worker(
+                    &queue,
+                    &wake,
+                    store,
+                    meta.dev(),
+                    walk.max_depth,
+                    &last_progress,
+                    on_progress,
+                )
+            });
         }
     });
 }
@@ -169,6 +240,7 @@ fn worker(
     wake: &Condvar,
     store: &RwLock<Store>,
     root_dev: u64,
+    max_depth: Option<u16>,
     last_progress: &Mutex<Instant>,
     on_progress: &(dyn Fn() + Sync),
 ) {
@@ -195,6 +267,7 @@ fn worker(
         let mut batch: Vec<IEntry> = Vec::new();
         // Folders to read next: (path, hidden, modified time).
         let mut subdirs: Vec<(PathBuf, bool, (i64, i64))> = Vec::new();
+        let descend = max_depth.is_none_or(|max| job.depth < max);
         if let Ok(read) = fs::read_dir(&job.path) {
             for e in read.flatten() {
                 let Ok(kind) = e.file_type() else { continue };
@@ -209,12 +282,19 @@ fn worker(
                 }
                 let hidden = job.hidden || name.starts_with('.');
                 if is_dir
+                    && descend
                     && let Ok(m) = e.metadata()
                     && m.dev() == root_dev
                 {
                     subdirs.push((e.path(), hidden, mtime_of(&m)));
                 }
-                batch.push(IEntry { dir: job.dir, name_off: names.len() as u32, name_len: name.len() as u16, is_dir, hidden });
+                batch.push(IEntry {
+                    dir: job.dir,
+                    name_off: names.len() as u32,
+                    name_len: name.len() as u16,
+                    is_dir,
+                    hidden,
+                });
                 names.push_str(&name);
             }
         }
@@ -230,8 +310,16 @@ fn worker(
             subdirs
                 .into_iter()
                 .map(|(path, hidden, mtime)| {
-                    s.dirs.push(DirInfo { abs: path.to_string_lossy().into(), mtime });
-                    Job { dir: s.dirs.len() as u32 - 1, path, hidden }
+                    s.dirs.push(DirInfo {
+                        abs: path.to_string_lossy().into(),
+                        mtime,
+                    });
+                    Job {
+                        dir: s.dirs.len() as u32 - 1,
+                        path,
+                        hidden,
+                        depth: job.depth + 1,
+                    }
                 })
                 .collect::<Vec<_>>()
         };
@@ -254,8 +342,14 @@ fn worker(
 /// Size and modified time of `path` itself (a link is not followed), `-1` where unknown or not a file.
 fn meta_of(path: &Path) -> Meta {
     match fs::symlink_metadata(path) {
-        Ok(m) => Meta { size: if m.is_file() { m.len() as i64 } else { -1 }, mtime: m.mtime() },
-        Err(_) => Meta { size: -1, mtime: -1 },
+        Ok(m) => Meta {
+            size: if m.is_file() { m.len() as i64 } else { -1 },
+            mtime: m.mtime(),
+        },
+        Err(_) => Meta {
+            size: -1,
+            mtime: -1,
+        },
     }
 }
 
@@ -305,7 +399,9 @@ pub fn search(
                             rel.push('/');
                         }
                         rel.push_str(name);
-                        let Some(s) = query.score(name, &rel) else { continue };
+                        let Some(s) = query.score(name, &rel) else {
+                            continue;
+                        };
                         if needs_meta {
                             let m = meta_of(&store.path(e));
                             if !query.accepts(name, e.is_dir, m.size, m.mtime) {
@@ -323,7 +419,10 @@ pub fn search(
                 })
             })
             .collect();
-        handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
     });
 
     // Equal scores come out in path order: the walk order differs from run to run.
@@ -334,7 +433,12 @@ pub fn search(
     scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| order(a.1).cmp(&order(b.1))));
     scored.truncate(MAX_RESULTS);
     if std::env::var_os("CFM_DEBUG").is_some() {
-        eprintln!("[timing] search {:?} over {} entries: {:?}", query_text, all.len(), t0.elapsed());
+        eprintln!(
+            "[timing] search {:?} over {} entries: {:?}",
+            query_text,
+            all.len(),
+            t0.elapsed()
+        );
     }
     scored
         .into_iter()
@@ -350,7 +454,8 @@ pub fn search(
                 name,
                 rel: dir.get(root_len + 1..).unwrap_or("").to_owned(),
                 is_dir: e.is_dir,
-                is_link: false,
+                // Only the shown results are looked at, so this is a few hundred lstat calls at most.
+                is_link: fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_symlink()),
                 depth: 0,
             };
             (entry, meta_of(&path))
@@ -399,11 +504,29 @@ mod tests {
         assert!(!rs.contains(&"readme.md".to_string()));
         // Noise folders are never indexed; hidden files appear only on request.
         assert!(search("index.js", false).is_empty());
-        assert!(search("config", true).iter().all(|e| !e.path.contains("/.git/")));
+        assert!(
+            search("config", true)
+                .iter()
+                .all(|e| !e.path.contains("/.git/"))
+        );
         assert!(search("token", false).is_empty());
         assert_eq!(names(&search("token", true)), ["token.rs"]);
         // Folders only.
         assert!(search("type:d", false).iter().all(|e| e.is_dir));
+    }
+
+    #[test]
+    fn search_results_know_which_ones_are_links() {
+        let sb = Sandbox::new("index-links");
+        sb.touch("real.txt", "x");
+        std::os::unix::fs::symlink(sb.path("real.txt"), sb.path("linkto.txt")).unwrap();
+        std::os::unix::fs::symlink("/nonexistent/gone", sb.path("linkdead.txt")).unwrap();
+        let index = built(&sb.path(""));
+        let found = search(&index, "link", false, &|| false).0;
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().all(|e| e.is_link));
+        let plain = search(&index, "real", false, &|| false).0;
+        assert!(!plain[0].is_link);
     }
 
     #[test]
@@ -431,6 +554,39 @@ mod tests {
         assert_eq!(names(&hits), ["big.dat"]);
         assert_eq!(metas[0].size, 5000);
         assert_eq!(search(&index, "dat", false, &|| false).0.len(), 2);
+    }
+
+    #[test]
+    fn a_depth_limit_stops_the_walk() {
+        let sb = Sandbox::new("index-depth");
+        sb.touch("top.txt", "");
+        sb.touch("a/one.txt", "");
+        sb.touch("a/b/two.txt", "");
+        sb.touch("a/b/c/three.txt", "");
+        let store = RwLock::new(Store::default());
+        let walk = Walk {
+            threads: 2,
+            max_depth: Some(1),
+        };
+        scan(&sb.path(""), &store, &|| {}, walk);
+        let s = store.read().unwrap();
+        let mut found: Vec<&str> = s.entries.iter().map(|e| s.name(e)).collect();
+        found.sort();
+        // The root and one level below are read: "b" is seen, its contents are not.
+        assert_eq!(found, ["a", "b", "one.txt", "top.txt"]);
+    }
+
+    #[test]
+    fn remote_folders_get_a_shallow_narrow_walk() {
+        let mut sb = Sandbox::new("index-remote");
+        sb.set_env("XDG_RUNTIME_DIR", sb.root.join("run"));
+        assert_eq!(
+            walk_for(&sb.path("run/gvfs/sftp:host=nas/photos")),
+            REMOTE_WALK
+        );
+        let local = walk_for(&sb.path(""));
+        assert_eq!(local.max_depth, None);
+        assert!(local.threads >= 1);
     }
 
     #[test]

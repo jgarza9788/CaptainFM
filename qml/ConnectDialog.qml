@@ -269,6 +269,7 @@ Rectangle {
             anchors { left: parent.left; right: parent.right; verticalCenter: parent.verticalCenter; leftMargin: Style.pad * 2; rightMargin: Style.pad * 2 }
             elide: Text.ElideRight
             text: dlg.note !== "" ? dlg.note
+                  : dlg.kind.id === "gdrive" ? "Tip: your own Google client id (rclone.org/drive) avoids the shared one's \"Quota exceeded\""
                   : (dlg.hasPassword && dlg.remember ? "The password is stored encrypted in your keyring, never in a file"
                      : (dlg.hasPassword ? "The password is used now and then forgotten" : "Nothing secret is stored"))
             color: dlg.note !== "" ? Style.red : Style.fgDim

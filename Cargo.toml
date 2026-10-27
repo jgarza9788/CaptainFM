@@ -1,6 +1,6 @@
 [package]
 name = "captainfm"
-version = "0.1.0"
+version = "0.0.2"
 edition = "2024"
 license = "MIT"
 description = "A fast, keyboard-first file manager for Omarchy and Hyprland"

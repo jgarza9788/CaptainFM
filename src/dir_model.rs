@@ -71,6 +71,10 @@ mod qobject {
         #[qproperty(bool, lite)]
         #[qproperty(i32, entry_count, cxx_name = "entryCount")]
         #[qproperty(i32, selected_count, cxx_name = "selectedCount")]
+        /// Server the folder lives on ("" for a local folder).
+        #[qproperty(QString, remote)]
+        /// The remote this folder is on stopped answering for good (its mount is dead): the pane offers to reconnect.
+        #[qproperty(bool, lost)]
         type DirModel = super::DirModelRust;
 
         #[cxx_override]
@@ -240,6 +244,8 @@ pub struct DirModelRust {
     expanded: HashSet<String>,
     entry_count: i32,
     selected_count: i32,
+    remote: QString,
+    lost: bool,
 
     /// Everything read from the folder (or deep results), in read order. Shared with the worker
     /// thread that stats the entries, hence the `Arc`; sizes and times live in `meta`.
@@ -272,6 +278,8 @@ impl Default for DirModelRust {
             expanded: HashSet::new(),
             entry_count: 0,
             selected_count: 0,
+            remote: QString::default(),
+            lost: false,
             all: Arc::new(Vec::new()),
             meta: Vec::new(),
             order: Vec::new(),
@@ -312,11 +320,17 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
     }
     if opts.group != "none" && opts.tree_root.is_none() && !query.has_terms() {
         let now = crate::state::now();
-        let mut idx: Vec<u32> =
-            all.iter().enumerate().filter(|(i, e)| visible(*i, e)).map(|(i, _)| i as u32).collect();
+        let mut idx: Vec<u32> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| visible(*i, e))
+            .map(|(i, _)| i as u32)
+            .collect();
         listing::sort_indices(all, meta, &mut idx, opts.key, opts.desc);
         // Stable: within a group the chosen sort order is kept.
-        idx.sort_by_key(|&i| listing::group_of(&all[i as usize], meta[i as usize], opts.group, now).0);
+        idx.sort_by_key(|&i| {
+            listing::group_of(&all[i as usize], meta[i as usize], opts.group, now).0
+        });
         return idx;
     }
     if query.has_terms() {
@@ -327,16 +341,78 @@ fn compute_order(all: &[Entry], meta: &[Meta], opts: &ViewOpts) -> Vec<u32> {
             .filter_map(|(i, e)| query.score(&e.name, &e.name).map(|s| (s, i as u32)))
             .collect();
         scored.sort_by(|a, b| {
-            b.0.cmp(&a.0)
-                .then_with(|| listing::natural_cmp_ci(&all[a.1 as usize].lname, &all[b.1 as usize].lname))
+            b.0.cmp(&a.0).then_with(|| {
+                listing::natural_cmp_ci(&all[a.1 as usize].lname, &all[b.1 as usize].lname)
+            })
         });
         scored.into_iter().map(|(_, i)| i).collect()
     } else {
-        let mut idx: Vec<u32> =
-            all.iter().enumerate().filter(|(i, e)| visible(*i, e)).map(|(i, _)| i as u32).collect();
+        let mut idx: Vec<u32> = all
+            .iter()
+            .enumerate()
+            .filter(|(i, e)| visible(*i, e))
+            .map(|(i, _)| i as u32)
+            .collect();
         listing::sort_indices(all, meta, &mut idx, opts.key, opts.desc);
         idx
     }
+}
+
+/// Who to name in "Waiting for …" and "Lost connection to …": a saved cloud drive by its own name (its
+/// mount folder is `Name-id`), anything else by its server.
+fn remote_name(dir: &str) -> String {
+    let profiles = crate::remotes::load();
+    listing::remote_root(dir)
+        .and_then(|root| {
+            crate::remotes::profile_for_mount(&root, &profiles).map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| listing::remote_label(dir))
+}
+
+/// First row from `from` (wrapping around) whose name starts with `prefix` (lower case), or -1.
+fn find_prefix_in(all: &[Entry], order: &[u32], prefix: &str, from: i32) -> i32 {
+    let n = order.len();
+    if n == 0 {
+        return -1;
+    }
+    let start = usize::try_from(from).unwrap_or(0) % n;
+    (0..n)
+        .map(|k| (start + k) % n)
+        .find(|&row| all[order[row] as usize].lname.starts_with(prefix))
+        .map_or(-1, |r| r as i32)
+}
+
+/// Row of the folder holding the entry at `row` (tree view), or -1 when it is not shown.
+fn parent_row_in(all: &[Entry], order: &[u32], row: i32) -> i32 {
+    let Some(e) = usize::try_from(row)
+        .ok()
+        .and_then(|r| order.get(r))
+        .map(|&i| &all[i as usize])
+    else {
+        return -1;
+    };
+    let parent = e.path.rsplit_once('/').map_or("", |p| p.0);
+    order
+        .iter()
+        .position(|&i| all[i as usize].path == parent)
+        .map_or(-1, |i| i as i32)
+}
+
+/// Paths of the rows from `from` to `to` (either way round, clamped to the rows shown).
+fn range_paths(all: &[Entry], order: &[u32], from: i32, to: i32) -> Vec<String> {
+    let (lo, hi) = (from.min(to).max(0), from.max(to));
+    order
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| (*i as i32) >= lo && (*i as i32) <= hi)
+        .map(|(_, &i)| all[i as usize].path.clone())
+        .collect()
+}
+
+/// Collapsing a folder also collapses every folder inside it.
+fn collapse_in(expanded: &mut HashSet<String>, path: &str) {
+    let prefix = format!("{path}/");
+    expanded.retain(|p| p != path && !p.starts_with(&prefix));
 }
 
 impl DirModelRust {
@@ -365,7 +441,11 @@ impl DirModelRust {
         if self.is_deep() {
             return (0..all.len() as u32).collect();
         }
-        let (filter, key, root) = (self.filter.to_string(), self.sort_key.to_string(), self.path.to_string());
+        let (filter, key, root) = (
+            self.filter.to_string(),
+            self.sort_key.to_string(),
+            self.path.to_string(),
+        );
         let group = self.group_by.to_string();
         let opts = ViewOpts {
             show_hidden: self.show_hidden,
@@ -413,7 +493,8 @@ impl qobject::DirModel {
             DirRoles::Expanded => QVariant::from(&self.expanded.contains(&e.path)),
             DirRoles::GroupName => {
                 let group = self.group_by.to_string();
-                let (_, label) = listing::group_of(e, self.meta_at(index.row()), &group, crate::state::now());
+                let (_, label) =
+                    listing::group_of(e, self.meta_at(index.row()), &group, crate::state::now());
                 s(label)
             }
             _ => QVariant::default(),
@@ -445,7 +526,11 @@ impl qobject::DirModel {
 
     fn load(mut self: Pin<&mut Self>, path: &QString) {
         let dir = path.to_string();
-        let dir = if dir.len() > 1 { dir.trim_end_matches('/').to_owned() } else { dir };
+        let dir = if dir.len() > 1 {
+            dir.trim_end_matches('/').to_owned()
+        } else {
+            dir
+        };
         let changed = self.path().to_string() != dir || self.is_deep();
         self.as_mut().set_mode(QString::from("folder"));
         self.as_mut().rust_mut().deep_index = None;
@@ -465,13 +550,21 @@ impl qobject::DirModel {
         }
         self.as_mut().set_filter(QString::default());
         self.as_mut().set_selected_count(0);
+        self.as_mut()
+            .set_remote(QString::from(remote_name(&dir).as_str()));
 
         self.as_mut().rewatch();
         self.refresh(true);
     }
 
-    /// Watch the folder (and, in tree view, every expanded sub-folder) for changes.
+    /// Watch the folder (and, in tree view, every expanded sub-folder) for changes. Not on a remote:
+    /// setting the watch up looks the path up here on the UI thread, which can wait seconds on a fresh
+    /// mount, and inotify never sees changes made on the server anyway. Our own changes reload through `opDone`.
     fn rewatch(mut self: Pin<&mut Self>) {
+        if !self.remote().is_empty() {
+            self.as_mut().rust_mut().watcher = None;
+            return;
+        }
         let mut paths = vec![self.path().to_string()];
         paths.extend(self.expanded.iter().cloned());
         let qt_thread = self.qt_thread();
@@ -518,17 +611,14 @@ impl qobject::DirModel {
         if !self.expanded.contains(&path) {
             return false;
         }
-        let prefix = format!("{path}/");
-        self.as_mut().rust_mut().expanded.retain(|p| p != &path && !p.starts_with(&prefix));
+        collapse_in(&mut self.as_mut().rust_mut().expanded, &path);
         self.as_mut().rewatch();
         self.refresh(true);
         true
     }
 
     fn parent_row(&self, row: i32) -> i32 {
-        let Some(e) = self.entry(row) else { return -1 };
-        let parent = e.path.rsplit_once('/').map_or("", |p| p.0);
-        self.shown().position(|p| p.path == parent).map_or(-1, |i| i as i32)
+        parent_row_in(&self.all, &self.order, row)
     }
 
     fn reload(self: Pin<&mut Self>) {
@@ -544,29 +634,30 @@ impl qobject::DirModel {
 
     fn index_of(&self, name: &QString) -> i32 {
         let name = name.to_string();
-        self.shown().position(|e| e.name == name).map_or(-1, |i| i as i32)
+        self.shown()
+            .position(|e| e.name == name)
+            .map_or(-1, |i| i as i32)
     }
 
     fn find_prefix(&self, prefix: &QString, from: i32) -> i32 {
-        let prefix = prefix.to_string().to_lowercase();
-        let n = self.order.len();
-        if n == 0 {
-            return -1;
-        }
-        let start = usize::try_from(from).unwrap_or(0) % n;
-        (0..n)
-            .map(|k| (start + k) % n)
-            .find(|&row| self.all[self.order[row] as usize].lname.starts_with(&prefix))
-            .map_or(-1, |r| r as i32)
+        find_prefix_in(
+            &self.all,
+            &self.order,
+            &prefix.to_string().to_lowercase(),
+            from,
+        )
     }
 
     fn row_of_path(&self, path: &QString) -> i32 {
         let path = path.to_string();
-        self.shown().position(|e| e.path == path).map_or(-1, |i| i as i32)
+        self.shown()
+            .position(|e| e.path == path)
+            .map_or(-1, |i| i as i32)
     }
 
     fn path_at(&self, row: i32) -> QString {
-        self.entry(row).map_or_else(QString::default, |e| QString::from(e.path.as_str()))
+        self.entry(row)
+            .map_or_else(QString::default, |e| QString::from(e.path.as_str()))
     }
 
     fn is_dir_at(&self, row: i32) -> bool {
@@ -588,8 +679,10 @@ impl qobject::DirModel {
 
     fn set_ext_filter(mut self: Pin<&mut Self>, extensions: &QString) {
         let exts: Vec<String> = serde_json::from_str(&extensions.to_string()).unwrap_or_default();
-        self.as_mut().rust_mut().ext_filter =
-            exts.into_iter().map(|e| e.trim_start_matches('.').to_lowercase()).collect();
+        self.as_mut().rust_mut().ext_filter = exts
+            .into_iter()
+            .map(|e| e.trim_start_matches('.').to_lowercase())
+            .collect();
         self.rederive();
     }
 
@@ -626,12 +719,7 @@ impl qobject::DirModel {
 
     fn select_range(mut self: Pin<&mut Self>, from: i32, to: i32, on: bool) {
         let (lo, hi) = (from.min(to).max(0), from.max(to));
-        let paths: Vec<String> = self
-            .shown()
-            .enumerate()
-            .filter(|(i, _)| (*i as i32) >= lo && (*i as i32) <= hi)
-            .map(|(_, e)| e.path.clone())
-            .collect();
+        let paths = range_paths(&self.all, &self.order, from, to);
         let sel = &mut self.as_mut().rust_mut().selected;
         for p in paths {
             if on {
@@ -696,7 +784,10 @@ impl qobject::DirModel {
 
     fn deep_stop(mut self: Pin<&mut Self>) {
         let path = self.path().clone();
-        self.as_mut().rust_mut().generation.fetch_add(1, Ordering::SeqCst);
+        self.as_mut()
+            .rust_mut()
+            .generation
+            .fetch_add(1, Ordering::SeqCst);
         self.load(&path);
     }
 
@@ -710,7 +801,8 @@ impl qobject::DirModel {
         let query = self.deep_query.clone();
         let show_hidden = *self.show_hidden();
         let qt_thread = self.qt_thread();
-        self.as_mut().set_loading(!index.done.load(Ordering::SeqCst));
+        self.as_mut()
+            .set_loading(!index.done.load(Ordering::SeqCst));
 
         std::thread::spawn(move || {
             let cancel_gen = Arc::clone(&generation);
@@ -753,6 +845,7 @@ impl qobject::DirModel {
         }
         let path = self.path().to_string();
         let (tree, expanded, lite) = (*self.tree(), self.expanded.clone(), *self.lite());
+        let remote = !self.remote().is_empty();
         let generation = Arc::clone(&self.generation);
         let ticket = generation.fetch_add(1, Ordering::SeqCst) + 1;
         let qt_thread = self.qt_thread();
@@ -769,8 +862,24 @@ impl qobject::DirModel {
             } else {
                 listing::list_dir(&path)
             });
+            // An empty remote folder might be a dead mount: ask the folder why (one more read, only then).
+            let lost = remote
+                && entries.is_empty()
+                && std::fs::read_dir(&path).is_err_and(|e| listing::connection_lost(&e));
+            {
+                let g = Arc::clone(&generation);
+                let _ = qt_thread.queue(move |mut model| {
+                    if g.load(Ordering::SeqCst) == ticket {
+                        model.as_mut().set_lost(lost);
+                    }
+                });
+            }
             if std::env::var_os("CFM_DEBUG").is_some() {
-                eprintln!("[timing] list_dir {} entries: {:?}", entries.len(), t0.elapsed());
+                eprintln!(
+                    "[timing] list_dir {} entries: {:?}",
+                    entries.len(),
+                    t0.elapsed()
+                );
             }
 
             let (g, shared) = (Arc::clone(&generation), Arc::clone(&entries));
@@ -816,7 +925,17 @@ impl qobject::DirModel {
                 });
             }
 
-            // Stage 3: recursive folder sizes.
+            // Stage 3: recursive folder sizes. Not on a remote: walking the whole tree there keeps the
+            // connection busy and every other lookup queues behind it; folders show no size instead.
+            if remote {
+                let g = Arc::clone(&generation);
+                let _ = qt_thread.queue(move |mut model| {
+                    if g.load(Ordering::SeqCst) == ticket {
+                        model.as_mut().set_loading(false);
+                    }
+                });
+                return;
+            }
             let dirs: Vec<(usize, String)> = entries
                 .iter()
                 .enumerate()
@@ -922,7 +1041,8 @@ impl qobject::DirModel {
         }
         let top = self.index(0, 0, &QModelIndex::default());
         let bottom = self.index(last, 0, &QModelIndex::default());
-        self.as_mut().data_changed(&top, &bottom, &QVector::<i32>::default());
+        self.as_mut()
+            .data_changed(&top, &bottom, &QVector::<i32>::default());
     }
 
     /// Recompute the display order from `all` after a view option changed.
@@ -934,7 +1054,12 @@ impl qobject::DirModel {
 
     /// Adopt `order`. Same rows in the same order: refresh cells in place (no flicker, the cursor
     /// stays); otherwise reset the model.
-    fn install_order(mut self: Pin<&mut Self>, order: Vec<u32>, same_rows: bool, force_signal: bool) {
+    fn install_order(
+        mut self: Pin<&mut Self>,
+        order: Vec<u32>,
+        same_rows: bool,
+        force_signal: bool,
+    ) {
         if same_rows {
             self.as_mut().rust_mut().order = order;
             self.as_mut().cells_changed();
@@ -944,8 +1069,12 @@ impl qobject::DirModel {
             self.as_mut().end_reset_model();
             // Drop selections that no longer exist.
             let present: HashSet<&str> = self.all.iter().map(|e| e.path.as_str()).collect();
-            let kept: HashSet<String> =
-                self.selected.iter().filter(|p| present.contains(p.as_str())).cloned().collect();
+            let kept: HashSet<String> = self
+                .selected
+                .iter()
+                .filter(|p| present.contains(p.as_str()))
+                .cloned()
+                .collect();
             self.as_mut().rust_mut().selected = kept;
         }
         let (count, selected) = (self.order.len() as i32, self.selected.len() as i32);
@@ -954,5 +1083,169 @@ impl qobject::DirModel {
         if !same_rows || force_signal {
             self.loaded();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Entries under `/r`: a path ending in `/` is a folder, and a name starting with `.` is hidden.
+    fn entries(paths: &[&str]) -> Vec<Entry> {
+        paths
+            .iter()
+            .map(|p| {
+                let is_dir = p.ends_with('/');
+                let path = p.trim_end_matches('/');
+                let name = path.rsplit('/').next().unwrap();
+                Entry {
+                    name: name.into(),
+                    lname: name.to_lowercase(),
+                    path: format!("/r/{path}"),
+                    rel: String::new(),
+                    is_dir,
+                    is_link: false,
+                    hidden: name.starts_with('.'),
+                    depth: path.matches('/').count() as u16,
+                }
+            })
+            .collect()
+    }
+
+    fn opts<'a>(filter: &'a str, key: &'a str, desc: bool) -> ViewOpts<'a> {
+        ViewOpts {
+            show_hidden: false,
+            filter,
+            exts: &[],
+            key,
+            desc,
+            tree_root: None,
+            group: "none",
+        }
+    }
+
+    fn names(all: &[Entry], order: &[u32]) -> Vec<String> {
+        order
+            .iter()
+            .map(|&i| all[i as usize].name.clone())
+            .collect()
+    }
+
+    #[test]
+    fn order_hides_dotfiles_and_puts_folders_first() {
+        let all = entries(&["b.txt", ".hidden", "a.txt", "zdir/", "10.txt", "9.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let order = compute_order(&all, &meta, &opts("", "name", false));
+        assert_eq!(
+            names(&all, &order),
+            ["zdir", "9.txt", "10.txt", "a.txt", "b.txt"]
+        );
+        let shown = ViewOpts {
+            show_hidden: true,
+            ..opts("", "name", false)
+        };
+        assert!(names(&all, &compute_order(&all, &meta, &shown)).contains(&".hidden".into()));
+    }
+
+    #[test]
+    fn order_by_size_descending() {
+        let all = entries(&["small", "big", "mid"]);
+        let meta: Vec<Meta> = [1, 300, 20]
+            .iter()
+            .map(|&size| Meta { size, mtime: 0 })
+            .collect();
+        let order = compute_order(&all, &meta, &opts("", "size", true));
+        assert_eq!(names(&all, &order), ["big", "mid", "small"]);
+    }
+
+    #[test]
+    fn extension_filter_spares_folders() {
+        let all = entries(&["a.pdf", "b.txt", "docs/", "c.PDF"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let exts = ["pdf".to_string()];
+        let o = ViewOpts {
+            exts: &exts,
+            ..opts("", "name", false)
+        };
+        assert_eq!(
+            names(&all, &compute_order(&all, &meta, &o)),
+            ["docs", "a.pdf", "c.PDF"]
+        );
+    }
+
+    #[test]
+    fn filter_text_keeps_matches_and_ties_go_by_name() {
+        let all = entries(&["rep2.txt", "notes.md", "rep1.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let order = compute_order(&all, &meta, &opts("rep", "name", false));
+        assert_eq!(names(&all, &order), ["rep1.txt", "rep2.txt"]);
+    }
+
+    #[test]
+    fn grouping_keeps_the_sort_inside_each_group() {
+        let all = entries(&["b.png", "z.rs", "a.png", "dir/"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let o = ViewOpts {
+            group: "type",
+            ..opts("", "name", true)
+        };
+        // Folders, then images (descending by name), then code.
+        assert_eq!(
+            names(&all, &compute_order(&all, &meta, &o)),
+            ["dir", "b.png", "a.png", "z.rs"]
+        );
+    }
+
+    #[test]
+    fn tree_order_nests_children_under_their_folder() {
+        let all = entries(&["b/", "a/", "a/y.txt", "a/x.txt", "c.txt"]);
+        let meta = vec![Meta::UNKNOWN; all.len()];
+        let o = ViewOpts {
+            tree_root: Some("/r"),
+            ..opts("", "name", false)
+        };
+        let order = compute_order(&all, &meta, &o);
+        assert_eq!(names(&all, &order), ["a", "x.txt", "y.txt", "b", "c.txt"]);
+        // The parent of a nested row is its folder's row; top-level rows have none.
+        assert_eq!(parent_row_in(&all, &order, 2), 0);
+        assert_eq!(parent_row_in(&all, &order, 3), -1);
+        assert_eq!(parent_row_in(&all, &order, 99), -1);
+    }
+
+    #[test]
+    fn find_prefix_wraps_around_from_the_cursor() {
+        let all = entries(&["apple", "banana", "avocado"]);
+        let order = vec![0, 1, 2];
+        assert_eq!(find_prefix_in(&all, &order, "a", 0), 0);
+        assert_eq!(find_prefix_in(&all, &order, "a", 1), 2);
+        assert_eq!(
+            find_prefix_in(&all, &order, "a", 3),
+            0,
+            "past the end wraps to the top"
+        );
+        assert_eq!(find_prefix_in(&all, &order, "q", 0), -1);
+        assert_eq!(find_prefix_in(&[], &[], "a", 0), -1);
+    }
+
+    #[test]
+    fn range_selection_works_either_way_and_clamps() {
+        let all = entries(&["a", "b", "c", "d"]);
+        let order = vec![3, 2, 1, 0];
+        assert_eq!(range_paths(&all, &order, 2, 1), ["/r/c", "/r/b"]);
+        assert_eq!(range_paths(&all, &order, -5, 0), ["/r/d"]);
+        assert_eq!(range_paths(&all, &order, 3, 99), ["/r/a"]);
+    }
+
+    #[test]
+    fn collapsing_a_folder_collapses_the_folders_inside_it() {
+        let mut expanded: HashSet<String> = ["/r/a", "/r/a/b", "/r/a/b/c", "/r/ab", "/r/z"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        collapse_in(&mut expanded, "/r/a");
+        let mut left: Vec<&str> = expanded.iter().map(String::as_str).collect();
+        left.sort();
+        // `/r/ab` only shares the start of the name, so it stays open.
+        assert_eq!(left, ["/r/ab", "/r/z"]);
     }
 }

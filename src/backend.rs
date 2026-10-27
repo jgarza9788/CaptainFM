@@ -5,12 +5,13 @@
 
 use std::pin::Pin;
 use std::process::{Command, Stdio};
+use std::time::{Duration, Instant};
 
 use cxx_qt::{CxxQtType, Threading};
 use cxx_qt_lib::QString;
 
 use crate::transfer::{self, Ctl, Policy};
-use crate::{devices, ops, plugins, preview, remotes, state};
+use crate::{devices, listing, ops, plugins, preview, remotes, state};
 
 unsafe extern "C" {
     fn cfm_held_modifiers() -> i32;
@@ -31,6 +32,9 @@ mod qobject {
 
         #[qinvokable]
         fn home(&self) -> QString;
+        /// The version from Cargo.toml, the one number every place shows.
+        #[qinvokable]
+        fn version(&self) -> QString;
         #[qinvokable]
         fn env(&self, name: &QString) -> QString;
         /// Milliseconds since the program started, for the `CFM_DEBUG` startup timings.
@@ -62,6 +66,9 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "mount_root"]
         fn mountRoot(&self, path: &QString) -> QString;
+        #[qinvokable]
+        #[rust_name = "search_root"]
+        fn searchRoot(&self, path: &QString) -> QString;
 
         /// Copy or move `paths` (JSON array) into `dest`. Names that `dest` already has are asked about
         /// first (`pasteConflicts`); with none, it starts at once. Reports through `opDone`.
@@ -70,7 +77,13 @@ mod qobject {
         /// Copy or move, answering name clashes with `policy`: "replace", "skip" or "both".
         #[qinvokable]
         #[rust_name = "paste_with"]
-        fn pasteWith(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString);
+        fn pasteWith(
+            self: Pin<&mut Self>,
+            paths: &QString,
+            dest: &QString,
+            cut: bool,
+            policy: &QString,
+        );
         /// Every copy and move, as a JSON array with progress, speed and time left.
         #[qinvokable]
         fn transfers(&self) -> QString;
@@ -95,6 +108,14 @@ mod qobject {
         /// Permanently delete `paths`. Not undoable.
         #[qinvokable]
         fn remove(self: Pin<&mut Self>, paths: &QString);
+        /// How many items are in the home trash.
+        #[qinvokable]
+        #[rust_name = "trash_count"]
+        fn trashCount(&self) -> i32;
+        /// Delete everything in the home trash for good; reports through `opDone`.
+        #[qinvokable]
+        #[rust_name = "empty_trash"]
+        fn emptyTrash(self: Pin<&mut Self>);
         #[qinvokable]
         #[rust_name = "rename_to"]
         fn renameTo(self: Pin<&mut Self>, path: &QString, new_name: &QString);
@@ -140,7 +161,13 @@ mod qobject {
         /// chosen before for this query first. `items` and `ids` are parallel JSON arrays.
         #[qinvokable]
         #[rust_name = "rank_commands"]
-        fn rankCommands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString;
+        fn rankCommands(
+            &self,
+            items: &QString,
+            ids: &QString,
+            query: &QString,
+            learn: bool,
+        ) -> QString;
         /// Forget what the palette learned from your picks.
         #[qinvokable]
         #[rust_name = "forget_palette_history"]
@@ -252,7 +279,13 @@ mod qobject {
         /// Run a plugin's Lua action; answered by `pluginResult` (JSON array of effects).
         #[qinvokable]
         #[rust_name = "run_plugin"]
-        fn runPlugin(self: Pin<&mut Self>, plugin: &QString, action: &QString, ctx: &QString, call_id: i32);
+        fn runPlugin(
+            self: Pin<&mut Self>,
+            plugin: &QString,
+            action: &QString,
+            ctx: &QString,
+            call_id: i32,
+        );
 
         #[qsignal]
         #[cxx_name = "pluginResult"]
@@ -271,6 +304,15 @@ mod qobject {
         #[rust_name = "list_sidebar_devices"]
         fn listSidebarDevices(self: Pin<&mut Self>);
 
+        /// Look up how full one remote or cloud drive is (called when its row is hovered or opened). Answers a minute-old
+        /// result at once; otherwise asks on a thread. Reports through `spaceReady`.
+        #[qinvokable]
+        #[rust_name = "request_space"]
+        fn requestSpace(self: Pin<&mut Self>, path: &QString);
+        /// `{used, total, usage}` for the mount at `path` (JSON), or an empty string when it reports nothing.
+        #[qsignal]
+        #[cxx_name = "spaceReady"]
+        fn space_ready(self: Pin<&mut Self>, path: QString, json: QString);
         /// A copy or move was queued, so the transfer list should start refreshing.
         #[qsignal]
         #[cxx_name = "transferStarted"]
@@ -304,6 +346,21 @@ mod qobject {
         #[qinvokable]
         #[rust_name = "connect_saved"]
         fn connectSaved(self: Pin<&mut Self>, id: &QString);
+        /// Connect whatever `path` lives on (a pin on a share that is not mounted); answers through `mountDone`.
+        #[qinvokable]
+        #[rust_name = "connect_for"]
+        fn connectFor(self: Pin<&mut Self>, path: &QString);
+        /// The connection `path` belongs to, mounted or not ("" for none). Reads no remote.
+        #[qinvokable]
+        #[rust_name = "home_label"]
+        fn homeLabel(&self, path: &QString) -> QString;
+        /// The folder last visited inside `root`, or "".
+        #[qinvokable]
+        #[rust_name = "last_visit_under"]
+        fn lastVisitUnder(&self, root: &QString) -> QString;
+        /// Bring back the dead remote `folder` is on; answers through `mountDone` (its path is `folder`).
+        #[qinvokable]
+        fn reconnect(self: Pin<&mut Self>, folder: &QString);
         /// Saved connections as a JSON array (never includes passwords).
         #[qinvokable]
         #[rust_name = "saved_connections"]
@@ -374,11 +431,19 @@ fn rank_items(items: &[String], query: &str, fuzzy_fallback: bool) -> Vec<usize>
     if let Some(pattern) = pattern {
         let insensitive = !pattern.chars().any(char::is_uppercase);
         // An unfinished pattern matches nothing rather than everything.
-        let Ok(re) = regex::RegexBuilder::new(pattern).case_insensitive(insensitive).build() else {
+        let Ok(re) = regex::RegexBuilder::new(pattern)
+            .case_insensitive(insensitive)
+            .build()
+        else {
             return Vec::new();
         };
         // Regex results keep the list's own order.
-        return items.iter().enumerate().filter(|(_, s)| re.is_match(s)).map(|(i, _)| i).collect();
+        return items
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| re.is_match(s))
+            .map(|(i, _)| i)
+            .collect();
     }
     let mut scored: Vec<(i32, usize)> = items
         .iter()
@@ -387,7 +452,11 @@ fn rank_items(items: &[String], query: &str, fuzzy_fallback: bool) -> Vec<usize>
         .collect();
     if scored.is_empty() && fuzzy_fallback {
         let fuzzy = crate::fuzzy::Query::parse(query);
-        scored = items.iter().enumerate().filter_map(|(i, s)| fuzzy.score(s, s).map(|sc| (sc, i))).collect();
+        scored = items
+            .iter()
+            .enumerate()
+            .filter_map(|(i, s)| fuzzy.score(s, s).map(|sc| (sc, i)))
+            .collect();
     }
     scored.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
     scored.into_iter().map(|(_, i)| i).collect()
@@ -400,15 +469,63 @@ fn file_url(path: &str) -> String {
 /// The drag payload for `paths`: an RFC 2483 `text/uri-list` for file managers and upload fields, and the
 /// plain paths (one per line) for editors and terminals.
 fn drag_payload(paths: &[String]) -> serde_json::Value {
-    let uri_list: String = paths.iter().map(|p| format!("{}\r\n", file_url(p))).collect();
+    let uri_list: String = paths
+        .iter()
+        .map(|p| format!("{}\r\n", file_url(p)))
+        .collect();
     serde_json::json!({"uriList": uri_list, "plain": paths.join("\n")})
 }
 
-/// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
-/// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
+/// A yes/no lookup QML waits for. On a remote it gets about 150 ms on a helper thread and is then taken as
+/// yes, so a slow server never freezes the UI; whoever acts on the answer finds out soon enough.
+fn bounded_lookup(path: String, look: fn(&str) -> bool) -> bool {
+    match listing::remote_root(&path) {
+        None => look(&path),
+        Some(root) => bounded_lookup_on(&root, path, look, Duration::from_millis(150)),
+    }
+}
+
+/// Remotes that did not answer in time, and when. For a while after, lookups there do not wait at all:
+/// the sidebar asks about every pin in turn, and five pins on a hung server would otherwise freeze it
+/// for five waits, each leaving a thread stuck behind.
+static SLOW_REMOTES: std::sync::Mutex<Vec<(String, Instant)>> = std::sync::Mutex::new(Vec::new());
+const SLOW_FOR: Duration = Duration::from_secs(10);
+
+fn bounded_lookup_on(root: &str, path: String, look: fn(&str) -> bool, wait: Duration) -> bool {
+    let recently_slow = |slow: &mut Vec<(String, Instant)>| {
+        slow.retain(|(_, at)| at.elapsed() < SLOW_FOR);
+        slow.iter().any(|(r, _)| r == root)
+    };
+    if recently_slow(&mut SLOW_REMOTES.lock().unwrap()) {
+        return true;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(look(&path));
+    });
+    rx.recv_timeout(wait).unwrap_or_else(|_| {
+        let mut slow = SLOW_REMOTES.lock().unwrap();
+        if !recently_slow(&mut slow) {
+            slow.push((root.to_owned(), Instant::now()));
+        }
+        true
+    })
+}
+
+/// Whether moving `paths` into `dest` stays on one filesystem. Remote mounts are compared by their mount
+/// point, so hovering a drag over a remote folder never waits on the server.
 fn same_device(paths: &[String], dest: &str) -> bool {
     use std::os::unix::fs::MetadataExt;
-    let Ok(target) = std::fs::metadata(dest) else { return false };
+    if paths.is_empty() {
+        return false;
+    }
+    let dest_remote = listing::remote_root(dest);
+    if dest_remote.is_some() || paths.iter().any(|p| listing::is_remote(p)) {
+        return paths.iter().all(|p| listing::remote_root(p) == dest_remote);
+    }
+    let Ok(target) = std::fs::metadata(dest) else {
+        return false;
+    };
     !paths.is_empty()
         && paths.iter().all(|p| {
             // A link is judged by the link itself, since that is what a move relocates.
@@ -416,10 +533,14 @@ fn same_device(paths: &[String], dest: &str) -> bool {
         })
 }
 
+/// Local paths in a drop: `file:` URLs (also `file://localhost/...`), else absolute paths or `file:` URLs
+/// one per line in `text`. Remote schemes (http, smb, ...) are not local files and are skipped.
 fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     let local = |s: &str| -> Option<String> {
         let s = s.trim();
-        let rest = s.strip_prefix("file://localhost").or_else(|| s.strip_prefix("file://"));
+        let rest = s
+            .strip_prefix("file://localhost")
+            .or_else(|| s.strip_prefix("file://"));
         match rest {
             Some(r) if r.starts_with('/') => Some(percent_decode(r)),
             Some(_) => None,
@@ -428,7 +549,11 @@ fn drop_paths(urls: &[String], text: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = urls.iter().filter_map(|u| local(u)).collect();
     if out.is_empty() {
-        out = text.lines().filter_map(local).filter(|p| std::path::Path::new(p).exists()).collect();
+        out = text
+            .lines()
+            .filter_map(local)
+            .filter(|p| std::path::Path::new(p).exists())
+            .collect();
     }
     out.dedup();
     out
@@ -443,7 +568,11 @@ fn drop_urls(urls: &[String], text: &str) -> Vec<String> {
     };
     let mut out: Vec<String> = urls.iter().filter_map(|u| web(u)).collect();
     if out.is_empty() {
-        let lines: Vec<&str> = text.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        let lines: Vec<&str> = text
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .collect();
         // Only when every line is an address: selected text that merely contains one is not a download.
         if !lines.is_empty() && lines.iter().all(|l| web(l).is_some() && !l.contains(' ')) {
             out = lines.iter().filter_map(|l| web(l)).collect();
@@ -477,8 +606,14 @@ impl qobject::Backend {
         q(&state::home().to_string_lossy())
     }
 
+    fn version(&self) -> QString {
+        q(env!("CARGO_PKG_VERSION"))
+    }
+
     fn since_start_ms(&self) -> i32 {
-        crate::START.get().map_or(0, |t| t.elapsed().as_millis() as i32)
+        crate::START
+            .get()
+            .map_or(0, |t| t.elapsed().as_millis() as i32)
     }
 
     fn env(&self, name: &QString) -> QString {
@@ -516,6 +651,10 @@ impl qobject::Backend {
         q(&state::mount_root(&path.to_string()))
     }
 
+    fn search_root(&self, path: &QString) -> QString {
+        q(&state::search_root(&path.to_string()))
+    }
+
     /// Run `work` off the UI thread and deliver its outcome through `opDone`.
     /// Operations run one at a time in submission order, so undo always sees finished work.
     fn run_op(self: Pin<&mut Self>, work: impl FnOnce() -> ops::Outcome + Send + 'static) {
@@ -527,7 +666,13 @@ impl qobject::Backend {
     }
 
     /// Queue a copy or move that shows up in the transfer list.
-    fn start_paste(mut self: Pin<&mut Self>, paths: Vec<String>, dest: String, cut: bool, policy: Policy) {
+    fn start_paste(
+        mut self: Pin<&mut Self>,
+        paths: Vec<String>,
+        dest: String,
+        cut: bool,
+        policy: Policy,
+    ) {
         let ctl = Ctl::register(if cut { "Moved" } else { "Copied" }, &dest, paths.len());
         self.as_mut().transfer_started();
         self.run_op(move || ops::paste_tracked(&ctl, &paths, &dest, cut, policy));
@@ -549,13 +694,25 @@ impl qobject::Backend {
         if names.is_empty() {
             self.start_paste(list, dest, cut, Policy::Both);
         } else {
-            let json = serde_json::json!({"paths": list, "dest": dest, "cut": cut, "names": names});
+            let json = serde_json::json!({"paths": list, "dest": dest, "cut": cut, "names": names,
+                "replaceDeletes": ops::deletes_for_good(&dest)});
             self.as_mut().paste_conflicts(q(&json.to_string()));
         }
     }
 
-    fn paste_with(self: Pin<&mut Self>, paths: &QString, dest: &QString, cut: bool, policy: &QString) {
-        self.start_paste(parse_paths(paths), dest.to_string(), cut, Policy::parse(&policy.to_string()));
+    fn paste_with(
+        self: Pin<&mut Self>,
+        paths: &QString,
+        dest: &QString,
+        cut: bool,
+        policy: &QString,
+    ) {
+        self.start_paste(
+            parse_paths(paths),
+            dest.to_string(),
+            cut,
+            Policy::parse(&policy.to_string()),
+        );
     }
 
     fn transfers(&self) -> QString {
@@ -584,6 +741,14 @@ impl qobject::Backend {
         self.run_op(move || ops::delete(&paths));
     }
 
+    fn trash_count(&self) -> i32 {
+        ops::trash_count() as i32
+    }
+
+    fn empty_trash(self: Pin<&mut Self>) {
+        self.run_op(ops::empty_trash);
+    }
+
     fn rename_to(self: Pin<&mut Self>, path: &QString, new_name: &QString) {
         let (path, name) = (path.to_string(), new_name.to_string());
         self.run_op(move || ops::rename(&path, &name));
@@ -603,7 +768,8 @@ impl qobject::Backend {
     }
 
     fn rename_many(self: Pin<&mut Self>, pairs: &QString) {
-        let pairs: Vec<(String, String)> = serde_json::from_str(&pairs.to_string()).unwrap_or_default();
+        let pairs: Vec<(String, String)> =
+            serde_json::from_str(&pairs.to_string()).unwrap_or_default();
         self.run_op(move || ops::rename_many(&pairs));
     }
 
@@ -619,16 +785,23 @@ impl qobject::Backend {
 
     fn start_services(mut self: Pin<&mut Self>) {
         // Follow bookmark changes made by other windows: watch the state file's folder.
-        let state_dir = state::store_file().parent().map(std::path::Path::to_path_buf);
+        let state_dir = state::store_file()
+            .parent()
+            .map(std::path::Path::to_path_buf);
         if let Some(dir) = state_dir {
             let _ = std::fs::create_dir_all(&dir);
             let qt = self.qt_thread();
-            let watcher = crate::watch::watch(&dir, false, std::time::Duration::from_millis(150), move || {
-                let _ = qt.queue(|b| {
-                    state::reset_store();
-                    b.bookmarks_changed();
-                });
-            });
+            let watcher = crate::watch::watch(
+                &dir,
+                false,
+                std::time::Duration::from_millis(150),
+                move || {
+                    let _ = qt.queue(|b| {
+                        state::reset_store();
+                        b.bookmarks_changed();
+                    });
+                },
+            );
             self.as_mut().rust_mut().state_watch = watcher;
         }
         // Only own org.freedesktop.FileManager1 when CaptainFM is the folder handler (or when
@@ -681,7 +854,13 @@ impl qobject::Backend {
         q(&plugins::list().to_string())
     }
 
-    fn run_plugin(self: Pin<&mut Self>, plugin: &QString, action: &QString, ctx: &QString, call_id: i32) {
+    fn run_plugin(
+        self: Pin<&mut Self>,
+        plugin: &QString,
+        action: &QString,
+        ctx: &QString,
+        call_id: i32,
+    ) {
         let (plugin, action) = (plugin.to_string(), action.to_string());
         let ctx: serde_json::Value = serde_json::from_str(&ctx.to_string()).unwrap_or_default();
         let qt_thread = self.qt_thread();
@@ -719,6 +898,54 @@ impl qobject::Backend {
         });
     }
 
+    fn request_space(mut self: Pin<&mut Self>, path: &QString) {
+        use std::collections::HashSet;
+        use std::sync::Mutex;
+        use std::time::Instant;
+        static CACHE: Mutex<Option<devices::SpaceCache>> = Mutex::new(None);
+        static ASKING: Mutex<Option<HashSet<String>>> = Mutex::new(None);
+        let path = path.to_string();
+        let json = |v: Option<(u64, u64)>| {
+            match v {
+            Some((used, total)) if total > 0 => serde_json::json!({"used": used, "total": total, "usage": (used as f64 * 100.0 / total as f64).round() as i64}).to_string(),
+            _ => String::new(),
+        }
+        };
+        let cached = CACHE
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .get(&path, Instant::now());
+        if let Some(found) = cached {
+            self.as_mut().space_ready(q(&path), q(&json(found)));
+            return;
+        }
+        // One question per remote at a time; a hung server must not collect threads.
+        if !ASKING
+            .lock()
+            .unwrap()
+            .get_or_insert_with(Default::default)
+            .insert(path.clone())
+        {
+            return;
+        }
+        let qt_thread = self.qt_thread();
+        std::thread::spawn(move || {
+            let found = devices::remote_space(&path);
+            CACHE
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .put(&path, Instant::now(), found);
+            ASKING
+                .lock()
+                .unwrap()
+                .get_or_insert_with(Default::default)
+                .remove(&path);
+            let _ = qt_thread.queue(move |b| b.space_ready(q(&path), q(&json(found))));
+        });
+    }
+
     fn watch_devices(self: Pin<&mut Self>) {
         static STARTED: std::sync::Once = std::sync::Once::new();
         let qt_thread = self.qt_thread();
@@ -752,8 +979,14 @@ impl qobject::Backend {
     fn eject_device(self: Pin<&mut Self>, device: &QString) {
         let dev: serde_json::Value = serde_json::from_str(&device.to_string()).unwrap_or_default();
         let field = |k: &str| dev.get(k).and_then(|v| v.as_str()).unwrap_or("").to_owned();
-        let (kind, device_path, path, removable) =
-            (field("kind"), field("device"), field("path"), dev.get("removable").and_then(|v| v.as_bool()).unwrap_or(false));
+        let (kind, device_path, path, removable) = (
+            field("kind"),
+            field("device"),
+            field("path"),
+            dev.get("removable")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
+        );
         if kind == "disk" {
             self.report_mount(move || devices::eject_disk(&device_path, removable));
         } else {
@@ -770,7 +1003,11 @@ impl qobject::Backend {
     fn connect_profile(self: Pin<&mut Self>, json: &QString) {
         let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
         let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
-        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        let password = v
+            .get("password")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_owned();
         let save = v.get("save").and_then(|p| p.as_bool()).unwrap_or(false);
         self.connect_job(move |ask| remotes::connect(profile, password, save, ask));
     }
@@ -778,6 +1015,25 @@ impl qobject::Backend {
     fn connect_saved(self: Pin<&mut Self>, id: &QString) {
         let id = id.to_string();
         self.connect_job(move |ask| remotes::connect_saved(&id, ask));
+    }
+
+    fn connect_for(self: Pin<&mut Self>, path: &QString) {
+        let path = path.to_string();
+        self.connect_job(move |ask| remotes::connect_for(&path, ask));
+    }
+
+    fn home_label(&self, path: &QString) -> QString {
+        q(&remotes::home_label(&path.to_string()))
+    }
+
+    fn last_visit_under(&self, root: &QString) -> QString {
+        q(&state::last_visit_under(&root.to_string()).unwrap_or_default())
+    }
+
+    fn reconnect(self: Pin<&mut Self>, folder: &QString) {
+        let folder = folder.to_string();
+        let root = listing::remote_root(&folder).unwrap_or_else(|| folder.clone());
+        self.connect_job(move |ask| remotes::reconnect(&folder, &root, ask));
     }
 
     fn saved_connections(&self) -> QString {
@@ -792,7 +1048,11 @@ impl qobject::Backend {
     fn update_connection(self: Pin<&mut Self>, json: &QString) {
         let v: serde_json::Value = serde_json::from_str(&json.to_string()).unwrap_or_default();
         let profile: remotes::Profile = serde_json::from_value(v.clone()).unwrap_or_default();
-        let password = v.get("password").and_then(|p| p.as_str()).unwrap_or("").to_owned();
+        let password = v
+            .get("password")
+            .and_then(|p| p.as_str())
+            .unwrap_or("")
+            .to_owned();
         self.report_mount(move || remotes::update(profile, &password));
     }
 
@@ -801,7 +1061,10 @@ impl qobject::Backend {
     }
 
     /// Run a mount-like job on a thread and report it through `mountDone`.
-    fn report_mount(self: Pin<&mut Self>, work: impl FnOnce() -> devices::MountResult + Send + 'static) {
+    fn report_mount(
+        self: Pin<&mut Self>,
+        work: impl FnOnce() -> devices::MountResult + Send + 'static,
+    ) {
         let qt_thread = self.qt_thread();
         std::thread::spawn(move || {
             let json = serde_json::to_string(&work()).unwrap_or_default();
@@ -826,7 +1089,10 @@ impl qobject::Backend {
             let result = work(&|prompt: &str| {
                 let prompt = prompt.to_owned();
                 let _ = asker.queue(move |b| b.credentials_needed(q(&prompt)));
-                answers.recv_timeout(std::time::Duration::from_secs(180)).ok().flatten()
+                answers
+                    .recv_timeout(std::time::Duration::from_secs(180))
+                    .ok()
+                    .flatten()
             });
             let json = serde_json::to_string(&result).unwrap_or_default();
             let _ = qt_thread.queue(move |b| b.mount_done(q(&json)));
@@ -834,11 +1100,11 @@ impl qobject::Backend {
     }
 
     fn exists(&self, path: &QString) -> bool {
-        std::fs::symlink_metadata(path.to_string()).is_ok()
+        bounded_lookup(path.to_string(), |p| std::fs::symlink_metadata(p).is_ok())
     }
 
     fn is_dir(&self, path: &QString) -> bool {
-        std::path::Path::new(&path.to_string()).is_dir()
+        bounded_lookup(path.to_string(), |p| std::path::Path::new(p).is_dir())
     }
 
     fn expand_path(&self, path: &QString) -> QString {
@@ -862,16 +1128,28 @@ impl qobject::Backend {
         unsafe { cfm_held_modifiers() }
     }
 
-    fn rank_commands(&self, items: &QString, ids: &QString, query: &QString, learn: bool) -> QString {
+    fn rank_commands(
+        &self,
+        items: &QString,
+        ids: &QString,
+        query: &QString,
+        learn: bool,
+    ) -> QString {
         let items: Vec<String> = serde_json::from_str(&items.to_string()).unwrap_or_default();
         let ids: Vec<String> = serde_json::from_str(&ids.to_string()).unwrap_or_default();
         let query = query.to_string();
         let query = query.trim();
         // Regular expressions keep the plain ranking.
-        let order = if query.starts_with("re:") || (query.len() > 1 && query.starts_with('/') && query.ends_with('/')) {
+        let order = if query.starts_with("re:")
+            || (query.len() > 1 && query.starts_with('/') && query.ends_with('/'))
+        {
             rank_items(&items, query, false)
         } else {
-            let usage = if learn { state::Usage::load() } else { state::Usage::default() };
+            let usage = if learn {
+                state::Usage::load()
+            } else {
+                state::Usage::default()
+            };
             crate::fuzzy::predict_rank(&items, &ids, query, &usage)
         };
         q(&serde_json::to_string(&order).unwrap_or_else(|_| "[]".into()))
@@ -923,8 +1201,14 @@ impl qobject::Backend {
     fn open_terminal(&self, dir: &QString) {
         let dir = dir.to_string();
         // `terminal` in settings.json is a command line (`kitty --single-instance`); default xdg-terminal-exec.
-        let settings: serde_json::Value = serde_json::from_str(&state::read_config("settings")).unwrap_or_default();
-        let custom = settings.get("terminal").and_then(|t| t.as_str()).unwrap_or("").trim().to_owned();
+        let settings: serde_json::Value =
+            serde_json::from_str(&state::read_config("settings")).unwrap_or_default();
+        let custom = settings
+            .get("terminal")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .trim()
+            .to_owned();
         let mut words = custom.split_whitespace();
         match words.next() {
             Some(program) => {
@@ -1026,10 +1310,50 @@ impl qobject::Backend {
     fn request_preview(self: Pin<&mut Self>, path: &QString) {
         let path = path.to_string();
         let qt_thread = self.qt_thread();
-        std::thread::spawn(move || {
+        let deliver = move |path: String| {
             let json = preview::preview(&path).to_string();
             let _ = qt_thread.queue(move |backend| backend.preview_ready(q(&path), q(&json)));
-        });
+        };
+        if !listing::is_remote(&path) {
+            std::thread::spawn(move || deliver(path));
+            return;
+        }
+        // On a remote, one preview read at a time: moving the cursor along queues only the latest file.
+        static REMOTE: LatestOnly<String> = LatestOnly::new();
+        if REMOTE.offer(path) {
+            std::thread::spawn(move || {
+                while let Some(path) = REMOTE.next() {
+                    deliver(path);
+                }
+            });
+        }
+    }
+}
+
+/// A one-slot queue with a single worker: a new item replaces the one waiting, so the worker only ever
+/// picks up the latest. `offer` says whether to start the worker; the worker calls `next` until `None`.
+struct LatestOnly<T> {
+    state: std::sync::Mutex<(bool, Option<T>)>,
+}
+
+impl<T> LatestOnly<T> {
+    const fn new() -> Self {
+        LatestOnly {
+            state: std::sync::Mutex::new((false, None)),
+        }
+    }
+
+    fn offer(&self, item: T) -> bool {
+        let mut s = self.state.lock().unwrap();
+        s.1 = Some(item);
+        !std::mem::replace(&mut s.0, true)
+    }
+
+    fn next(&self) -> Option<T> {
+        let mut s = self.state.lock().unwrap();
+        let item = s.1.take();
+        s.0 = item.is_some();
+        item
     }
 }
 
@@ -1054,7 +1378,10 @@ fn op_queue(job: Job) {
 /// Start a program that outlives this call, reaping it in the background.
 fn spawn_detached(program: &str, args: &[&str], cwd: Option<&str>) {
     let mut cmd = Command::new(program);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -1078,16 +1405,81 @@ mod tests {
 
     #[test]
     fn drops_accept_local_urls_and_ignore_remote_ones() {
-        let urls = ["file:///a%20b".to_owned(), "file://localhost/x".to_owned(), "https://example.com/f".to_owned(), "smb://nas/s".to_owned()];
+        let urls = [
+            "file:///a%20b".to_owned(),
+            "file://localhost/x".to_owned(),
+            "https://example.com/f".to_owned(),
+            "smb://nas/s".to_owned(),
+        ];
         assert_eq!(drop_paths(&urls, ""), ["/a b", "/x"]);
         assert!(drop_paths(&["https://example.com/f".to_owned()], "").is_empty());
         assert_eq!(drop_paths(&[], "/tmp\nnot a path\nfile:///tmp"), ["/tmp"]);
     }
 
+    static LOOKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn hung_lookup(_: &str) -> bool {
+        LOOKS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(400));
+        false
+    }
+
+    fn quick_no(_: &str) -> bool {
+        false
+    }
+
+    #[test]
+    fn a_remote_that_does_not_answer_is_not_waited_on_again() {
+        let wait = Duration::from_millis(60);
+        let root = "/test/slow-remote";
+        let t = Instant::now();
+        assert!(
+            bounded_lookup_on(root, format!("{root}/a"), hung_lookup, wait),
+            "no answer counts as yes"
+        );
+        assert!(t.elapsed() >= wait);
+        // The second and third lookups there return at once, without asking the server.
+        let t = Instant::now();
+        assert!(bounded_lookup_on(
+            root,
+            format!("{root}/b"),
+            hung_lookup,
+            wait
+        ));
+        assert!(bounded_lookup_on(
+            root,
+            format!("{root}/c"),
+            hung_lookup,
+            wait
+        ));
+        assert!(t.elapsed() < wait);
+        assert_eq!(LOOKS.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Another remote still gets its real answer.
+        assert!(!bounded_lookup_on(
+            "/test/other-remote",
+            "/test/other-remote/x".into(),
+            quick_no,
+            wait
+        ));
+    }
+
+    #[test]
+    fn only_the_latest_preview_waits_while_one_is_read() {
+        let q = LatestOnly::new();
+        assert!(q.offer("a"), "the first offer starts the worker");
+        assert_eq!(q.next(), Some("a"));
+        // While "a" is being read, the cursor moves on: only the last one waits.
+        assert!(!q.offer("b"));
+        assert!(!q.offer("c"));
+        assert_eq!(q.next(), Some("c"));
+        assert_eq!(q.next(), None, "the worker stops");
+        assert!(q.offer("d"), "and the next offer starts a new one");
+    }
+
     #[test]
     fn same_device_compares_filesystems() {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_owned());
-        assert!(same_device(&[home.clone()], &home));
+        assert!(same_device(std::slice::from_ref(&home), &home));
         assert!(!same_device(&[], &home));
         assert!(!same_device(&["/nonexistent/x".to_owned()], &home));
         assert!(!same_device(&[home], "/nonexistent"));
@@ -1095,7 +1487,10 @@ mod tests {
 
     #[test]
     fn web_drops_become_downloads() {
-        assert_eq!(drop_urls(&["https://a/b.png".to_owned(), "file:///x".to_owned()], ""), ["https://a/b.png"]);
+        assert_eq!(
+            drop_urls(&["https://a/b.png".to_owned(), "file:///x".to_owned()], ""),
+            ["https://a/b.png"]
+        );
         assert_eq!(drop_urls(&[], "https://a/b.png\r\n"), ["https://a/b.png"]);
         assert!(drop_urls(&[], "see https://a/b.png for details").is_empty());
         assert!(drop_urls(&[], "plain words").is_empty());
@@ -1111,7 +1506,9 @@ mod tests {
 
     #[test]
     fn palette_ranking_modes() {
-        let items: Vec<String> = ["Close tab", "New tab", "Next tab", "Open terminal"].map(String::from).to_vec();
+        let items: Vec<String> = ["Close tab", "New tab", "Next tab", "Open terminal"]
+            .map(String::from)
+            .to_vec();
         assert_eq!(rank_items(&items, "new tab", true), [1]);
         // A single term ranks word-start matches first ("New tab" and "Next tab" start with n/t words).
         let r = rank_items(&items, "t", true);

@@ -5,6 +5,6 @@
   ],
   "actions": [
     { "id": "status", "title": "Refresh status", "function": "status" },
-    { "id": "copy_branch", "title": "Copy branch name", "keys": ["<Space> x b"], "function": "copy_branch" }
+    { "id": "copy_branch", "title": "Copy branch name", "keys": [", x b"], "function": "copy_branch" }
   ]
 }

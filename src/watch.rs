@@ -35,24 +35,23 @@ pub fn watch_many<P: AsRef<Path>>(
     let on_change = Arc::new(on_change);
     let pending = Arc::new(AtomicBool::new(false));
 
-    let mut watcher =
-        notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
-            let Ok(event) = res else { return };
-            if matches!(event.kind, EventKind::Access(_)) {
-                return;
-            }
-            if pending.swap(true, Ordering::SeqCst) {
-                return;
-            }
-            let pending = Arc::clone(&pending);
-            let on_change = Arc::clone(&on_change);
-            std::thread::spawn(move || {
-                std::thread::sleep(debounce);
-                pending.store(false, Ordering::SeqCst);
-                on_change();
-            });
-        })
-        .ok()?;
+    let mut watcher = notify::recommended_watcher(move |res: Result<Event, notify::Error>| {
+        let Ok(event) = res else { return };
+        if matches!(event.kind, EventKind::Access(_)) {
+            return;
+        }
+        if pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let pending = Arc::clone(&pending);
+        let on_change = Arc::clone(&on_change);
+        std::thread::spawn(move || {
+            std::thread::sleep(debounce);
+            pending.store(false, Ordering::SeqCst);
+            on_change();
+        });
+    })
+    .ok()?;
 
     let mode = if recursive {
         RecursiveMode::Recursive
@@ -107,7 +106,10 @@ mod tests {
         }
         assert!(wait_for(&count, 1));
         std::thread::sleep(Duration::from_millis(300));
-        assert!(count.load(Ordering::SeqCst) <= 2, "a burst should be debounced");
+        assert!(
+            count.load(Ordering::SeqCst) <= 2,
+            "a burst should be debounced"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -126,12 +128,24 @@ mod tests {
             let _ = std::fs::read(dir.join("a"));
         }
         std::thread::sleep(Duration::from_millis(400));
-        assert_eq!(count.load(Ordering::SeqCst), 0, "access events must be ignored");
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            0,
+            "access events must be ignored"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn watching_a_missing_folder_fails() {
-        assert!(watch(Path::new("/definitely/not/here"), false, Duration::from_millis(10), || {}).is_none());
+        assert!(
+            watch(
+                Path::new("/definitely/not/here"),
+                false,
+                Duration::from_millis(10),
+                || {}
+            )
+            .is_none()
+        );
     }
 }

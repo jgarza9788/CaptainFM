@@ -38,7 +38,10 @@ fn main() {
     let debug = std::env::var_os("CFM_DEBUG").is_some();
     let lap = |what: &str| {
         if debug {
-            eprintln!("[timing] {what} {} ms after start", START.get().map_or(0, |t| t.elapsed().as_millis()));
+            eprintln!(
+                "[timing] {what} {} ms after start",
+                START.get().map_or(0, |t| t.elapsed().as_millis())
+            );
         }
     };
     lap("Qt application created");

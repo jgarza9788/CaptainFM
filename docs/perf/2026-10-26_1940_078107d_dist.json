@@ -1,0 +1,102 @@
+{
+ "when": "2026-10-26 19:40",
+ "fixture_version": 2,
+ "profile": "dist",
+ "runs": 5,
+ "commit": "078107d",
+ "dirty": true,
+ "binary_mb": 9.96844482421875,
+ "machine": {
+  "cpu": "Intel(R) Core(TM) i5-8600T CPU @ 2.30GHz",
+  "cores": 6,
+  "ram": "31 GB",
+  "kernel": "7.2.8-9-omarchy",
+  "host": "omarchy"
+ },
+ "cases": {
+  "startup (empty folder)": {
+   "cpu_s": {
+    "median": 0.52737,
+    "best": 0.515795,
+    "worst": 0.528694
+   },
+   "rss_mb": {
+    "median": 102.51953125,
+    "best": 102.234375,
+    "worst": 102.62890625
+   },
+   "qml_loaded_ms": {
+    "median": 253.0,
+    "best": 251.0,
+    "worst": 258.0
+   }
+  },
+  "list 20,000 files": {
+   "cpu_s": {
+    "median": 0.69294,
+    "best": 0.68782,
+    "worst": 0.698105
+   },
+   "rss_mb": {
+    "median": 113.62890625,
+    "best": 113.46875,
+    "worst": 113.7265625
+   },
+   "list_dir_ms": {
+    "median": 15.694353,
+    "best": 14.121788,
+    "worst": 15.805744
+   }
+  },
+  "index 70,000+ files and search": {
+   "cpu_s": {
+    "median": 0.973534,
+    "best": 0.96026,
+    "worst": 0.987969
+   },
+   "rss_mb": {
+    "median": 124.9375,
+    "best": 124.62890625,
+    "worst": 125.4609375
+   },
+   "index_ms": {
+    "median": 8.354753,
+    "best": 7.891341,
+    "worst": 14.856418
+   },
+   "search_ms": {
+    "median": 4.594962,
+    "best": 3.823225,
+    "worst": 6.029675
+   }
+  },
+  "copy 200 MB (100 files)": {
+   "cpu_s": {
+    "median": 0.990914,
+    "best": 0.984524,
+    "worst": 1.00724
+   },
+   "rss_mb": {
+    "median": 110.83984375,
+    "best": 110.4140625,
+    "worst": 110.98046875
+   },
+   "copy_ms": {
+    "median": 106.294947,
+    "best": 102.186269,
+    "worst": 106.638405
+   },
+   "copy_mb_per_s": {
+    "median": 1881.5569850183003,
+    "best": 1875.4969187695558,
+    "worst": 1957.210121841321
+   }
+  }
+ },
+ "scratch": "/tmp",
+ "fixture": {
+  "tree_files": 50000,
+  "flat_files": 20000,
+  "copy_mb": 200
+ }
+}

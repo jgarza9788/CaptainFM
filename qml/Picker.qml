@@ -37,6 +37,7 @@ Rectangle {
     readonly property bool hasCategories: items.length > 0 && items[0].category !== undefined
 
     signal closed()
+    signal rightClicked()           // a right-click anywhere on the picker (the context menu uses it for the second press)
 
     function open(opts) {
         placeholder = opts.placeholder ?? "Type to search"
@@ -131,7 +132,12 @@ Rectangle {
                 const ctrl = e.modifiers & Qt.ControlModifier
                 if (picker.keyHook && list.currentIndex >= 0 && list.currentIndex < picker.shown.length
                     && picker.keyHook(e, picker.items[picker.shown[list.currentIndex]])) { e.accepted = true; return }
-                if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { list.currentIndex = Math.min(list.count - 1, list.currentIndex + 1); e.accepted = true }
+                if (e.key === Qt.Key_PageDown || e.key === Qt.Key_PageUp) {
+                    const page = Math.max(1, Math.floor(list.height / Math.max(1, list.currentItem ? list.currentItem.height : Math.round(30 * Style.zoom))) - 1)
+                    list.currentIndex = e.key === Qt.Key_PageDown ? Math.min(list.count - 1, list.currentIndex + page) : Math.max(0, list.currentIndex - page)
+                    e.accepted = true
+                }
+                else if (ctrl && (e.key === Qt.Key_N || e.key === Qt.Key_J)) { list.currentIndex = Math.min(list.count - 1, list.currentIndex + 1); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_P) { list.currentIndex = Math.max(0, list.currentIndex - 1); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_K && picker.onRebind) { picker.startCapture(); e.accepted = true }
                 else if (ctrl && e.key === Qt.Key_X && picker.onUnbind) {
@@ -220,10 +226,13 @@ Rectangle {
                 anchors { left: category.right; leftMargin: picker.hasCategories ? Style.pad : Style.pad * 2
                           right: badge.left; rightMargin: Style.pad; verticalCenter: parent.verticalCenter }
                 textFormat: Text.RichText
-                text: row.item ? Style.highlightHtml(row.item.title, input.text.trim(), Style.accent) : ""
+                // Rich text is not elided by Qt, so the title is cut first. Folder results keep their end (the
+                // interesting part) visible, names (`elide: "middle"`) both ends, commands their start.
+                readonly property int mode: !row.item ? Text.ElideRight
+                    : (typeof row.item.tag === "object" && row.item.tag.folder !== undefined ? Text.ElideLeft
+                    : (row.item.elide === "middle" ? Text.ElideMiddle : Text.ElideRight))
+                text: row.item ? Style.highlightHtml(Style.elide(row.item.title, font, width, mode), input.text.trim(), Style.accent) : ""
                 color: Style.fg
-                // Folder results keep their end (the interesting part) visible.
-                elide: row.item && typeof row.item.tag === "object" && row.item.tag.folder !== undefined ? Text.ElideLeft : Text.ElideRight
                 font { family: Style.font; pixelSize: Style.fontSize + 1 }
             }
             // Current binding as a badge; unbound commands get a dashed "+ bind".
@@ -296,7 +305,7 @@ Rectangle {
             textFormat: Text.RichText
             text: {
                 const k = s => "<font color=\"" + Style.fgLight + "\">" + s + "</font>"
-                return k("↑↓") + " move   " + k("enter") + " run" + (picker.onRebind ? "   " + k("tab") + " bind key" : "") + "   " + k("esc") + " close"
+                return k("↑↓ PgUp PgDn") + " move   " + k("enter") + " run" + (picker.onRebind ? "   " + k("tab") + " bind key" : "") + "   " + k("esc") + " close"
             }
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont + 1 }
@@ -307,5 +316,13 @@ Rectangle {
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont + 1 }
         }
+    }
+
+    // Only right-clicks: everything else still reaches the rows and the input below.
+    MouseArea {
+        anchors.fill: parent
+        z: 10
+        acceptedButtons: Qt.RightButton
+        onClicked: picker.rightClicked()
     }
 }

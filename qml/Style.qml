@@ -46,6 +46,9 @@ QtObject {
     readonly property int radius: 6
 
     // Rich text with the query's words highlighted (in-order substrings; fuzzy letters as a fallback).
+    // A name with a line break in it (legal on Linux) would make its row taller; show the break as a symbol.
+    function oneLine(text) { return String(text).replace(/[\r\n]+/g, "\u23ce") }
+
     function highlightHtml(text, query, color) {
         const esc = t => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
         const words = query.split(/\s+/).filter(w => w !== "")
@@ -72,6 +75,16 @@ QtObject {
             pos = b
         }
         return out + esc(text.substring(pos))
+    }
+
+    // Qt does not elide rich text (or wrapped text, except at the end): cut the plain text to `width`
+    // here, then mark it up. Text that fits comes back unchanged. A method call, not TextMetrics' properties,
+    // so callers' bindings do not depend on one another through the shared object.
+    readonly property FontMetrics metrics: FontMetrics {}
+    function elide(text, font, width, mode) {
+        if (width <= 0 || text === "") return text
+        metrics.font = font
+        return metrics.elidedText(text, mode ?? Text.ElideMiddle, width)
     }
 
     function alpha(c, a) { return Qt.rgba(c.r, c.g, c.b, a) }
@@ -130,6 +143,7 @@ QtObject {
     })
 
     function nerdGlyph(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return "\uf07b"
         const lower = name.toLowerCase()
         if (nerdByName[lower] !== undefined) return nerdByName[lower]
@@ -144,6 +158,7 @@ QtObject {
 
     // Single-character markers that work in any font (no Nerd Font needed).
     function glyph(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (nerd) return nerdGlyph(name, isDir, isLink)
         if (isDir) return "\u25b8"                       // ▸
         if (name.charAt(0) === ".") return "\u00b7"      // ·
@@ -168,6 +183,7 @@ QtObject {
     }
 
     function glyphColor(name, isDir) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return accent
         const dot = name.lastIndexOf(".")
         const ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : ""
@@ -204,6 +220,7 @@ QtObject {
     })
 
     function kind(name, isDir, isLink) {
+        name = name ?? ""       // a row can be read just after it was removed
         if (isDir) return "dir"
         const dot = name.lastIndexOf(".")
         const ext = dot > 0 ? name.substring(dot + 1).toLowerCase() : ""

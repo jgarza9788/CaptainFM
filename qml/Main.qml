@@ -79,24 +79,66 @@ Window {
         try { return JSON.parse(Backend.bookmarks()).indexOf(path) >= 0 } catch (e) { return false }
     }
 
-    // Pin a folder or item. Unpinning takes two presses in a row (Ctrl+D twice, or right-click twice on the
-    // sidebar entry): the first only marks the pin, which shows in the sidebar; the second removes it.
-    property string armedPin: ""
-    Timer { id: armTimer; interval: 3000; onTriggered: app.armedPin = "" }
+    // Two presses in a row for anything that is hard to undo: the first only marks the target (red in the sidebar and
+    // tab strip) and says in a toast what the second will do; the second, within 3 seconds, does it. A right-click twice
+    // does this on a pinned entry (unpin), a drive (unmount), a remote (disconnect), a tab (close) and a file or folder
+    // (delete, which goes to the trash); Ctrl+D or Ctrl+B twice unpins.
+    property string armedKey: ""
+    property var armedAction: null
+    Timer { id: armTimer; interval: 3000; onTriggered: { app.armedKey = ""; app.armedAction = null } }
+
+    // Returns true when this was the second press and the action ran. `done` is the toast after it (empty: the action reports).
+    function armTwice(key, ask, done, action) {
+        if (armedKey === key) { runArmed(); return true }
+        armedKey = key
+        armedAction = () => { action(); if (done) toast(done) }
+        armTimer.restart()
+        toast(ask, "warn")
+        return false
+    }
+    function runArmed() {
+        const act = armedAction
+        armTimer.stop()
+        armedKey = ""
+        armedAction = null
+        if (act) act()
+    }
 
     function togglePinned(path, name) {
         if (!isPinned(path)) { Backend.toggleBookmark(path); toast("Pinned " + name); pinsChanged(); return }
-        if (armedPin === path) {
-            armTimer.stop()
-            armedPin = ""
-            Backend.toggleBookmark(path)
-            toast("Unpinned " + name)
-            pinsChanged()
-            return
-        }
-        armedPin = path
-        armTimer.restart()
-        toast("Again to unpin “" + name + "”", "warn")
+        armTwice("pin:" + path, "Again to unpin “" + name + "”", "Unpinned " + name, () => { Backend.toggleBookmark(path); pinsChanged() })
+    }
+
+    // Right-click twice on a sidebar drive or remote.
+    function deviceRightClicked(item) {
+        const d = item.dev
+        if (!d) return
+        if (d.kind === "disk" && item.path === "/") { toast("The system drive can’t be unmounted", "warn"); return }
+        const remote = d.kind !== "disk"
+        const verb = remote ? "disconnect" : "unmount"
+        armTwice("drive:" + item.path, "Again to " + verb + " “" + item.label + "”", (remote ? "Disconnecting " : "Unmounting ") + item.label + "…",
+                 () => Backend.ejectDevice(JSON.stringify(d)))
+    }
+
+    // Right-click twice on a tab.
+    function tabRightClicked(i, title) {
+        if (tabsModel.count <= 1) { toast("That is the last tab (Ctrl+Q quits)", "warn"); return }
+        armTwice("tab:" + i, "Again to close tab “" + title + "”", "Closed tab “" + title + "”", () => closeTab(i))
+    }
+
+    // A right-click on a file or folder opens its menu, as before, and arms the delete; a second right-click on the same
+    // item (or on the menu) within 3 seconds sends it to the trash (undo with Ctrl+Z).
+    function rowRightClicked() {
+        const p = pane
+        if (!p || p.currentPath === "") { contextMenu(); return }
+        const many = p.dir.selectedCount > 1
+        const paths = many ? JSON.parse(p.dir.selectedPaths()) : [p.currentPath]
+        const name = many ? paths.length + " items" : p.baseName(p.currentPath)
+        const kind = many ? "" : (p.currentIsDir ? "folder " : "file ")
+        const key = "item:" + JSON.stringify(paths)
+        if (armedKey === key) { pickerBox.close(); runArmed(); return }
+        contextMenu()
+        armTwice(key, "Right-click again to delete " + kind + "“" + name + "”", "", () => Backend.trash(JSON.stringify(paths)))
     }
 
     // The sidebar's global search box drives a whole-drive search in the active pane.
@@ -104,7 +146,7 @@ Window {
         const p = pane
         if (!p) return
         if (text.trim() === "") { if (p.deep) p.exitDeep(); return }
-        if (!p.deep) p.dir.deepStart(Backend.mountRoot(p.dir.path))
+        if (!p.deep) p.dir.deepStart(Backend.searchRoot(p.dir.path))
         p.searchText = text
         p.dir.deepQuery(text)
     }
@@ -281,7 +323,7 @@ Window {
     function loadLayoutPicker() {
         const all = JSON.parse(Backend.readConfig("layouts"))
         const names = Object.keys(all)
-        if (names.length === 0) { toast("No saved layouts yet (Space l s)", "warn"); return }
+        if (names.length === 0) { toast("No saved layouts yet (, l s)", "warn"); return }
         pickerBox.open({
             placeholder: "Load layout",
             items: names.map(n => ({ title: n, hint: all[n].tabs.length + " tab(s)", tag: n })),
@@ -308,6 +350,7 @@ Window {
             items: list.map(d => ({
                 title: d.label + (d.kind === "remote" || d.kind === "cloud" ? "" : "  " + d.detail),
                 hint: d.mounted ? (d.path || d.uri) : "not mounted",
+                elide: "middle",
                 tag: d
             })),
             choose: (item) => {
@@ -315,7 +358,7 @@ Window {
                 refocus()
                 if (devicesMode === "eject") { Backend.ejectDevice(JSON.stringify(d)); return }
                 if (d.mounted) { if (pane) pane.navigate(d.path); return }
-                pendingMount = true
+                beginMount(d.label)
                 toast("Mounting " + d.label + "…")
                 Backend.mountDevice(JSON.stringify(d))
             }
@@ -323,12 +366,55 @@ Window {
     }
 
     property bool pendingMount: false
+    property var mountPane: null    // the pane showing "Connecting to …" while a mount runs
+
+    function beginMount(name) {
+        pendingMount = true
+        if (mountPane) mountPane.connecting = ""
+        mountPane = pane
+        if (pane) pane.connecting = name
+    }
+
+    // The remote under the active pane died (see `DirModel.lost`): mount it again and come back to the folder.
+    property bool reconnecting: false
+    property bool openExact: false          // the mount was asked for to open one folder (a pin), not to resume
+    function reconnect() {
+        const p = pane
+        if (!p || !p.dir.lost) { toast("Nothing to reconnect here", "warn"); return }
+        beginMount(p.dir.remote)
+        reconnecting = true
+        Backend.reconnect(p.dir.path)
+    }
 
     function handleMount(json) {
         const r = JSON.parse(json)
+        // Open the result in the pane that showed "Connecting to …", even if another pane is active by now.
+        const target = mountPane ? mountPane : pane
+        const name = mountPane ? mountPane.connecting : ""
+        if (mountPane) mountPane.connecting = ""
+        mountPane = null
+        const wasReconnect = reconnecting
+        const exact = openExact
+        reconnecting = false
+        openExact = false
+        // A gvfs share cannot be matched to its saved connection from the folder: let the person pick it.
+        if (!r.ok && wasReconnect && r.path === "") { pendingMount = false; toast(r.message, "warn"); connectPicker(); return }
         if (!r.ok) { pendingMount = false; toast(r.message, "error"); return }
-        toast(r.message)
-        if (pendingMount && r.path !== "" && pane) pane.navigate(r.path)
+        if (pendingMount && r.path === "") {
+            // Mounted, but no folder came back to open: say where to find it rather than a bare "Connected".
+            toast(r.message + (name !== "" ? " to " + name : "") + ": open it from the sidebar")
+            Backend.listSidebarDevices()
+        } else toast(r.message)
+        if (pendingMount && r.path !== "" && target) {
+            if (wasReconnect && target.dir.path === r.path) target.dir.reload()
+            else if (exact) target.navigate(r.path)
+            else {
+                // A whole connection opens where you left off inside it last time (if that folder is still there).
+                const last = Backend.lastVisitUnder(r.path)
+                target.navigate(last !== "" && Backend.isDir(last) ? last : r.path)
+            }
+        }
+        sidebar.refreshPinned()
         pendingMount = false
     }
 
@@ -344,7 +430,7 @@ Window {
         }]
         for (const c of JSON.parse(Backend.savedConnections())) {
             if (only && kinds.indexOf(c.kind) < 0) continue
-            items.push({ title: c.name, hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host : "") + (c.remember ? "  ·  password in keyring" : ""), tag: c })
+            items.push({ title: c.name, elide: "middle", hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host : "") + (c.remember ? "  ·  password in keyring" : ""), tag: c })
         }
         if (!only) items.push({ title: "Connect to a URL…", hint: "smb://, sftp://, ftp://, davs://", tag: { make: "url" } })
         pickerBox.open({
@@ -356,7 +442,7 @@ Window {
                 if (c.make === "new") { lazyConnect().open({}, only ? kinds[0] : undefined); return }
                 if (c.make === "url") { connectUrlPrompt(); return }
                 refocus()
-                pendingMount = true
+                beginMount(c.name)
                 toast("Connecting to " + c.name + "…")
                 Backend.connectSaved(c.id)
             },
@@ -408,6 +494,7 @@ Window {
             hintRight: "enter edits · ctrl+d forgets",
             items: saved.map(c => ({
                 title: c.name,
+                elide: "middle",
                 hint: c.kind + (c.host ? "://" + (c.user ? c.user + "@" : "") + c.host + (c.path ? "/" + c.path.replace(/^\//, "") : "") : "") + (c.remember ? "  ·  password in keyring" : ""),
                 tag: c
             })),
@@ -429,7 +516,7 @@ Window {
             text: "sftp://",
             accept: (url) => {
                 if (url === "") return
-                pendingMount = true
+                beginMount(url.replace(/^[a-z]+:\/\//, "").replace(/\/.*$/, ""))
                 toast("Connecting…")
                 Backend.connectRemote(url)
             }
@@ -443,7 +530,7 @@ Window {
 
     // The form was filled in; sign-in for cloud drives happens in the browser and can take a while.
     function runConnect(req) {
-        pendingMount = true
+        beginMount(req.name || req.host || "server")
         toast(req.kind === "gdrive" || req.kind === "dropbox" || req.kind === "onedrive" || req.kind === "box"
               ? "Signing in… check your browser" : "Connecting…")
         Backend.connectProfile(JSON.stringify(req))
@@ -604,6 +691,7 @@ Window {
         const items = tabPages.map((t, i) => ({
             title: (i + 1) + "  " + t.title,
             hint: t.activePane ? t.activePane.pretty(t.activePane.dir.path) : "",
+            elide: "middle",
             tag: i
         }))
         pickerBox.open({
@@ -638,7 +726,7 @@ Window {
     function setKeymap(name) {
         keymap = name
         engine.rebuild(userKeys)
-        toast(name === "fp" ? "File Pilot keys (Ctrl shortcuts, type to find)" : "Vim keys (modal, Space leader)")
+        toast(name === "fp" ? "File Pilot keys (Ctrl shortcuts, type to find)" : "Vim keys (modal, comma leader)")
         markDirty()
     }
 
@@ -673,9 +761,19 @@ Window {
         const r = JSON.parse(json)
         if (r.cancelled) toast("Cancelled" + (r.ok > 0 ? "  (" + commands.plural(r.ok, "item") + " already " + r.label.toLowerCase() + ")" : ""), "warn")
         else if (r.errors && r.errors.length > 0) toast(r.errors[0] + (r.errors.length > 1 ? "  (+" + (r.errors.length - 1) + " more)" : ""), "error")
-        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.skipped > 0 ? ", skipped " + r.skipped : "") + (r.label === "Trashed" ? "  (u to undo)" : ""))
+        else if (r.ok > 0) toast(r.label + " " + commands.plural(r.ok, "item") + (r.skipped > 0 ? ", skipped " + r.skipped : "") + (r.label === "Trashed" && r.undo ? "  (u to undo)" : ""))
         else if (r.skipped > 0) toast("Skipped " + commands.plural(r.skipped, "item"), "warn")
         const p = pane
+        // A remote without a trash: nothing was touched, so ask before deleting for good.
+        if (r.no_trash && r.no_trash.length > 0) {
+            const server = p && p.dir.remote !== "" ? p.dir.remote : "This server"
+            prompt.open({
+                label: server + " has no trash. Permanently delete " + commands.plural(r.no_trash.length, "item") + "?",
+                confirm: true,
+                accept: () => Backend.remove(JSON.stringify(r.no_trash)),
+                cancel: () => refocus()
+            })
+        }
         if (p && r.paths && r.paths.length > 0 && r.label !== "Trashed" && r.label !== "Deleted") {
             p.pendingPath = r.paths[r.paths.length - 1]
             if (p.dir.rowOfPath(p.pendingPath) >= 0) p.restoreCursor()
@@ -809,7 +907,7 @@ Window {
 
     Commands { id: commandsRef; app: app }
     PluginApi { id: pluginApi; app: app }
-    KeyEngine { id: engine; commands: app.commands; profile: app.keymap }
+    KeyEngine { id: engine; commands: app.commands; profile: app.keymap; userKeys: app.userKeys }
 
     Connections {
         target: Backend
@@ -840,7 +938,6 @@ Window {
         onRunningChanged: if (!running) app.updateIndexText()
     }
     onSidebarModeChanged: markDirty()
-    onKeymapChanged: engine.rebuild(userKeys)
     onGroupByChanged: markDirty()
 
     Timer { id: saveTimer; interval: 1500; onTriggered: app.saveSession() }
@@ -945,6 +1042,8 @@ Window {
                 e.accepted = true
                 return
             }
+            // An open panel owns the keys: what it does not use must not reach the file list behind it.
+            if (app.overlayOpen) { e.accepted = true; return }
             if (engine.handle(e)) e.accepted = true
         }
 
@@ -1042,8 +1141,10 @@ Window {
                         if (Backend.isDir(path)) app.pane.navigate(path); else if (!app.pickMode) Backend.openPath(path)
                     }
                     onConnectRequested: app.connectPrompt()
-                    armedPath: app.armedPin
+                    onConnectPathRequested: (path, name) => { app.beginMount(name); app.openExact = true; app.toast("Connecting to " + name + "…"); Backend.connectFor(path) }
+                    armedKey: app.armedKey
                     onUnpinRequested: (path, name) => app.togglePinned(path, name)
+                    onDeviceRightClicked: (item) => app.deviceRightClicked(item)
                     onFoldsChanged: app.markDirty()
                     searchValue: app.pane && app.pane.deep ? app.pane.searchText : ""
                     onSearchChanged: (text) => app.sidebarSearch(text)
@@ -1075,24 +1176,79 @@ Window {
                                     id: chip
                                     required property int index
                                     readonly property bool current: index === app.tabIndex
+                                    readonly property bool armed: app.armedKey === "tab:" + index
                                     readonly property Item page: app.tabPages.length > index ? app.tabPages[index] : null
                                     anchors.verticalCenter: parent.verticalCenter
                                     height: parent.height - 8
-                                    width: Math.min(Math.round(220 * Style.zoom), label.implicitWidth + Style.pad * 2.4)
+                                    readonly property int maxWidth: Math.round(220 * Style.zoom)
+                                    width: Math.min(maxWidth, label.implicitWidth + Style.pad * 2.4)
                                     radius: 4
                                     color: current ? Style.surface : "transparent"
                                     Text {
                                         id: label
                                         anchors.centerIn: parent
                                         textFormat: Text.RichText
-                                        text: "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + (chip.index + 1) + "</font> "
-                                              + (chip.page ? chip.page.title.replace(/&/g, "&amp;").replace(/</g, "&lt;") : "")
+                                        // Rich text, so the title is cut in the middle by hand, against the widest
+                                        // chip (not its own width, which follows this text).
+                                        readonly property string number: String(chip.index + 1)
+                                        readonly property string cut: chip.page ? Style.elide(number + " " + chip.page.title, font, chip.maxWidth - Style.pad * 2.4).substring(number.length + 1) : ""
+                                        text: chip.armed ? "<font color=\"" + Style.red + "\">close tab " + number + "?</font>"
+                                              : "<font color=\"" + (chip.current ? Style.accent : Style.fgDim) + "\">" + number + "</font> "
+                                                + cut.replace(/&/g, "&amp;").replace(/</g, "&lt;")
                                         color: chip.current ? Style.fg : Style.fgDim
-                                        elide: Text.ElideRight
                                         width: Math.min(implicitWidth, chip.width - Style.pad)
                                         font { family: Style.font; pixelSize: Style.fontSize }
                                     }
-                                    MouseArea { anchors.fill: parent; onClicked: app.selectTab(chip.index) }
+                                    // Files dropped on a tab go into that tab's folder (its active pane); a drag resting on it
+                                    // switches to it, like resting on a folder opens it.
+                                    DropArea {
+                                        id: tabDrop
+                                        anchors.fill: parent
+                                        readonly property string folder: chip.page && chip.page.activePane ? chip.page.activePane.dir.path : ""
+                                        enabled: folder !== "" && !(chip.page.activePane.deep)
+                                        property var hint: ({ kind: "", text: "" })
+                                        onEntered: (drag) => hint = Dnd.hint(drag, folder, chip.page.title, false)
+                                        onPositionChanged: (drag) => hint = Dnd.hint(drag, folder, chip.page.title, false)
+                                        onDropped: (drop) => Dnd.accept(drop, folder, false)
+                                        DropWatch { area: tabDrop; destination: tabDrop.folder; name: chip.page ? chip.page.title : ""; onRefreshed: (h) => tabDrop.hint = h }
+                                        HoverOpen {
+                                            hovering: tabDrop.containsDrag && !chip.current
+                                            onOpened: app.selectTab(chip.index)
+                                        }
+                                    }
+                                    Rectangle {
+                                        anchors.fill: parent
+                                        radius: 4
+                                        visible: tabDrop.containsDrag
+                                        color: Style.alpha(Style.accent, 0.25)
+                                        border { width: 1; color: Style.accent }
+                                    }
+                                    // What the drop would do ("Move to Downloads"), under the tab.
+                                    Rectangle {
+                                        visible: tabDrop.containsDrag && tabDrop.hint.kind !== ""
+                                        z: 20
+                                        anchors { top: parent.bottom; topMargin: 4; left: parent.left }
+                                        width: tabHint.implicitWidth + Style.pad * 2
+                                        height: tabHint.implicitHeight + Style.pad
+                                        radius: 4
+                                        color: Style.surface
+                                        border.color: Style.accent
+                                        Text {
+                                            id: tabHint
+                                            anchors.centerIn: parent
+                                            text: tabDrop.hint.text
+                                            color: Style.fg
+                                            font { family: Style.font; pixelSize: Style.smallFont }
+                                        }
+                                    }
+                                    MouseArea {
+                                        anchors.fill: parent
+                                        acceptedButtons: Qt.LeftButton | Qt.RightButton
+                                        onClicked: (m) => {
+                                            if (m.button === Qt.RightButton) app.tabRightClicked(chip.index, chip.page ? chip.page.title : String(chip.index + 1))
+                                            else app.selectTab(chip.index)
+                                        }
+                                    }
                                     // Drag a tab sideways to reorder; it drops where its centre lands.
                                     DragHandler {
                                         yAxis.enabled: false
@@ -1133,9 +1289,10 @@ Window {
                             optSortKey: app.sortKey
                             optSortDesc: app.sortDesc
                             onZoomRequested: (s) => commands.zoom(0.1 * s)
-                            onContextRequested: app.contextMenu()
+                            onContextRequested: app.rowRightClicked()
+                            onReconnectRequested: app.reconnect()
                             onSortRequested: (key) => commands.setSort(key)
-                            onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.mountRoot(app.pane.dir.path))
+                            onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.searchRoot(app.pane.dir.path))
                             onPickRequested: app.pickEnterFile()
                         }
                         onItemAdded: (i, item) => {
@@ -1222,8 +1379,10 @@ Window {
                 onClosed: app.refocus()
             }
 
-            // Status line: key hints on the left, index state and zoom on the right.
+            // Status line: key hints on the left, index state and zoom on the right. In a narrow window the index
+            // note goes first, then the hints that no longer fit.
             Rectangle {
+                id: statusBar
                 Layout.fillWidth: true
                 Layout.preferredHeight: Math.round(28 * Style.zoom)
                 color: Style.bg
@@ -1234,7 +1393,7 @@ Window {
                     ? (deep ? [["↑↓", "move"], ["enter", "open"], ["esc", "back"]]
                             : [["↑↓", "move"], ["→", "open"], ["←", "up"], ["ctrl+l", "go to"], ["ctrl+f", "search"], ["ctrl+p", "actions"]])
                     : (deep ? [["j/k", "move"], ["enter", "open"], ["esc", "back"]]
-                            : [["j/k", "move"], ["l", "open"], ["h", "up"], ["space", "leader"], ["/", "filter"]])
+                            : [["j/k", "move"], ["l", "open"], ["h", "up"], [",", "leader"], ["/", "filter"]])
 
                 Row {
                     id: leftStatus
@@ -1252,6 +1411,7 @@ Window {
                             required property int index
                             required property var modelData
                             textFormat: Text.RichText
+                            visible: x + width < statusBar.width - rightStatus.width - Style.pad * 4
                             text: "<font color=\"" + (index === 0 ? Style.accent : Style.fgLight) + "\"><b>" + modelData[0] + "</b></font>"
                                   + "<font color=\"" + Style.fgDim + "\"> " + modelData[1] + "</font>"
                             font { family: Style.font; pixelSize: Style.smallFont + 1 }
@@ -1265,6 +1425,7 @@ Window {
                     spacing: Style.pad * 1.5
                     Text {
                         anchors.verticalCenter: parent.verticalCenter
+                        visible: statusBar.width > Math.round(900 * Style.zoom)
                         color: Style.fgDim
                         font { family: Style.font; pixelSize: Style.smallFont + 1 }
                         text: app.indexText !== "" ? "index live · " + app.indexText + " paths" : "index live · inotify"
@@ -1314,6 +1475,24 @@ Window {
             }
         }
 
+        // A left click outside the palette, jump bar, Settings, Connect or Batch rename closes it. Right clicks pass
+        // through (the double right-click delete lands outside the menu); the panels sit above this, so they get theirs.
+        MouseArea {
+            anchors.fill: parent
+            enabled: pickerBox.visible || jumpBar.visible || (settingsLoader.item !== null && settingsLoader.item.dlg.visible)
+                     || (connectLoader.item !== null && connectLoader.item.dlg.visible)
+                     || (batchLoader.item !== null && batchLoader.item.dlg.visible)
+            acceptedButtons: Qt.LeftButton
+            onPressed: {
+                if (pickerBox.visible) pickerBox.close()
+                else if (jumpBar.visible) jumpBar.close()
+                else if (settingsLoader.item !== null && settingsLoader.item.dlg.visible) settingsLoader.item.dlg.close()
+                else if (connectLoader.item !== null && connectLoader.item.dlg.visible) connectLoader.item.dlg.close()
+                else if (batchLoader.item !== null && batchLoader.item.dlg.visible) batchLoader.item.dlg.close()
+            }
+            onWheel: (w) => { w.accepted = true }
+        }
+
         // Overlays
         LeaderHints {
             id: hints
@@ -1332,6 +1511,8 @@ Window {
         Picker {
             id: pickerBox
             onClosed: app.refocus()
+            // The second right-click of a file or folder delete can land on the menu itself.
+            onRightClicked: if (app.armedKey.indexOf("item:") === 0) { close(); app.runArmed() }
         }
 
         Loader {
@@ -1427,7 +1608,8 @@ Window {
                 if (f && f.text !== undefined) f.text = f.text + t.substring(1).replace(/_/g, " ")
             } else if (t === "!accept") {
                 const f = app.activeFocusItem
-                if (f && f.accepted) f.accepted()
+                if (promptBar.visible && promptBar.confirmMode) promptBar.accept()     // y on a y/n question
+                else if (f && f.accepted) f.accepted()
             } else if (t.indexOf("!bind:") === 0) {
                 const [cid, seq] = t.substring(6).split("=")
                 bindKey(cid, seq.replace(/_/g, " "))
@@ -1436,6 +1618,32 @@ Window {
             else if (t.indexOf("!clash:") === 0) clashBox.press(t.substring(7))
             else if (t.indexOf("!set:") === 0) lazySettings().press(t.substring(5))
             else if (t.indexOf("!conn:") === 0) lazyConnect().press(t.substring(6))
+            else if (t.indexOf("!click:pin:") === 0) {
+                // Test automation: left-click the pinned sidebar entry whose name contains the text.
+                const it = sidebar.pinned.find(x => x.label.indexOf(t.substring(11)) >= 0)
+                if (!it) toast("No pin “" + t.substring(11) + "”", "error")
+                else if (it.offline) sidebar.connectPathRequested(it.path, it.home)
+                else sidebar.navigate(it.path)
+            }
+            else if (t.indexOf("!rclick:") === 0) {
+                // Test automation for the double right-click: !rclick:row, !rclick:tab:N, !rclick:pin:/path, !rclick:fake-remote, !rclick:root
+                const w = t.substring(8)
+                if (w === "row") rowRightClicked()
+                else if (w.indexOf("tab:") === 0) tabRightClicked(parseInt(w.substring(4)), "tab " + w.substring(4))
+                else if (w.indexOf("pin:") === 0) togglePinned(w.substring(4), "pin")
+                else if (w.indexOf("side:") === 0) {
+                    // a real sidebar drive or remote whose name contains the text
+                    const found = sidebar.drives.concat(sidebar.remotes).find(x => x.label.indexOf(w.substring(5)) >= 0 || (x.path || "").indexOf(w.substring(5)) >= 0)
+                    if (found) deviceRightClicked(found); else toast("No sidebar entry “" + w.substring(5) + "”", "error")
+                }
+                else if (w === "root") deviceRightClicked({ label: "root", path: "/", dev: { kind: "disk" }, verb: "unmount" })
+                else deviceRightClicked({ label: w, path: "/fake/" + w, dev: { kind: "smb", path: "/fake/" + w }, verb: "disconnect" })
+            }
+            else if (t.indexOf("!space:") === 0) {
+                // Test automation for the remote capacity lookup (a hover cannot be sent): !space:<part of the name>
+                const found = sidebar.remotes.find(x => x.label.indexOf(t.substring(7)) >= 0 || (x.path || "").indexOf(t.substring(7)) >= 0)
+                if (found) sidebar.askSpace(found); else toast("No remote “" + t.substring(7) + "”", "error")
+            }
             else if (t === "!play") inspectorPane.togglePlayback()
             else if (t === "!clear") { const f = app.activeFocusItem; if (f && f.text !== undefined) f.text = "" }
             else if (t === "!next") lazyBatch().nextField(false)

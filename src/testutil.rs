@@ -13,7 +13,13 @@ pub struct Sandbox {
     saved: Vec<(&'static str, Option<std::ffi::OsString>)>,
 }
 
-const VARS: [&str; 5] = ["HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME"];
+const VARS: [&str; 5] = [
+    "HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+];
 
 impl Sandbox {
     pub fn new(name: &str) -> Sandbox {
@@ -31,7 +37,11 @@ impl Sandbox {
             std::env::set_var("XDG_STATE_HOME", root.join(".local/state"));
         }
         crate::state::reset_store();
-        Sandbox { root, _guard: guard, saved }
+        Sandbox {
+            root,
+            _guard: guard,
+            saved,
+        }
     }
 
     /// Create `rel` (a file, or a folder when it ends with `/`) under the sandbox with some content.
@@ -48,6 +58,13 @@ impl Sandbox {
 
     pub fn path(&self, rel: &str) -> String {
         self.root.join(rel).to_string_lossy().into_owned()
+    }
+
+    /// Set one more environment variable for the life of the sandbox; it is put back on drop.
+    pub fn set_env(&mut self, var: &'static str, value: impl AsRef<std::ffi::OsStr>) {
+        self.saved.push((var, std::env::var_os(var)));
+        // SAFETY: see `new`; this sandbox holds the lock.
+        unsafe { std::env::set_var(var, value) }
     }
 }
 

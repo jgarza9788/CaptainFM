@@ -39,7 +39,7 @@ On narrow tiles the preview hides below 760 px and the sidebar collapses to icon
 | Half page | | `Ctrl-d` / `Ctrl-u` |
 | Jump to an item by name | just type its first letters | |
 | Go to a folder | `Ctrl-L` | `z` |
-| Reload | `F5` | `Space v r` |
+| Reload | `F5` | `, v r` |
 
 **Go to (`Ctrl-L`).** Type a path (`~/Pro` completes), or words (`home lab`), or `re:regex`. Results are your pins,
 frequently and recently used folders (ranked by frecency), and common places like Downloads. `Tab` completes,
@@ -49,7 +49,7 @@ frequently and recently used folders (ranked by frecency), and common places lik
 
 | Task | FP | Vim |
 | --- | --- | --- |
-| Mark / unmark and move on | `Space` | `m` |
+| Mark / unmark and move on | `Insert` | `m` |
 | Extend a selection | `Shift-↑` `Shift-↓` | `v`, then `j` `k` |
 | Select all | `Ctrl-A` | `Ctrl-a` |
 | Copy / cut / paste | `Ctrl-C` `Ctrl-X` `Ctrl-V` | `yy` `dd` `p` |
@@ -77,7 +77,7 @@ frequently and recently used folders (ranked by frecency), and common places lik
   paths (editors, terminals). Dropping files from other apps works the same. **Browsers:** files dragged into Firefox
   and Chromium arrive as real files, and an image or link dragged out of a browser is downloaded into the folder you
   drop it on (needs `curl`).
-- Right-click or press `Menu` (`Space c` in Vim) for the **context menu**: a searchable list with "Open with" for
+- Right-click or press `Menu` (`, c` in Vim) for the **context menu**: a searchable list with "Open with" for
   every app that handles the file type, standard actions, and your pinned actions (`Ctrl-D` pins one).
 
 ## Finding things
@@ -110,9 +110,9 @@ results, `Esc` to clear.
 
 Pin the things you use all the time and they appear under **PINNED** in the sidebar, live.
 
-- `Ctrl-B` (Vim `Space p f`) pins or unpins the current folder.
-- `Ctrl-D` (Vim `Space p i`) pins or unpins the item under the cursor, a file or a folder. Clicking a pinned file opens it.
-- Right-click a pinned entry to unpin it. Pins made in another CaptainFM window show up immediately.
+- `Ctrl-B` (Vim `, p f`) pins or unpins the current folder.
+- `Ctrl-D` (Vim `, p i`) pins or unpins the item under the cursor, a file or a folder. Clicking a pinned file opens it.
+- Pins made in another CaptainFM window show up immediately. To unpin, right-click the entry twice (see below).
 - Pins also lead the **Go to** list and the palette's folder results.
 
 ## Tabs, panes and layouts
@@ -122,16 +122,16 @@ Pin the things you use all the time and they appear under **PINNED** in the side
 | New tab / close tab | `Ctrl-T` / `Ctrl-W` | `Ctrl-t` / `q` |
 | Next / previous tab | `Ctrl-Tab` / `Ctrl-Shift-Tab` | `gt` / `gT` |
 | Go to tab *n* | `Ctrl-1…9` | `Alt-1…9` |
-| Search open tabs | `Alt-T` | `Space t t` |
+| Search open tabs | `Alt-T` | `, t t` |
 | Open a folder in a new tab | `Ctrl-Enter` | `Ctrl-Enter` |
 | Split beside / below | `Ctrl-\` / `Ctrl-Shift-\` | `Ctrl-w v` / `Ctrl-w s` |
 | Next / previous pane | `Tab` / `Shift-Tab` | `Tab` / `Shift-Tab` |
 | Close pane / keep only this one | `Ctrl-Shift-W` | `Ctrl-w c` / `Ctrl-w o` |
-| Swap panes | `Ctrl-Shift-X` | `Space w x` |
-| Cycle pane layout | | `Space w l` |
+| Swap panes | `Ctrl-Shift-X` | `, w x` |
+| Cycle pane layout | | `, w l` |
 
 - Up to four panes per tab. Drag a pane's `⠿` grip onto another pane to swap them; drag a tab to reorder.
-- **Save a layout** with `Space l s` (name it) and bring it back with `Space l l`. Layouts hold your tabs, panes and views.
+- **Save a layout** with `, l s` (name it) and bring it back with `, l l`. Layouts hold your tabs, panes and views.
 - The last session (tabs, panes, views, sort, hidden files, zoom, sidebar state) is restored on start.
 - Open folders from the shell into the running window: `captainfm --tab ~/Projects ~/Music`.
 
@@ -141,17 +141,17 @@ Switch the view of the active pane (all remembered per pane and saved with your 
 
 | View | FP | Vim | Notes |
 | --- | --- | --- | --- |
-| List | `Alt-1` | `Space v l` | the default |
-| Tree | `Alt-2` | `Space v t` | folders expand in place (`→` expands, `←` collapses) |
-| Miller columns | `Alt-3` | `Space v m` | parent, current and child side by side |
-| Icons | `Alt-4` | `Space v g` | thumbnails, from the freedesktop thumbnail cache or the image itself |
-| Columns | `Alt-6` | `Space v c` | a compact multi-column name list |
-| Group by | `Alt-5` | `Space v b` | cycles none → type → date → size, with section headers |
+| List | `Alt-1` | `, v l` | the default |
+| Tree | `Alt-2` | `, v t` | folders expand in place (`→` expands, `←` collapses) |
+| Miller columns | `Alt-3` | `, v m` | parent, current and child side by side |
+| Icons | `Alt-4` | `, v g` | thumbnails, from the freedesktop thumbnail cache or the image itself |
+| Columns | `Alt-6` | `, v c` | a compact multi-column name list |
+| Group by | `Alt-5` | `, v b` | cycles none → type → date → size, with section headers |
 
 ![Icons view](images/icons.png)
 
 Also: `Ctrl-H` shows hidden files, `Ctrl-=` / `Ctrl--` / `Ctrl-0` zoom (or `Ctrl`+scroll, or the status-bar slider),
-`Space v d` cycles row spacing, `Space v a` turns animations off.
+`, v d` cycles row spacing, `, v a` turns animations off.
 
 ## The preview pane
 
@@ -175,7 +175,7 @@ Press `Ctrl-I` (`i`) to toggle it. It previews:
 
 **Video and audio controls.** Buttons for back 10 s, play/pause, forward 10 s, loop and mute, a draggable seek bar, and
 the time. Click the picture to play or pause; hover a paused video to scrub. Hotkeys: `Ctrl-M` play/pause,
-`Ctrl-←` / `Ctrl-→` seek, `Ctrl-Shift-M` mute (Vim: `Space m p`, `m h`, `m l`, `m m`, `m r`). The note under the player
+`Ctrl-←` / `Ctrl-→` seek, `Ctrl-Shift-M` mute (Vim: `, m p`, `m h`, `m l`, `m m`, `m r`). The note under the player
 always shows your current bindings. The header has quick buttons to open the item, copy its path or pin it.
 
 Optional tools improve previews: `ffmpeg` (video, audio), `imagemagick` (converted images, EXIF), `poppler` (PDFs),
@@ -202,7 +202,7 @@ the rest as one operation, and `Ctrl-Z` undoes the whole batch.
 
 ## The command palette
 
-`Ctrl-P` (Vim `Space Space` or `:`) lists every action with its category and current key.
+`Ctrl-P` (Vim `, ,` or `:`) lists every action with its category and current key.
 
 ![Command palette](images/palette.png)
 
@@ -220,33 +220,33 @@ Bindings you make in the palette are saved per keymap to `~/.config/captainfm/ke
 ```json
 {
   "fp":  { "<C-d>": "pin.item", "<A-r>": "file.rename" },
-  "vim": { "x h": "view.hidden", "<Space> q": "" }
+  "vim": { "x h": "view.hidden", ", q": "" }
 }
 ```
 
 Key syntax: plain keys (`j`, `J`), modifiers `<C-x>` (Ctrl), `<A-x>` (Alt), `<S-x>`; named keys `<CR> <Esc> <Tab> <Space>
 <BS> <Del> <Up> <Down> <Left> <Right> <Home> <End> <PageUp> <PageDown> <F1>…`; numpad `<KP-5>`; sequences are
-space-separated (`g g`, `<Space> f f`, `<C-w> v`). An empty value unbinds. Command ids are listed in `qml/Commands.qml`.
+space-separated (`g g`, `, f f`, `<C-w> v`). An empty value unbinds. Command ids are listed in `qml/Commands.qml`.
 
-In Vim keys, pressing `Space`, `g`, `y`, `d`, `z` or `Ctrl-w` and pausing shows a popup of what can follow:
+In Vim keys, pressing `,`, `g`, `y`, `d`, `z` or `Ctrl-w` and pausing shows a popup of what can follow:
 
 ![Which-key](images/leader.png)
 
 ## Devices and remotes
 
 - **Drives** under the sidebar's DRIVES show usage (yellow at 80%, red at 90%).
-- `Space g d` (palette: "Devices and remotes") lists disks and phones; `Enter` mounts and opens. `Space g e` unmounts or
+- `, g d` (palette: "Devices and remotes") lists disks and phones; `Enter` mounts and opens. `, g e` unmounts or
   ejects. Needs `udisks2`.
-- `Space g c` ("Connect to server or cloud drive") lists your saved connections, **New connection…** and **Connect to a URL…**
+- `, g c` ("Connect to server or cloud drive") lists your saved connections, **New connection…** and **Connect to a URL…**
   (`smb://host/share`, `sftp://user@host/`, `ftp://…`, `davs://…`). The form covers SFTP, SMB, FTP, WebDAV and NFS (through `gvfs`)
   and Google Drive, Google Cloud Storage, Dropbox, OneDrive, Box and S3 (through `rclone`). Connected servers and drives show under
-  REMOTE at once; `Space g e` disconnects them; `Ctrl+D` on a saved connection forgets it.
+  REMOTE at once; `, g e` disconnects them; `Ctrl+D` on a saved connection forgets it.
 - **Passwords.** "Save this connection" keeps the host, user and name in `connections.json` (no secrets). "Remember password" is
   off by default; when on, the password goes only into your system keyring (Secret Service through `secret-tool`, e.g.
   gnome-keyring or KWallet) and never into a file. With no keyring it is not saved, and you are told. S3 secret keys travel the
   same way. Google Drive, Dropbox, OneDrive and Box sign in through your browser; rclone keeps the resulting sign-in token in
   `~/.config/captainfm/rclone.conf` (mode 600, not encrypted), and forgetting the connection removes it.
-- Cloud drives need `rclone` and `fuse3` installed. They mount under `~/.local/share/captainfm/mounts/<name>`.
+- Cloud drives need `rclone` and `fuse3` installed. rclone is a separate package, not bundled: https://rclone.org/install/ (Arch: `pacman -S rclone`). They mount under `~/.local/share/captainfm/mounts/<name>`.
 
 ## Themes and look
 
@@ -259,7 +259,7 @@ Look-and-feel switches: zoom, row spacing (compact/normal/roomy), animations on/
 
 ## Settings
 
-Press `Ctrl-,` (`Space ,` in Vim, or *Settings…* in the palette). `↑` `↓` pick a row, `←` `→` or `Enter` change it,
+Press `Ctrl-,` (`, ,` in Vim, or *Settings…* in the palette). `↑` `↓` pick a row, `←` `→` or `Enter` change it,
 `Enter` on a text row edits it, `Esc` closes. Changes apply at once.
 
 | Section | Setting |
@@ -288,6 +288,28 @@ the view, sort and key settings are saved with the session.
   `org.freedesktop.FileManager1`. `captainfm --install-dbus` adds D-Bus activation so it also starts on demand.
 - **Open folders in the running window:** `captainfm --tab <path…>`; open a file's folder with `--select <path>`.
 
+## How full is a remote?
+
+Rest the pointer on a remote or cloud drive in the sidebar (or open it) and it shows a bar, the percent used, and on hover
+how much is free, like a local drive. It is looked up only then, one drive at a time, and kept for a minute, so a long list of
+remotes costs nothing until you look at one. Servers that do not report a size simply show no bar.
+
+## Right-click twice
+
+Anything that is hard to undo takes two right-clicks within 3 seconds. The first only marks the target (it turns red, or
+a toast says what is about to happen); the second does it:
+
+| Right-click twice on | What happens | Toast |
+| --- | --- | --- |
+| a pinned entry | unpins it | "Again to unpin “name”" |
+| a drive in the sidebar | unmounts or ejects it (the system drive is refused) | "Again to unmount “name”" |
+| a remote or cloud drive | disconnects it | "Again to disconnect “name”" |
+| a tab | closes it (never the last one) | "Again to close tab “name”" |
+| a file or folder (or the selection) | moves it to the trash; `Ctrl-Z` undoes | "Right-click again to delete file “name”" |
+
+On a file or folder the first right-click still opens the context menu; the second, on the same item or on the menu, does
+the delete. Waiting 3 seconds cancels it. `Ctrl-D` or `Ctrl-B` twice unpins from the keyboard.
+
 ## Plugins
 
 A plugin is a folder in `~/.config/captainfm/plugins/<name>/` with a `plugin.json`:
@@ -297,7 +319,7 @@ A plugin is a folder in `~/.config/captainfm/plugins/<name>/` with a `plugin.jso
   "name": "Git",
   "panels":  [{ "id": "status", "title": "Git status", "qml": "Status.qml", "side": "right" }],
   "actions": [{ "id": "status", "title": "Refresh status" },
-              { "id": "copy_branch", "title": "Copy branch name", "keys": ["<Space> x b"] }]
+              { "id": "copy_branch", "title": "Copy branch name", "keys": [", x b"] }]
 }
 ```
 
@@ -370,7 +392,7 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | Keys | Action |
 | --- | --- |
 | arrows, `Home` `End` `PgUp` `PgDn` | move · `←`/`Backspace`/`Alt-↑` parent · `→`/`Enter` open · `Alt-←/→` history |
-| `Shift`+arrows · `Space` · `Ctrl-A` | extend selection · toggle mark · select all |
+| `Shift`+arrows · `Insert` · `Ctrl-A` | extend selection · toggle mark · select all |
 | `Ctrl-C` `Ctrl-X` `Ctrl-V` | copy, cut, paste |
 | `Del` · `Shift-Del` | trash · delete permanently |
 | `F2` · `Ctrl-N` · `Ctrl-Shift-N` | rename (batch if several) · new file · new folder |
@@ -394,21 +416,21 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | `j` `k` `h` `l` `gg` `G` `Ctrl-d` `Ctrl-u` | move (counts work: `5j`, `12G`) |
 | `Enter` `o` `H` `L` `-` | open · open externally · history · parent |
 | `z` / `Ctrl-l` | go to |
-| `/` · `Ctrl-f` · `Space f f` · `Space f d` | filter · deep search |
+| `/` · `Ctrl-f` · `, f f` · `, f d` | filter · deep search |
 | `m` `v` `Ctrl-a` | mark · visual · select all |
 | `yy` `dd` `p` · `dt` `dD` · `u` `Ctrl-r` | copy cut paste · trash delete · undo redo |
 | `r` `a` `A` `R` · `yp` `yn` · `!` | rename new-file new-folder batch-rename · copy path/name · terminal |
 | `.` `i` | hidden · preview |
-| `Ctrl-t` `gt` `gT` `q` `Alt-1…9` `Space t t` | tabs |
-| `Tab` `Ctrl-w v/s/c/o` `Space w x` `Space w l` | panes |
+| `Ctrl-t` `gt` `gT` `q` `Alt-1…9` `, t t` | tabs |
+| `Tab` `Ctrl-w v/s/c/o` `, w x` `, w l` | panes |
 | `F5` `F6` | copy / move to other pane |
-| `Space Space` `:` `Ctrl-p` | command palette |
-| `Space p f` `Space p i` | pin folder · pin item |
-| `Space v …` | `t` tree, `m` Miller, `g` icons, `c` columns, `l` list, `b` group, `h` hidden, `i` preview, `s` sidebar, `a` animations, `d` spacing, `+`/`-`/`z` zoom |
-| `Space l s` `Space l l` | save / load layout |
-| `Space g d` `g e` `g c` | devices · eject · connect to server |
-| `Space m p/h/l/m/r` | media play, back, forward, mute, loop |
-| `Space k` · `Ctrl-q` `ZZ` | switch keymap · quit |
+| `, ,` `:` `Ctrl-p` | command palette |
+| `, p f` `, p i` | pin folder · pin item |
+| `, v …` | `t` tree, `m` Miller, `g` icons, `c` columns, `l` list, `b` group, `h` hidden, `i` preview, `s` sidebar, `a` animations, `d` spacing, `+`/`-`/`z` zoom |
+| `, l s` `, l l` | save / load layout |
+| `, g d` `g e` `g c` | devices · eject · connect to server |
+| `, m p/h/l/m/r` | media play, back, forward, mute, loop |
+| `, k` · `Ctrl-q` `ZZ` | switch keymap · quit |
 
 ## Troubleshooting
 

@@ -1,0 +1,48 @@
+# Maintainer: Justin Garza <jgarza9788@gmail.com>
+# Built by scripts/release.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
+pkgname=captainfm
+pkgver=0.0.2
+pkgrel=1
+pkgdesc='Fast, keyboard-first file manager for Omarchy (Qt6/QML, Rust)'
+arch=('x86_64')
+url='https://github.com/jgarza9788/CaptainFM'
+license=('MIT')
+# ttf-font: any font (DejaVu, Noto, Liberation...); a system with none draws every letter as a box.
+depends=('qt6-declarative' 'qt6-multimedia' 'fuse3' 'ttf-font')
+makedepends=('rust' 'cmake')
+options=('!lto')   # makepkg's -flto objects can't be read by rust-lld: undefined cxx-qt bridge symbols at link time
+optdepends=('gvfs: remote servers and phones'
+            'udisks2: drives and USB sticks'
+            'rclone: cloud drives (https://rclone.org/install/)'
+            'ffmpeg: video and audio previews'
+            'imagemagick: more image formats'
+            'poppler: PDF previews'
+            'libarchive: archive previews'
+            'sqlite: database previews'
+            'wl-clipboard: clipboard on Wayland'
+            'libsecret: saved passwords')
+source=("$pkgname-$pkgver-src.tar.gz" 'captainfm.desktop')
+sha256sums=('SKIP' 'SKIP')
+
+build() {
+  cd "$pkgname-$pkgver"
+  export CARGO_TARGET_DIR=target
+  cargo build --profile dist --locked --no-default-features \
+    --features plugin-torrent,plugin-calendar-contacts,plugin-sqlite,plugin-system,plugin-documents
+}
+
+check() {
+  cd "$pkgname-$pkgver"
+  cargo test --profile dist --locked --no-default-features \
+    --features plugin-torrent,plugin-calendar-contacts,plugin-sqlite,plugin-system,plugin-documents
+}
+
+package() {
+  cd "$pkgname-$pkgver"
+  install -Dm755 target/dist/captainfm "$pkgdir/usr/bin/captainfm"
+  ln -s captainfm "$pkgdir/usr/bin/cfm"
+  install -Dm644 "$srcdir/captainfm.desktop" "$pkgdir/usr/share/applications/captainfm.desktop"
+  install -Dm644 packaging/captainfm.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/captainfm.svg"
+  install -Dm644 packaging/captainfm-symbolic.svg "$pkgdir/usr/share/icons/hicolor/symbolic/apps/captainfm-symbolic.svg"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

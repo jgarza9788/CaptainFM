@@ -29,7 +29,7 @@ Then three keys get you most of the way:
 2. **`Ctrl-F`** searches the current folder and everything under it as you type; **`Ctrl-L`** jumps to a folder.
 3. **Arrow keys** move and open, **`Ctrl-C` / `Ctrl-V`** copy and paste, **`Del`** trashes, **`Ctrl-Z`** undoes.
 
-Prefer Vim keys? Press `Ctrl-Shift-K` to switch (`j` `k` `l` `h`, a `Space` leader with a which-key popup).
+Prefer Vim keys? Press `Ctrl-Shift-K` to switch (`j` `k` `l` `h`, a `,` leader with a which-key popup).
 Settings are on `Ctrl-,`. CaptainFM never changes your default file manager unless you ask it to
 (`captainfm --default`, see [Install](#install)). Use `./build.sh` without `--quick` for the smaller, optimised build.
 
@@ -38,7 +38,7 @@ Settings are on `Ctrl-,`. CaptainFM never changes your default file manager unle
 - **Instant everything.** Async folder reads with live refresh, background folder sizes, a drive-wide
   index for fuzzy search (`Ctrl-F`), and a global search box at the top of the sidebar.
 - **Two ways to drive it.** File Pilot style keys by default (Ctrl shortcuts, arrows, type to find), or modal
-  Vim keys with a `Space` leader and a which-key popup. Switch with `Ctrl-Shift-K`.
+  Vim keys with a `,` leader and a which-key popup. Switch with `Ctrl-Shift-K`.
 - **One command palette for everything** (`Ctrl-P`). Words in order or `re:regex`, aliases, inline key
   rebinding, and when no command matches it becomes a go-to for folders.
 - **Real previews.** Syntax-highlighted code, images (including HEIC, TIFF, RAW), video with transport
@@ -47,7 +47,7 @@ Settings are on `Ctrl-,`. CaptainFM never changes your default file manager unle
 - **Tabs, up to four panes, saved layouts**; list, tree, Miller, icons (thumbnails) and columns views;
   group by type, date or size.
 - **Pins, jump bar, batch rename, undo/redo**, devices and remotes (SMB, SFTP, FTP, WebDAV, MTP, and cloud drives through rclone) with saved connections and keyring-stored passwords, drag and drop.
-- **Transfers you can watch.** Copies and moves show progress, speed and time left in a panel, can be paused or cancelled (`Space x p`, `Space x c`, `Space x x` shows the panel), and ask whether to replace, skip or keep both on name clashes.
+- **Transfers you can watch.** Copies and moves show progress, speed and time left in a panel, can be paused or cancelled (`, x p`, `, x c`, `, x x` shows the panel), and ask whether to replace, skip or keep both on name clashes.
 - **Fits Omarchy:** live theme sync, your system font, frameless, sane at half-screen tile width, a
   file-picker portal (Open/Save dialogs of other apps), drag and drop with other apps, and `FileManager1`.
 - **Settings for everything** (`Ctrl-,`): start behavior, keys, view defaults, font, units, drop behavior, terminal.
@@ -67,9 +67,15 @@ Every color comes from the active Omarchy theme:
 
 ## Install
 
+**What is supported.** CaptainFM is made for Arch Linux with Omarchy and Hyprland (Wayland, Qt 6.12), and that is
+what it is tested on. Releases ship an Arch package, a tarball, and an AppImage (best effort: it bundles Qt, but it is
+built on a very new glibc, so it only starts on rolling distros). There are no `.deb`, `.rpm` or Flatpak packages, on
+purpose: each needs a build against that distro's own Qt. On other distros build from source (below). X11, other
+desktops and other CPUs are untested.
+
 Needs Rust, Qt 6 (`qt6-declarative`, `qt6-multimedia`) and a C++ toolchain. Optional helpers unlock more previews
 and features: `ffmpeg`, `imagemagick`, `poppler`, `libarchive` (`bsdtar`), `sqlite`, `openssl`, `wl-clipboard`,
-`gvfs`, `udisks2`, and `rclone` + `libsecret` for cloud drives and remembered passwords.
+`gvfs`, `udisks2`, and `rclone` (a separate package, see https://rclone.org/install/) + `libsecret` for cloud drives and remembered passwords.
 
 ```sh
 git clone https://github.com/jgarza9788/CaptainFM.git
@@ -103,17 +109,17 @@ captainfm --default off    # restore the previous handler
 | Do this | Keys (File Pilot) | Keys (Vim) |
 | --- | --- | --- |
 | Move, open, go up | arrows, `Enter`, `Backspace` | `j` `k` `l` `h` |
-| Run any command | `Ctrl-P` | `Space Space` or `:` |
+| Run any command | `Ctrl-P` | `, ,` or `:` |
 | Go to a folder | `Ctrl-L` | `z` |
-| Search this folder / the drive | `Ctrl-F` / `Ctrl-Shift-F` | `Space f f` / `Space f d` |
+| Search this folder / the drive | `Ctrl-F` / `Ctrl-Shift-F` | `, f f` / `, f d` |
 | Copy, cut, paste | `Ctrl-C` `Ctrl-X` `Ctrl-V` | `yy` `dd` `p` |
 | Rename / batch rename | `F2` | `r` / `R` |
 | Trash / undo | `Del` / `Ctrl-Z` | `dt` / `u` |
-| Pin the current folder | `Ctrl-B` | `Space p f` |
+| Pin the current folder | `Ctrl-B` | `, p f` |
 | New tab, split pane | `Ctrl-T`, `Ctrl-\` | `Ctrl-T`, `Ctrl-w v` |
-| Copy / move to the other pane | `F7` / `F8` | `Space w y` / `Space w m` |
-| Show, pause or cancel transfers | palette: "transfers" | `Space x x` / `Space x p` / `Space x c` |
-| Preview pane, views | `Ctrl-I`, `Alt-1`…`Alt-6` | `Space v i`, `Space v l` … |
+| Copy / move to the other pane | `F7` / `F8` | `, w y` / `, w m` |
+| Show, pause or cancel transfers | palette: "transfers" | `, x x` / `, x p` / `, x c` |
+| Preview pane, views | `Ctrl-I`, `Alt-1`…`Alt-6` | `, v i`, `, v l` … |
 
 Everything else is in the **[how-to guide](docs/HOWTO.md)**: daily use step by step, every view, searching, pins,
 batch rename, devices and remotes, themes, configuration, plugins, full key tables and troubleshooting.
@@ -152,10 +158,11 @@ on the command line when you switch back to it.
 ## Development
 
 ```sh
-cargo test                      # ~160 unit tests: fuzzy matching, listing, index, file ops and undo, transfers, pins, D-Bus, plugins, previews
-cargo clippy --release --all-targets
+./run-tests.sh                  # ~190 unit tests, headless: fuzzy matching, listing, index, file ops and undo, transfers, pins, D-Bus, plugins, previews
+./run-tests.sh trash            # only tests whose name contains "trash"; --ignored adds the known failures, --list lists them
+cargo clippy --release --all-targets -- -D warnings   # ./build.sh runs fmt, clippy and the tests before it builds
 ./scripts/screenshots.sh        # regenerate docs/images from a synthetic home folder (headless)
-python3 scripts/bench.py        # startup, folder listing and drive-index timings of a release build
+python3 scripts/perf.py         # standard performance test (dist build); saves a report to docs/perf/
 ```
 
 The UI can be driven headlessly for screenshots and smoke tests:
@@ -165,8 +172,8 @@ export QT_QPA_PLATFORM=offscreen
 CFM_SIZE=1400x860 CFM_KEYS="<Down> <Down> @view.tree <Right>" CFM_SHOT=/tmp/shot.png captainfm /some/folder
 ```
 
-`CFM_KEYS` is a space-separated list of key tokens (`j`, `<C-d>`, `<Space>`), `@command.id`, `=text` (types into
-the focused field; `_` is a space), `!accept`, `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
+`CFM_KEYS` is a space-separated list of key tokens (`j`, `<C-d>`, `<Insert>`), `@command.id`, `=text` (types into
+the focused field; `_` is a space), `!accept` (also answers yes on a y/n question), `!click:pin:<name>` (clicks a pinned sidebar entry), `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
 a window image and quits, `CFM_DEBUG=1` prints timings, `CFM_KEYMAP=vim|fp` picks the keymap. Point
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` somewhere temporary to keep test runs away from your state.
 

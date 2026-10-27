@@ -113,8 +113,9 @@ Item {
             Text {
                 anchors { left: ic.right; leftMargin: Style.pad / 2; right: parent.right; rightMargin: Style.pad
                           verticalCenter: parent.verticalCenter }
-                text: row.name
-                elide: Text.ElideRight
+                text: Style.oneLine(row.name)
+                textFormat: Text.PlainText
+                elide: Text.ElideMiddle
                 color: row.isDir ? Style.accent : (row.hidden ? Style.fgDim : Style.fgLight)
                 font { family: Style.font; pixelSize: Style.fontSize - 1 }
             }

@@ -37,6 +37,7 @@ pub enum State {
     Running,
     Done,
     Cancelled,
+    Failed,
 }
 
 impl State {
@@ -46,6 +47,7 @@ impl State {
             State::Running => "running",
             State::Done => "done",
             State::Cancelled => "cancelled",
+            State::Failed => "failed",
         }
     }
 }
@@ -68,6 +70,9 @@ pub struct Ctl {
     pause: AtomicBool,
     state: Mutex<State>,
     current: Mutex<String>,
+    /// How many items failed, and the first message, for the panel.
+    errors: AtomicU64,
+    first_error: Mutex<String>,
     speed: Mutex<Speed>,
 }
 
@@ -88,7 +93,13 @@ impl Ctl {
             pause: AtomicBool::new(false),
             state: Mutex::new(State::Queued),
             current: Mutex::new(String::new()),
-            speed: Mutex::new(Speed { at: Instant::now(), bytes: 0, per_sec: 0.0 }),
+            errors: AtomicU64::new(0),
+            first_error: Mutex::new(String::new()),
+            speed: Mutex::new(Speed {
+                at: Instant::now(),
+                bytes: 0,
+                per_sec: 0.0,
+            }),
         }
     }
 
@@ -99,7 +110,12 @@ impl Ctl {
 
     /// Register a queued transfer of `items` top-level items into `dest`.
     pub fn register(label: &str, dest: &str, items: usize) -> Arc<Ctl> {
-        let ctl = Arc::new(Ctl::build(NEXT_ID.fetch_add(1, Ordering::Relaxed), label, dest, items as u64));
+        let ctl = Arc::new(Ctl::build(
+            NEXT_ID.fetch_add(1, Ordering::Relaxed),
+            label,
+            dest,
+            items as u64,
+        ));
         let mut reg = REGISTRY.lock().unwrap();
         // Finished jobs stay listed for a while, but not forever.
         let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
@@ -113,6 +129,12 @@ impl Ctl {
         });
         reg.push(ctl.clone());
         ctl
+    }
+
+    /// Record how many items failed and the first reason.
+    pub fn set_errors(&self, count: usize, first: &str) {
+        self.errors.store(count as u64, Ordering::Relaxed);
+        *self.first_error.lock().unwrap() = first.to_owned();
     }
 
     pub fn state(&self) -> State {
@@ -140,7 +162,11 @@ impl Ctl {
         while self.pause.load(Ordering::Relaxed) && !self.cancelled() {
             std::thread::sleep(Duration::from_millis(80));
         }
-        if self.cancelled() { Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled")) } else { Ok(()) }
+        if self.cancelled() {
+            Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"))
+        } else {
+            Ok(())
+        }
     }
 
     fn snapshot(&self) -> serde_json::Value {
@@ -157,7 +183,11 @@ impl Ctl {
                 s.bytes = done;
             } else if dt >= 0.4 {
                 let inst = done.saturating_sub(s.bytes) as f64 / dt;
-                s.per_sec = if s.per_sec == 0.0 { inst } else { s.per_sec * 0.6 + inst * 0.4 };
+                s.per_sec = if s.per_sec == 0.0 {
+                    inst
+                } else {
+                    s.per_sec * 0.6 + inst * 0.4
+                };
                 s.at = Instant::now();
                 s.bytes = done;
             }
@@ -172,7 +202,11 @@ impl Ctl {
         } else {
             0.0
         };
-        let eta = if per_sec > 1.0 && total > done { ((total - done) as f64 / per_sec).ceil() as i64 } else { -1 };
+        let eta = if per_sec > 1.0 && total > done {
+            ((total - done) as f64 / per_sec).ceil() as i64
+        } else {
+            -1
+        };
         json!({
             "id": self.id,
             "label": self.label,
@@ -187,6 +221,8 @@ impl Ctl {
             "fraction": if state == State::Done { 1.0 } else { fraction },
             "speed": per_sec,
             "eta": eta,
+            "errors": self.errors.load(Ordering::Relaxed),
+            "error": *self.first_error.lock().unwrap(),
         })
     }
 }
@@ -204,7 +240,12 @@ pub fn snapshot() -> String {
 }
 
 fn find(id: i32) -> Option<Arc<Ctl>> {
-    REGISTRY.lock().unwrap().iter().find(|c| c.id == id).cloned()
+    REGISTRY
+        .lock()
+        .unwrap()
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
 }
 
 pub fn cancel(id: i32) {
@@ -243,18 +284,136 @@ mod tests {
             std::thread::sleep(Duration::from_millis(150));
             cancel(id);
         });
-        assert_eq!(c.checkpoint().unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(
+            c.checkpoint().unwrap_err().kind(),
+            io::ErrorKind::Interrupted
+        );
         t.join().unwrap();
+    }
+
+    fn entry_of(c: &Ctl) -> serde_json::Value {
+        let v: serde_json::Value = serde_json::from_str(&snapshot()).unwrap();
+        v.as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == c.id)
+            .cloned()
+            .unwrap()
+    }
+
+    #[test]
+    fn pause_holds_the_copy_until_resumed() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        pause(c.id, true);
+        let worker = {
+            let c = c.clone();
+            std::thread::spawn(move || c.checkpoint())
+        };
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(!worker.is_finished(), "a paused copy must wait");
+        pause(c.id, false);
+        assert!(worker.join().unwrap().is_ok(), "resuming is not cancelling");
+    }
+
+    #[test]
+    fn a_paused_job_shows_no_speed_or_time_left() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        c.set_state(State::Running);
+        c.bytes_total.store(1000, Ordering::Relaxed);
+        c.add_bytes(100);
+        pause(c.id, true);
+        let e = entry_of(&c);
+        assert_eq!(
+            (
+                e["paused"].as_bool(),
+                e["speed"].as_f64(),
+                e["eta"].as_i64()
+            ),
+            (Some(true), Some(0.0), Some(-1))
+        );
+        cancel(c.id);
+    }
+
+    #[test]
+    fn progress_counts_items_when_sizes_are_unknown() {
+        let _sb = crate::testutil::Sandbox::new("transfer-items");
+        let c = Ctl::register("Moved", "/tmp", 4);
+        c.set_state(State::Running);
+        c.items_done.store(1, Ordering::Relaxed);
+        assert_eq!(entry_of(&c)["fraction"], 0.25);
+        // A finished job is full, whatever the counters say.
+        c.set_state(State::Done);
+        assert_eq!(entry_of(&c)["fraction"], 1.0);
+    }
+
+    #[test]
+    fn a_job_with_failures_reports_them() {
+        let c = Ctl::register("Copied", "/tmp", 2);
+        c.set_errors(2, "A: cannot copy a folder into itself");
+        c.set_state(State::Failed);
+        let e = entry_of(&c);
+        assert_eq!(e["state"], "failed");
+        assert_eq!(e["errors"], 2);
+        assert_eq!(e["error"], "A: cannot copy a folder into itself");
+        // Failed counts as finished, like done and cancelled.
+        assert!(State::Failed >= State::Done);
+        assert!(c.state() >= State::Done);
+    }
+
+    #[test]
+    fn conflict_answers_parse_and_default_to_keep_both() {
+        assert_eq!(Policy::parse("replace"), Policy::Replace);
+        assert_eq!(Policy::parse("skip"), Policy::Skip);
+        assert_eq!(Policy::parse("both"), Policy::Both);
+        assert_eq!(
+            Policy::parse(""),
+            Policy::Both,
+            "an unknown answer must never replace"
+        );
+    }
+
+    #[test]
+    fn only_the_last_finished_jobs_stay_listed() {
+        // Other tests that finish jobs hold the sandbox lock, so the count is not raced.
+        let _sb = crate::testutil::Sandbox::new("transfer-trim");
+        let jobs: Vec<_> = (0..12)
+            .map(|_| Ctl::register("Copied", "/tmp", 1))
+            .collect();
+        for j in &jobs {
+            j.set_state(State::Done);
+        }
+        let running = Ctl::register("Copied", "/tmp", 1);
+        let reg = REGISTRY.lock().unwrap();
+        let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
+        assert!(finished <= 8, "{finished} finished jobs kept");
+        assert!(
+            reg.iter().any(|c| c.id == running.id),
+            "the new job is listed"
+        );
+        assert!(
+            reg.iter().any(|c| c.id == jobs[11].id),
+            "the newest finished job is kept"
+        );
+        assert!(
+            !reg.iter().any(|c| c.id == jobs[0].id),
+            "the oldest is dropped"
+        );
     }
 
     #[test]
     fn snapshot_reports_progress() {
+        let _sb = crate::testutil::Sandbox::new("transfer-progress");
         let c = Ctl::register("Moved", "/tmp", 2);
         c.set_state(State::Running);
         c.bytes_total.store(200, Ordering::Relaxed);
         c.add_bytes(50);
         let v: serde_json::Value = serde_json::from_str(&snapshot()).unwrap();
-        let mine = v.as_array().unwrap().iter().find(|e| e["id"] == c.id).unwrap();
+        let mine = v
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|e| e["id"] == c.id)
+            .unwrap();
         assert_eq!(mine["state"], "running");
         assert_eq!(mine["fraction"], 0.25);
         c.set_state(State::Done);

@@ -20,7 +20,10 @@ pub struct Meta {
 }
 
 impl Meta {
-    pub const UNKNOWN: Meta = Meta { size: UNKNOWN, mtime: UNKNOWN };
+    pub const UNKNOWN: Meta = Meta {
+        size: UNKNOWN,
+        mtime: UNKNOWN,
+    };
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +80,11 @@ pub fn list_dir(dir: &str) -> Vec<Entry> {
         out.push(Entry {
             path,
             hidden: name.starts_with('.'),
-            lname: if name.is_ascii() { name.to_ascii_lowercase() } else { name.to_lowercase() },
+            lname: if name.is_ascii() {
+                name.to_ascii_lowercase()
+            } else {
+                name.to_lowercase()
+            },
             name,
             rel: String::new(),
             is_dir,
@@ -91,7 +98,12 @@ pub fn list_dir(dir: &str) -> Vec<Entry> {
 /// A folder listing with the given folders expanded in place (tree view). Entries come back in
 /// read order with `depth` set; [`tree_order`] arranges them.
 pub fn list_tree(root: &str, expanded: &std::collections::HashSet<String>) -> Vec<Entry> {
-    fn walk(dir: &str, depth: u16, expanded: &std::collections::HashSet<String>, out: &mut Vec<Entry>) {
+    fn walk(
+        dir: &str,
+        depth: u16,
+        expanded: &std::collections::HashSet<String>,
+        out: &mut Vec<Entry>,
+    ) {
         let mut entries = list_dir(dir);
         for e in &mut entries {
             e.depth = depth;
@@ -133,7 +145,11 @@ pub fn tree_order(
     for group in children.values_mut() {
         sort_indices(all, meta, group, key, desc);
     }
-    let root = if root.len() > 1 { root.trim_end_matches('/') } else { "" };
+    let root = if root.len() > 1 {
+        root.trim_end_matches('/')
+    } else {
+        ""
+    };
     let mut out = Vec::with_capacity(all.len());
     // Explicit stack of (children list, next position) so deep trees can't overflow the call stack.
     let mut stack: Vec<(&[u32], usize)> = Vec::new();
@@ -157,25 +173,182 @@ pub fn tree_order(
 /// `(size, mtime)` of a path without following symlinks. Directories report size `UNKNOWN`.
 pub fn stat(path: &str) -> (i64, i64) {
     match fs::symlink_metadata(path) {
-        Ok(m) => (
-            if m.is_dir() { UNKNOWN } else { m.len() as i64 },
-            m.mtime(),
-        ),
+        Ok(m) => (if m.is_dir() { UNKNOWN } else { m.len() as i64 }, m.mtime()),
         Err(_) => (UNKNOWN, UNKNOWN),
     }
+}
+
+// ---- remote folders -----------------------------------------------------------------------
+
+/// A mount whose lookups go over the network (or to a phone): every stat may wait on a server.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RemoteMount {
+    pub point: String,
+    /// What was mounted: `user@host:/srv` (sshfs), `//nas/share` (cifs), `gdrive:` (rclone)...
+    pub source: String,
+}
+
+fn remote_fstype(fstype: &str) -> bool {
+    matches!(
+        fstype,
+        "fuse.gvfsd-fuse" | "fuse.rclone" | "fuse.sshfs" | "cifs" | "smb3" | "9p"
+    ) || fstype.starts_with("nfs")
+}
+
+/// mountinfo escapes spaces and a few other bytes as `\040`-style octal.
+fn unescape_mount(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'\\'
+            && i + 3 < b.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 4], 8)
+        {
+            out.push(v);
+            i += 4;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Remote mounts in a `/proc/self/mountinfo` table.
+pub fn parse_remote_mounts(mountinfo: &str) -> Vec<RemoteMount> {
+    mountinfo
+        .lines()
+        .filter_map(|line| {
+            let (left, right) = line.split_once(" - ")?;
+            let point = left.split(' ').nth(4)?;
+            let mut rest = right.split(' ');
+            let fstype = rest.next()?;
+            let source = rest.next().unwrap_or("");
+            remote_fstype(fstype).then(|| RemoteMount {
+                point: unescape_mount(point),
+                source: unescape_mount(source),
+            })
+        })
+        .collect()
+}
+
+/// The top of the remote `path` lives on, from `mounts` and the gvfs folder: for gvfs that is the
+/// share's own folder (`…/gvfs/sftp:host=nas`), not the gvfs folder holding every share.
+pub fn remote_root_in(path: &str, mounts: &[RemoteMount], gvfs: &str) -> Option<String> {
+    let under = |root: &str| {
+        let root = root.trim_end_matches('/');
+        path == root || path.strip_prefix(root).is_some_and(|r| r.starts_with('/'))
+    };
+    let gvfs = gvfs.trim_end_matches('/');
+    if !gvfs.is_empty() && under(gvfs) {
+        return Some(
+            match path[gvfs.len()..].trim_start_matches('/').split('/').next() {
+                Some(entry) if !entry.is_empty() => format!("{gvfs}/{entry}"),
+                _ => gvfs.to_owned(),
+            },
+        );
+    }
+    mounts
+        .iter()
+        .filter(|m| under(&m.point))
+        .max_by_key(|m| m.point.len())
+        .map(|m| m.point.clone())
+}
+
+/// The server a remote mount talks to, for "Waiting for <server>…".
+pub fn remote_server(root: &str, mounts: &[RemoteMount]) -> String {
+    let base = root.rsplit('/').next().unwrap_or(root);
+    // gvfs: `smb-share:server=nas,share=media`, `sftp:host=nas,user=bob`.
+    if let Some((_, params)) = base.split_once(':')
+        && let Some(host) = params.split(',').find_map(|kv| {
+            kv.strip_prefix("host=")
+                .or_else(|| kv.strip_prefix("server="))
+        })
+    {
+        return host.to_owned();
+    }
+    let source = mounts
+        .iter()
+        .find(|m| m.point == root)
+        .map_or("", |m| m.source.as_str());
+    let host = if let Some(s) = source.strip_prefix("//") {
+        s.split('/').next().unwrap_or("")
+    } else if let Some((left, _)) = source.split_once(':') {
+        left.rsplit('@').next().unwrap_or(left)
+    } else {
+        ""
+    };
+    if host.is_empty() {
+        base.to_owned()
+    } else {
+        host.to_owned()
+    }
+}
+
+type MountCache = Option<(Instant, std::sync::Arc<Vec<RemoteMount>>)>;
+static REMOTE_MOUNTS: Mutex<MountCache> = Mutex::new(None);
+
+/// Remote mounts right now; the table is read again at most every 2 s.
+fn remote_mounts() -> std::sync::Arc<Vec<RemoteMount>> {
+    let mut cache = REMOTE_MOUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((at, mounts)) = cache.as_ref()
+        && at.elapsed() < Duration::from_secs(2)
+    {
+        return mounts.clone();
+    }
+    let text = fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    let mounts = std::sync::Arc::new(parse_remote_mounts(&text));
+    *cache = Some((Instant::now(), mounts.clone()));
+    mounts
+}
+
+fn gvfs_dir_str() -> String {
+    crate::devices::gvfs_dir().to_string_lossy().into_owned()
+}
+
+/// Whether reading a folder failed because its mount is gone: the FUSE process behind it (rclone, sshfs,
+/// gvfsd-fuse) exited ("Transport endpoint is not connected"), or an NFS handle went stale.
+pub fn connection_lost(err: &std::io::Error) -> bool {
+    matches!(
+        err.raw_os_error(),
+        Some(libc::ENOTCONN) | Some(libc::ESTALE)
+    )
+}
+
+/// Top of the remote mount `path` is on, or `None` for a local path. Never touches `path` itself.
+pub fn remote_root(path: &str) -> Option<String> {
+    remote_root_in(path, &remote_mounts(), &gvfs_dir_str())
+}
+
+pub fn is_remote(path: &str) -> bool {
+    remote_root(path).is_some()
+}
+
+/// Server name for a remote `path` ("" when local).
+pub fn remote_label(path: &str) -> String {
+    let mounts = remote_mounts();
+    remote_root_in(path, &mounts, &gvfs_dir_str())
+        .map_or_else(String::new, |root| remote_server(&root, &mounts))
 }
 
 /// Recursive size on disk of everything under `path`; `cancel` aborts early.
 pub fn dir_size(path: &str, cancel: &dyn Fn() -> bool) -> i64 {
     let mut total = 0u64;
-    for (i, e) in WalkDir::new(path).follow_links(false).into_iter().flatten().enumerate() {
+    for (i, e) in WalkDir::new(path)
+        .follow_links(false)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
         if i % 512 == 0 && cancel() {
             break;
         }
         if e.file_type().is_file()
-            && let Ok(m) = e.metadata() {
-                total += m.len();
-            }
+            && let Ok(m) = e.metadata()
+        {
+            total += m.len();
+        }
     }
     total as i64
 }
@@ -278,13 +451,18 @@ pub fn group_of(e: &Entry, m: Meta, group_by: &str, now: i64) -> (u8, &'static s
             }
             let ext = e.lname.rsplit_once('.').map_or("", |x| x.1);
             match ext {
-                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif" | "tif" | "tiff" => (1, "Images"),
+                "png" | "jpg" | "jpeg" | "gif" | "webp" | "svg" | "bmp" | "ico" | "avif"
+                | "tif" | "tiff" => (1, "Images"),
                 "mp4" | "mkv" | "webm" | "mov" | "avi" | "m4v" => (2, "Video"),
                 "mp3" | "flac" | "ogg" | "opus" | "wav" | "m4a" | "aac" => (3, "Audio"),
-                "pdf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ppt" | "pptx" | "md" | "txt" | "epub" | "csv" => (4, "Documents"),
-                "zip" | "tar" | "gz" | "xz" | "zst" | "7z" | "rar" | "bz2" | "iso" => (5, "Archives"),
-                "rs" | "py" | "js" | "ts" | "c" | "h" | "cpp" | "hpp" | "go" | "lua" | "sh" | "java" | "rb" | "qml" | "html" | "css"
-                | "json" | "toml" | "yml" | "yaml" | "nix" => (6, "Code and config"),
+                "pdf" | "doc" | "docx" | "odt" | "xls" | "xlsx" | "ppt" | "pptx" | "md" | "txt"
+                | "epub" | "csv" => (4, "Documents"),
+                "zip" | "tar" | "gz" | "xz" | "zst" | "7z" | "rar" | "bz2" | "iso" => {
+                    (5, "Archives")
+                }
+                "rs" | "py" | "js" | "ts" | "c" | "h" | "cpp" | "hpp" | "go" | "lua" | "sh"
+                | "java" | "rb" | "qml" | "html" | "css" | "json" | "toml" | "yml" | "yaml"
+                | "nix" => (6, "Code and config"),
                 _ => (7, "Other"),
             }
         }
@@ -356,11 +534,25 @@ pub fn sort_entries(entries: &mut Vec<Entry>, key: &str, desc: bool) {
     let meta = vec![Meta::UNKNOWN; entries.len()];
     sort_indices(entries, &meta, &mut idx, key, desc);
     let mut taken: Vec<Option<Entry>> = std::mem::take(entries).into_iter().map(Some).collect();
-    *entries = idx.into_iter().filter_map(|i| taken[i as usize].take()).collect();
+    *entries = idx
+        .into_iter()
+        .filter_map(|i| taken[i as usize].take())
+        .collect();
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_dead_mount_is_told_apart_from_other_errors() {
+        use super::connection_lost;
+        use std::io::Error;
+        assert!(connection_lost(&Error::from_raw_os_error(libc::ENOTCONN)));
+        assert!(connection_lost(&Error::from_raw_os_error(libc::ESTALE)));
+        assert!(!connection_lost(&Error::from_raw_os_error(libc::ENOENT)));
+        assert!(!connection_lost(&Error::from_raw_os_error(libc::EACCES)));
+        assert!(!connection_lost(&Error::other("no os error")));
+    }
     use super::*;
 
     #[test]
@@ -385,10 +577,19 @@ mod tests {
                 depth: path.matches('/').count() as u16 - 2,
             }
         };
-        let all = vec![mk("/r/b.txt", false), mk("/r/a", true), mk("/r/a/z", false), mk("/r/a/y", false), mk("/r/c", true)];
+        let all = vec![
+            mk("/r/b.txt", false),
+            mk("/r/a", true),
+            mk("/r/a/z", false),
+            mk("/r/a/y", false),
+            mk("/r/c", true),
+        ];
         let meta = vec![Meta::UNKNOWN; all.len()];
         let order = tree_order(&all, &meta, "/r", &|_, _| true, "name", false);
-        let paths: Vec<_> = order.iter().map(|&i| all[i as usize].path.as_str()).collect();
+        let paths: Vec<_> = order
+            .iter()
+            .map(|&i| all[i as usize].path.as_str())
+            .collect();
         assert_eq!(paths, ["/r/a", "/r/a/y", "/r/a/z", "/r/c", "/r/b.txt"]);
     }
 
@@ -408,9 +609,15 @@ mod tests {
         let unk = Meta::UNKNOWN;
         assert_eq!(group_of(&mk("d", true), unk, "type", now), (0, "Folders"));
         assert_eq!(group_of(&mk("a.PNG", false), unk, "type", now).1, "Images");
-        assert_eq!(group_of(&mk("main.rs", false), unk, "type", now).1, "Code and config");
+        assert_eq!(
+            group_of(&mk("main.rs", false), unk, "type", now).1,
+            "Code and config"
+        );
         assert_eq!(group_of(&mk("blob", false), unk, "type", now).1, "Other");
-        let at = |ago| Meta { size: 0, mtime: now - ago };
+        let at = |ago| Meta {
+            size: 0,
+            mtime: now - ago,
+        };
         let f = mk("f", false);
         assert_eq!(group_of(&f, at(60), "date", now).1, "Today");
         assert_eq!(group_of(&f, at(100_000), "date", now).1, "Yesterday");
@@ -420,8 +627,14 @@ mod tests {
         let sz = |size| Meta { size, mtime: 0 };
         assert_eq!(group_of(&f, sz(0), "size", now).1, "Empty");
         assert_eq!(group_of(&f, sz(5_000), "size", now).1, "Tiny (under 10K)");
-        assert_eq!(group_of(&f, sz(5_000_000), "size", now).1, "Medium (under 100M)");
-        assert_eq!(group_of(&f, sz(2_000_000_000), "size", now).1, "Huge (1G and up)");
+        assert_eq!(
+            group_of(&f, sz(5_000_000), "size", now).1,
+            "Medium (under 100M)"
+        );
+        assert_eq!(
+            group_of(&f, sz(2_000_000_000), "size", now).1,
+            "Huge (1G and up)"
+        );
         assert_eq!(group_of(&f, sz(1), "none", now), (0, ""));
         // Ranks put earlier groups first.
         assert!(group_of(&f, at(60), "date", now).0 < group_of(&f, at(40_000_000), "date", now).0);
@@ -444,6 +657,74 @@ mod tests {
         let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["z", "a", "b"]);
     }
+
+    const MOUNTINFO: &str = "\
+22 1 259:2 / / rw,relatime shared:1 - btrfs /dev/nvme0n1p2 rw
+30 22 0:26 / /home rw,relatime shared:2 - btrfs /dev/nvme0n1p2 rw
+40 22 0:40 / /run/user/1000/gvfs rw,nosuid,nodev shared:3 - fuse.gvfsd-fuse gvfsd-fuse rw,user_id=1000
+41 30 0:41 / /home/me/nas rw shared:4 - cifs //nas.local/media rw,vers=3.1.1
+42 30 0:42 / /home/me/My\\040Drive rw shared:5 - fuse.rclone gdrive: rw
+43 30 0:43 / /home/me/box rw shared:6 - fuse.sshfs bob@host.example:/srv rw
+44 22 0:44 / /mnt/nfs rw shared:7 - nfs4 fileserver:/export rw
+45 22 0:45 / /mnt/usb rw shared:8 - vfat /dev/sdb1 rw
+";
+
+    #[test]
+    fn remote_mounts_come_from_the_mount_table() {
+        let mounts = parse_remote_mounts(MOUNTINFO);
+        let points: Vec<&str> = mounts.iter().map(|m| m.point.as_str()).collect();
+        assert_eq!(
+            points,
+            [
+                "/run/user/1000/gvfs",
+                "/home/me/nas",
+                "/home/me/My Drive",
+                "/home/me/box",
+                "/mnt/nfs"
+            ]
+        );
+        assert!(parse_remote_mounts("garbage\n\n").is_empty());
+    }
+
+    #[test]
+    fn remote_roots_and_servers() {
+        let mounts = parse_remote_mounts(MOUNTINFO);
+        let gvfs = "/run/user/1000/gvfs";
+        let root = |p: &str| remote_root_in(p, &mounts, gvfs);
+        assert_eq!(root("/home/me/docs"), None);
+        assert_eq!(root("/mnt/usb/x"), None);
+        // A sibling whose name only starts like the mount point is local.
+        assert_eq!(root("/home/me/nasty"), None);
+        assert_eq!(
+            root("/home/me/nas/films/a.mkv").as_deref(),
+            Some("/home/me/nas")
+        );
+        assert_eq!(
+            root("/home/me/My Drive").as_deref(),
+            Some("/home/me/My Drive")
+        );
+        assert_eq!(
+            root("/run/user/1000/gvfs/sftp:host=nas,user=bob/srv").as_deref(),
+            Some("/run/user/1000/gvfs/sftp:host=nas,user=bob")
+        );
+        assert_eq!(root("/run/user/1000/gvfs").as_deref(), Some(gvfs));
+        // The gvfs folder counts even before its mount shows up in the table.
+        assert_eq!(
+            remote_root_in("/g/smb-share:server=x,share=y/a", &[], "/g").as_deref(),
+            Some("/g/smb-share:server=x,share=y")
+        );
+
+        let server = |r: &str| remote_server(r, &mounts);
+        assert_eq!(server("/run/user/1000/gvfs/sftp:host=nas,user=bob"), "nas");
+        assert_eq!(
+            server("/run/user/1000/gvfs/smb-share:server=nas2,share=m"),
+            "nas2"
+        );
+        assert_eq!(server("/home/me/nas"), "nas.local");
+        assert_eq!(server("/home/me/box"), "host.example");
+        assert_eq!(server("/mnt/nfs"), "fileserver");
+        assert_eq!(server("/home/me/My Drive"), "gdrive");
+    }
 }
 
 #[cfg(test)]
@@ -461,7 +742,12 @@ mod fs_tests {
         std::os::unix::fs::symlink(sb.path("sub"), sb.path("to-sub")).unwrap();
         std::os::unix::fs::symlink(sb.path("file.txt"), sb.path("to-file")).unwrap();
         let entries = list_dir(&sb.root.to_string_lossy());
-        let by = |n: &str| entries.iter().find(|e| e.name == n).unwrap_or_else(|| panic!("no {n}"));
+        let by = |n: &str| {
+            entries
+                .iter()
+                .find(|e| e.name == n)
+                .unwrap_or_else(|| panic!("no {n}"))
+        };
         assert!(by("sub").is_dir && !by("sub").is_link);
         assert!(!by("file.txt").is_dir);
         assert!(by(".dot").hidden && !by("file.txt").hidden);
@@ -507,7 +793,12 @@ mod fs_tests {
             dirs.push((i, sb.path(&format!("d{i}"))));
         }
         let got = std::sync::Mutex::new(Vec::new());
-        dir_sizes_parallel(dirs, Duration::from_millis(1), || false, |batch| got.lock().unwrap().extend(batch));
+        dir_sizes_parallel(
+            dirs,
+            Duration::from_millis(1),
+            || false,
+            |batch| got.lock().unwrap().extend(batch),
+        );
         let mut got = got.into_inner().unwrap();
         got.sort();
         assert_eq!(got, (0..8).map(|i| (i, i as i64 + 1)).collect::<Vec<_>>());
@@ -525,7 +816,11 @@ mod fs_tests {
         assert!(names.contains(&("a", 0)) && names.contains(&("b", 0)));
         assert!(names.contains(&("inner", 1)) && names.contains(&("top.txt", 1)));
         // `inner` was not expanded and `b` neither.
-        assert!(!names.iter().any(|(n, _)| *n == "deep.txt" || *n == "other.txt"));
+        assert!(
+            !names
+                .iter()
+                .any(|(n, _)| *n == "deep.txt" || *n == "other.txt")
+        );
     }
 
     #[test]
@@ -541,11 +836,17 @@ mod fs_tests {
             depth: 0,
         };
         let all = vec![mk("b.txt"), mk("a.rs"), mk("c.md")];
-        let meta = vec![Meta { size: 30, mtime: 1 }, Meta { size: 10, mtime: 3 }, Meta { size: 20, mtime: 2 }];
+        let meta = vec![
+            Meta { size: 30, mtime: 1 },
+            Meta { size: 10, mtime: 3 },
+            Meta { size: 20, mtime: 2 },
+        ];
         let order = |key: &str, desc: bool| {
             let mut idx: Vec<u32> = (0..3).collect();
             sort_indices(&all, &meta, &mut idx, key, desc);
-            idx.into_iter().map(|i| all[i as usize].name.clone()).collect::<Vec<_>>()
+            idx.into_iter()
+                .map(|i| all[i as usize].name.clone())
+                .collect::<Vec<_>>()
         };
         assert_eq!(order("size", false), ["a.rs", "c.md", "b.txt"]);
         assert_eq!(order("size", true), ["b.txt", "c.md", "a.rs"]);

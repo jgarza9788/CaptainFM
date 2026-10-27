@@ -75,38 +75,57 @@ struct Manifest {
 }
 
 /// Plugins that ship inside the app: id, `plugin.json`, then their scripts.
-type Bundled = (&'static str, &'static str, &'static [(&'static str, &'static str)]);
+type Bundled = (
+    &'static str,
+    &'static str,
+    &'static [(&'static str, &'static str)],
+);
 
 const BUNDLED: &[Bundled] = &[
     #[cfg(feature = "plugin-torrent")]
     (
         "preview-torrent",
         include_str!("../packaging/plugins/preview-torrent/plugin.json"),
-        &[("main.lua", include_str!("../packaging/plugins/preview-torrent/main.lua"))],
+        &[(
+            "main.lua",
+            include_str!("../packaging/plugins/preview-torrent/main.lua"),
+        )],
     ),
     #[cfg(feature = "plugin-calendar-contacts")]
     (
         "preview-calendar-contacts",
         include_str!("../packaging/plugins/preview-calendar-contacts/plugin.json"),
-        &[("main.lua", include_str!("../packaging/plugins/preview-calendar-contacts/main.lua"))],
+        &[(
+            "main.lua",
+            include_str!("../packaging/plugins/preview-calendar-contacts/main.lua"),
+        )],
     ),
     #[cfg(feature = "plugin-sqlite")]
     (
         "preview-sqlite",
         include_str!("../packaging/plugins/preview-sqlite/plugin.json"),
-        &[("main.lua", include_str!("../packaging/plugins/preview-sqlite/main.lua"))],
+        &[(
+            "main.lua",
+            include_str!("../packaging/plugins/preview-sqlite/main.lua"),
+        )],
     ),
     #[cfg(feature = "plugin-system")]
     (
         "preview-system",
         include_str!("../packaging/plugins/preview-system/plugin.json"),
-        &[("main.lua", include_str!("../packaging/plugins/preview-system/main.lua"))],
+        &[(
+            "main.lua",
+            include_str!("../packaging/plugins/preview-system/main.lua"),
+        )],
     ),
     #[cfg(feature = "plugin-documents")]
     (
         "preview-documents",
         include_str!("../packaging/plugins/preview-documents/plugin.json"),
-        &[("main.lua", include_str!("../packaging/plugins/preview-documents/main.lua"))],
+        &[(
+            "main.lua",
+            include_str!("../packaging/plugins/preview-documents/main.lua"),
+        )],
     ),
 ];
 
@@ -122,7 +141,9 @@ struct Plugin {
 impl Plugin {
     fn script(&self, file: &str) -> Result<String, String> {
         match &self.dir {
-            Some(dir) => std::fs::read_to_string(dir.join(file)).map_err(|e| format!("{file}: {e}")),
+            Some(dir) => {
+                std::fs::read_to_string(dir.join(file)).map_err(|e| format!("{file}: {e}"))
+            }
             None => BUNDLED
                 .iter()
                 .find(|b| b.0 == self.id)
@@ -149,10 +170,13 @@ pub fn set_enabled(name: &str, on: bool) -> Result<String, String> {
     let targets: Vec<String> = if name == "all" {
         known.clone()
     } else {
-        let id = [name.to_owned(), format!("preview-{name}")].into_iter().find(|c| known.contains(c));
+        let id = [name.to_owned(), format!("preview-{name}")]
+            .into_iter()
+            .find(|c| known.contains(c));
         vec![id.ok_or_else(|| format!("no plugin “{name}” (have: {})", known.join(", ")))?]
     };
-    let mut settings: Value = serde_json::from_str(&crate::state::read_config("settings")).unwrap_or_else(|_| json!({}));
+    let mut settings: Value =
+        serde_json::from_str(&crate::state::read_config("settings")).unwrap_or_else(|_| json!({}));
     let mut off = disabled_plugins();
     off.retain(|id| !targets.contains(id));
     if !on {
@@ -168,7 +192,11 @@ pub fn set_enabled(name: &str, on: bool) -> Result<String, String> {
     if !crate::state::write_config("settings", &settings.to_string()) {
         return Err("could not write settings.json".into());
     }
-    Ok(format!("{} {}", targets.join(", "), if on { "on" } else { "off" }))
+    Ok(format!(
+        "{} {}",
+        targets.join(", "),
+        if on { "on" } else { "off" }
+    ))
 }
 
 /// One line per plugin for `captainfm --plugins`.
@@ -179,13 +207,22 @@ pub fn describe() -> String {
     all_plugins()
         .iter()
         .map(|p| {
-            let what: Vec<String> = p.manifest.previews.iter().flat_map(|s| s.ext.clone()).collect();
+            let what: Vec<String> = p
+                .manifest
+                .previews
+                .iter()
+                .flat_map(|s| s.ext.clone())
+                .collect();
             format!(
                 "{:<28} {:<4} {}{}",
                 p.id,
                 if p.enabled { "on" } else { "off" },
                 if p.dir.is_none() { "built in" } else { "yours" },
-                if what.is_empty() { String::new() } else { format!(" · previews {}", what.join(", ")) }
+                if what.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · previews {}", what.join(", "))
+                }
             )
         })
         .collect::<Vec<_>>()
@@ -197,21 +234,38 @@ fn all_plugins() -> Vec<Plugin> {
     let off = disabled_plugins();
     let mut out: Vec<Plugin> = Vec::new();
     let mut dirs: Vec<PathBuf> = std::fs::read_dir(plugins_dir())
-        .map(|rd| rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect())
+        .map(|rd| {
+            rd.flatten()
+                .map(|e| e.path())
+                .filter(|p| p.is_dir())
+                .collect()
+        })
         .unwrap_or_default();
     dirs.sort();
     for dir in dirs {
-        let Some(manifest) = read_manifest(&dir) else { continue };
+        let Some(manifest) = read_manifest(&dir) else {
+            continue;
+        };
         let id = dir.file_name().unwrap().to_string_lossy().into_owned();
         let enabled = !off.contains(&id);
-        out.push(Plugin { id, dir: Some(dir), manifest, enabled });
+        out.push(Plugin {
+            id,
+            dir: Some(dir),
+            manifest,
+            enabled,
+        });
     }
     for (id, json, _) in BUNDLED {
         if out.iter().any(|p| p.id == *id) {
             continue;
         }
         if let Ok(manifest) = serde_json::from_str::<Manifest>(json) {
-            out.push(Plugin { id: (*id).to_owned(), dir: None, manifest, enabled: !off.contains(&(*id).to_owned()) });
+            out.push(Plugin {
+                id: (*id).to_owned(),
+                dir: None,
+                manifest,
+                enabled: !off.contains(&(*id).to_owned()),
+            });
         }
     }
     out
@@ -230,7 +284,12 @@ fn read_manifest(dir: &Path) -> Option<Manifest> {
 pub fn list() -> Value {
     let mut out = Vec::new();
     for plugin in all_plugins() {
-        let Plugin { id, dir, manifest, enabled } = plugin;
+        let Plugin {
+            id,
+            dir,
+            manifest,
+            enabled,
+        } = plugin;
         let dir_path = dir.clone().unwrap_or_default();
         out.push(json!({
             "id": id,
@@ -263,7 +322,10 @@ fn push(effects: &Effects, effect: Value) {
 /// Run `command` with a time limit, capturing output.
 fn run_process(command: &str, args: &[String], cwd: Option<&str>) -> Value {
     let mut cmd = Command::new(command);
-    cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
@@ -357,10 +419,16 @@ fn install_api(lua: &Lua, effects: &Effects, cwd: String) -> mlua::Result<()> {
     let default_cwd = cwd.clone();
     cfm.set(
         "run",
-        lua.create_function(move |lua, (command, args, dir): (String, Option<Vec<String>>, Option<String>)| {
-            let result = run_process(&command, &args.unwrap_or_default(), Some(&dir.unwrap_or_else(|| default_cwd.clone())));
-            lua.to_value(&result)
-        })?,
+        lua.create_function(
+            move |lua, (command, args, dir): (String, Option<Vec<String>>, Option<String>)| {
+                let result = run_process(
+                    &command,
+                    &args.unwrap_or_default(),
+                    Some(&dir.unwrap_or_else(|| default_cwd.clone())),
+                );
+                lua.to_value(&result)
+            },
+        )?,
     )?;
     cfm.set(
         "read",
@@ -397,23 +465,51 @@ fn install_api(lua: &Lua, effects: &Effects, cwd: String) -> mlua::Result<()> {
             key.hash(&mut h);
             let dir = crate::state::cache_dir().join("preview");
             let _ = std::fs::create_dir_all(&dir);
-            let ext: String = ext.unwrap_or_default().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-            Ok(dir.join(format!("plugin-{:x}.{}", h.finish(), if ext.is_empty() { "dat" } else { &ext })).to_string_lossy().into_owned())
+            let ext: String = ext
+                .unwrap_or_default()
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .collect();
+            Ok(dir
+                .join(format!(
+                    "plugin-{:x}.{}",
+                    h.finish(),
+                    if ext.is_empty() { "dat" } else { &ext }
+                ))
+                .to_string_lossy()
+                .into_owned())
         })?,
     )?;
-    cfm.set("exists", lua.create_function(|_, path: String| Ok(std::fs::symlink_metadata(path).is_ok()))?)?;
-    cfm.set("is_dir", lua.create_function(|_, path: String| Ok(Path::new(&path).is_dir()))?)?;
+    cfm.set(
+        "exists",
+        lua.create_function(|_, path: String| Ok(std::fs::symlink_metadata(path).is_ok()))?,
+    )?;
+    cfm.set(
+        "is_dir",
+        lua.create_function(|_, path: String| Ok(Path::new(&path).is_dir()))?,
+    )?;
     cfm.set(
         "list",
         lua.create_function(|_, path: String| {
             let names: Vec<String> = std::fs::read_dir(path)
-                .map(|rd| rd.flatten().take(5000).map(|e| e.file_name().to_string_lossy().into_owned()).collect())
+                .map(|rd| {
+                    rd.flatten()
+                        .take(5000)
+                        .map(|e| e.file_name().to_string_lossy().into_owned())
+                        .collect()
+                })
                 .unwrap_or_default();
             Ok(names)
         })?,
     )?;
-    cfm.set("env", lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?)?;
-    cfm.set("home", lua.create_function(|_, ()| Ok(crate::state::home().to_string_lossy().into_owned()))?)?;
+    cfm.set(
+        "env",
+        lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?,
+    )?;
+    cfm.set(
+        "home",
+        lua.create_function(|_, ()| Ok(crate::state::home().to_string_lossy().into_owned()))?,
+    )?;
 
     lua.globals().set("cfm", cfm)?;
     Ok(())
@@ -421,16 +517,22 @@ fn install_api(lua: &Lua, effects: &Effects, cwd: String) -> mlua::Result<()> {
 
 /// A sandboxed Lua state with the `cfm` API and a time limit.
 fn make_lua(limit: Duration, effects: &Effects, cwd: String) -> Result<Lua, String> {
-    let lua = Lua::new_with(StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8, LuaOptions::default())
-        .map_err(|e| e.to_string())?;
+    let lua = Lua::new_with(
+        StdLib::STRING | StdLib::TABLE | StdLib::MATH | StdLib::UTF8,
+        LuaOptions::default(),
+    )
+    .map_err(|e| e.to_string())?;
     let started = Instant::now();
-    lua.set_hook(HookTriggers::new().every_nth_instruction(100_000), move |_, _| {
-        if started.elapsed() > limit {
-            Err(mlua::Error::runtime("plugin action took too long"))
-        } else {
-            Ok(VmState::Continue)
-        }
-    })
+    lua.set_hook(
+        HookTriggers::new().every_nth_instruction(100_000),
+        move |_, _| {
+            if started.elapsed() > limit {
+                Err(mlua::Error::runtime("plugin action took too long"))
+            } else {
+                Ok(VmState::Continue)
+            }
+        },
+    )
     .map_err(|e| e.to_string())?;
     install_api(&lua, effects, cwd).map_err(|e| e.to_string())?;
     Ok(lua)
@@ -444,10 +546,17 @@ fn run_lua(
     limit: Duration,
 ) -> Result<Vec<Value>, String> {
     let effects: Effects = Arc::new(Mutex::new(Vec::new()));
-    let cwd = ctx.get("path").and_then(Value::as_str).unwrap_or("/").to_owned();
+    let cwd = ctx
+        .get("path")
+        .and_then(Value::as_str)
+        .unwrap_or("/")
+        .to_owned();
     let lua = make_lua(limit, &effects, cwd)?;
 
-    lua.load(script).set_name(chunk_name).exec().map_err(|e| e.to_string())?;
+    lua.load(script)
+        .set_name(chunk_name)
+        .exec()
+        .map_err(|e| e.to_string())?;
     let func: mlua::Function = lua
         .globals()
         .get(function)
@@ -457,9 +566,10 @@ fn run_lua(
 
     let mut out = std::mem::take(&mut *effects.lock().unwrap());
     if !matches!(returned, LuaValue::Nil)
-        && let Ok(v) = lua.from_value::<Value>(returned) {
-            out.push(json!({"type": "data", "value": v}));
-        }
+        && let Ok(v) = lua.from_value::<Value>(returned)
+    {
+        out.push(json!({"type": "data", "value": v}));
+    }
     Ok(out)
 }
 
@@ -471,32 +581,53 @@ pub enum Preview {
 
 fn matches_ext(name: &str, exts: &[String]) -> bool {
     let name = name.to_lowercase();
-    exts.iter().any(|e| name.len() > e.len() + 1 && name.ends_with(&format!(".{}", e.to_lowercase())))
+    exts.iter()
+        .any(|e| name.len() > e.len() + 1 && name.ends_with(&format!(".{}", e.to_lowercase())))
 }
 
 /// Ask the enabled plugins for a preview of `path`; the first one that returns something wins.
 pub fn preview(path: &str, name: &str, ext: &str, size: i64, mtime: i64) -> Option<Preview> {
-    let plugins: Vec<Plugin> = all_plugins().into_iter().filter(|p| p.enabled && !p.manifest.previews.is_empty()).collect();
+    let plugins: Vec<Plugin> = all_plugins()
+        .into_iter()
+        .filter(|p| p.enabled && !p.manifest.previews.is_empty())
+        .collect();
     if plugins.is_empty() {
         return None;
     }
     // The first bytes, read only when some plugin matches on them.
-    let head: Option<String> = plugins.iter().any(|p| p.manifest.previews.iter().any(|s| !s.magic.is_empty())).then(|| {
-        use std::io::Read;
-        let mut buf = [0u8; 16];
-        let n = std::fs::File::open(path).and_then(|mut f| f.read(&mut buf)).unwrap_or(0);
-        buf[..n].iter().map(|b| format!("{b:02x}")).collect()
-    });
+    let head: Option<String> = plugins
+        .iter()
+        .any(|p| p.manifest.previews.iter().any(|s| !s.magic.is_empty()))
+        .then(|| {
+            use std::io::Read;
+            let mut buf = [0u8; 16];
+            let n = std::fs::File::open(path)
+                .and_then(|mut f| f.read(&mut buf))
+                .unwrap_or(0);
+            buf[..n].iter().map(|b| format!("{b:02x}")).collect()
+        });
     let ctx = json!({"path": path, "name": name, "ext": ext, "size": size, "mtime": mtime});
     for plugin in &plugins {
         for spec in &plugin.manifest.previews {
-            let by_magic = head.as_ref().is_some_and(|h| spec.magic.iter().any(|m| h.starts_with(&m.to_lowercase())));
+            let by_magic = head
+                .as_ref()
+                .is_some_and(|h| spec.magic.iter().any(|m| h.starts_with(&m.to_lowercase())));
             if !by_magic && !matches_ext(name, &spec.ext) {
                 continue;
             }
-            let file = if spec.file.is_empty() { "main.lua" } else { spec.file.as_str() };
-            let function = if spec.function.is_empty() { "preview" } else { spec.function.as_str() };
-            let Ok(script) = plugin.script(file) else { continue };
+            let file = if spec.file.is_empty() {
+                "main.lua"
+            } else {
+                spec.file.as_str()
+            };
+            let function = if spec.function.is_empty() {
+                "preview"
+            } else {
+                spec.function.as_str()
+            };
+            let Ok(script) = plugin.script(file) else {
+                continue;
+            };
             match run_preview(&script, &format!("{}/{file}", plugin.id), function, &ctx) {
                 Ok(Some(found)) => {
                     crate::state::FeatureUse::mark(&format!("plugin:{}", plugin.id));
@@ -510,26 +641,41 @@ pub fn preview(path: &str, name: &str, ext: &str, size: i64, mtime: i64) -> Opti
     None
 }
 
-fn run_preview(script: &str, chunk_name: &str, function: &str, ctx: &Value) -> Result<Option<Preview>, String> {
+fn run_preview(
+    script: &str,
+    chunk_name: &str,
+    function: &str,
+    ctx: &Value,
+) -> Result<Option<Preview>, String> {
     let effects: Effects = Arc::new(Mutex::new(Vec::new()));
     let lua = make_lua(ACTION_TIME_LIMIT, &effects, "/".to_owned())?;
-    lua.load(script).set_name(chunk_name).exec().map_err(|e| e.to_string())?;
+    lua.load(script)
+        .set_name(chunk_name)
+        .exec()
+        .map_err(|e| e.to_string())?;
     let func: mlua::Function = lua
         .globals()
         .get(function)
         .map_err(|_| format!("{chunk_name} defines no function `{function}`"))?;
     let arg = lua.to_value(ctx).map_err(|e| e.to_string())?;
     let returned: LuaValue = func.call(arg).map_err(|e| e.to_string())?;
-    let LuaValue::Table(t) = returned else { return Ok(None) };
+    let LuaValue::Table(t) = returned else {
+        return Ok(None);
+    };
     // Text may hold bytes that are not UTF-8; take them as they are and replace the bad ones.
     let get = |key: &str| -> Option<String> {
-        t.get::<Option<mlua::LuaString>>(key).ok().flatten().map(|s| String::from_utf8_lossy(&s.as_bytes()).into_owned())
+        t.get::<Option<mlua::LuaString>>(key)
+            .ok()
+            .flatten()
+            .map(|s| String::from_utf8_lossy(&s.as_bytes()).into_owned())
     };
     let note = get("note").unwrap_or_default();
     if let Some(path) = get("image") {
         return Ok(Some(Preview::Image { path, note }));
     }
-    Ok(get("text").filter(|t| !t.is_empty()).map(|text| Preview::Text { text, note }))
+    Ok(get("text")
+        .filter(|t| !t.is_empty())
+        .map(|text| Preview::Text { text, note }))
 }
 
 /// Run one plugin action; the result is a JSON array of effects (or a single error effect).
@@ -544,8 +690,16 @@ pub fn run_action(plugin: &str, action: &str, ctx: &Value) -> Value {
     let Some(spec) = found.manifest.actions.iter().find(|a| a.id == action) else {
         return json!([{"type": "toast", "message": format!("{plugin} has no action “{action}”"), "kind": "error"}]);
     };
-    let file = if spec.file.is_empty() { "main.lua" } else { spec.file.as_str() };
-    let function = if spec.function.is_empty() { spec.id.as_str() } else { spec.function.as_str() };
+    let file = if spec.file.is_empty() {
+        "main.lua"
+    } else {
+        spec.file.as_str()
+    };
+    let function = if spec.function.is_empty() {
+        spec.id.as_str()
+    } else {
+        spec.function.as_str()
+    };
     if !safe(file) {
         return json!([{"type": "toast", "message": "invalid script name", "kind": "error"}]);
     }
@@ -553,7 +707,13 @@ pub fn run_action(plugin: &str, action: &str, ctx: &Value) -> Value {
         Ok(s) => s,
         Err(e) => return json!([{"type": "toast", "message": e, "kind": "error"}]),
     };
-    match run_lua(&script, &format!("{plugin}/{file}"), function, ctx, ACTION_TIME_LIMIT) {
+    match run_lua(
+        &script,
+        &format!("{plugin}/{file}"),
+        function,
+        ctx,
+        ACTION_TIME_LIMIT,
+    ) {
         Ok(effects) => Value::Array(effects),
         Err(e) => {
             let msg = e.lines().next().unwrap_or("error").to_owned();
@@ -590,7 +750,11 @@ mod tests {
 
     #[test]
     fn returned_values_become_data() {
-        let effects = run(r#"function go(ctx) return { count = #ctx.selection } end"#, "go").unwrap();
+        let effects = run(
+            r#"function go(ctx) return { count = #ctx.selection } end"#,
+            "go",
+        )
+        .unwrap();
         assert_eq!(effects[0]["type"], "data");
         assert_eq!(effects[0]["value"]["count"], 1);
     }
@@ -640,7 +804,10 @@ mod install_tests {
     use crate::testutil::Sandbox;
 
     fn install(sb: &Sandbox, name: &str, manifest: &str, lua: &str) {
-        sb.touch(&format!(".config/captainfm/plugins/{name}/plugin.json"), manifest);
+        sb.touch(
+            &format!(".config/captainfm/plugins/{name}/plugin.json"),
+            manifest,
+        );
         sb.touch(&format!(".config/captainfm/plugins/{name}/main.lua"), lua);
     }
 
@@ -656,12 +823,22 @@ mod install_tests {
         );
         install(&sb, "broken", "{ not json", "");
         let listed = list();
-        let mine: Vec<&Value> = listed.as_array().unwrap().iter().filter(|p| p["bundled"] == false).collect();
+        let mine: Vec<&Value> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|p| p["bundled"] == false)
+            .collect();
         let arr = mine;
         assert_eq!(arr.len(), 1, "a plugin with an invalid manifest is skipped");
         assert_eq!(arr[0]["name"], "Demo");
         assert_eq!(arr[0]["panels"][0]["side"], "bottom");
-        assert!(arr[0]["panels"][0]["qml"].as_str().unwrap().starts_with("file://"));
+        assert!(
+            arr[0]["panels"][0]["qml"]
+                .as_str()
+                .unwrap()
+                .starts_with("file://")
+        );
         assert_eq!(arr[0]["actions"][0]["keys"][0], "<Space> p g");
     }
 
@@ -683,7 +860,12 @@ mod install_tests {
     #[test]
     fn bad_requests_become_error_toasts() {
         let sb = Sandbox::new("plugins-errors");
-        install(&sb, "p", r#"{"actions":[{"id":"a"}]}"#, "function a() error('boom') end");
+        install(
+            &sb,
+            "p",
+            r#"{"actions":[{"id":"a"}]}"#,
+            "function a() error('boom') end",
+        );
         let kind = |v: Value| v[0]["kind"].as_str().unwrap().to_owned();
         assert_eq!(kind(run_action("../evil", "a", &json!({}))), "error");
         assert_eq!(kind(run_action("missing", "a", &json!({}))), "error");
@@ -695,20 +877,37 @@ mod install_tests {
 
     // ---- bundled preview plugins -------------------------------------------------------------
 
-    #[cfg(any(feature = "plugin-torrent", feature = "plugin-calendar-contacts", feature = "plugin-system", feature = "plugin-documents"))]
+    #[cfg(any(
+        feature = "plugin-torrent",
+        feature = "plugin-calendar-contacts",
+        feature = "plugin-system",
+        feature = "plugin-documents"
+    ))]
     fn bundled(id: &str) -> String {
-        BUNDLED.iter().find(|b| b.0 == id).unwrap().2[0].1.to_owned()
+        BUNDLED.iter().find(|b| b.0 == id).unwrap().2[0]
+            .1
+            .to_owned()
     }
 
     /// Run `function` of a bundled plugin on `path`, plus any extra Lua appended to its script.
-    #[cfg(any(feature = "plugin-torrent", feature = "plugin-calendar-contacts", feature = "plugin-system", feature = "plugin-documents"))]
+    #[cfg(any(
+        feature = "plugin-torrent",
+        feature = "plugin-calendar-contacts",
+        feature = "plugin-system",
+        feature = "plugin-documents"
+    ))]
     fn preview_with(id: &str, extra: &str, function: &str, path: &Path) -> Option<Preview> {
         let ctx = json!({"path": path.to_string_lossy(), "name": path.file_name().unwrap().to_string_lossy(),
                          "ext": "", "size": std::fs::metadata(path).map_or(0, |m| m.len()), "mtime": 1});
         run_preview(&format!("{}\n{extra}", bundled(id)), id, function, &ctx).unwrap()
     }
 
-    #[cfg(any(feature = "plugin-torrent", feature = "plugin-calendar-contacts", feature = "plugin-system", feature = "plugin-documents"))]
+    #[cfg(any(
+        feature = "plugin-torrent",
+        feature = "plugin-calendar-contacts",
+        feature = "plugin-system",
+        feature = "plugin-documents"
+    ))]
     fn text_of(p: Option<Preview>) -> String {
         match p {
             Some(Preview::Text { text, .. }) => text,
@@ -722,9 +921,17 @@ mod install_tests {
             let m: Manifest = serde_json::from_str(json).unwrap_or_else(|e| panic!("{id}: {e}"));
             assert!(!m.previews.is_empty(), "{id} has no previews");
             for spec in &m.previews {
-                let file = if spec.file.is_empty() { "main.lua" } else { spec.file.as_str() };
+                let file = if spec.file.is_empty() {
+                    "main.lua"
+                } else {
+                    spec.file.as_str()
+                };
                 assert!(files.iter().any(|f| f.0 == file), "{id}: {file} missing");
-                assert!(!spec.ext.is_empty() || !spec.magic.is_empty(), "{id}/{} matches nothing", spec.id);
+                assert!(
+                    !spec.ext.is_empty() || !spec.magic.is_empty(),
+                    "{id}/{} matches nothing",
+                    spec.id
+                );
             }
         }
     }
@@ -744,7 +951,12 @@ mod install_tests {
         assert!(s.contains("pieces: 4 × 256.0 KB"), "{s}");
         assert!(s.contains("http://tracker.test/a"), "{s}");
         // Not a torrent, or hostile input: nothing, and no hang.
-        for junk in [&b"not bencode"[..], &[b'l'; 100][..], b"99999999999999999999:x", b"5:ab"] {
+        for junk in [
+            &b"not bencode"[..],
+            &[b'l'; 100][..],
+            b"99999999999999999999:x",
+            b"5:ab",
+        ] {
             std::fs::write(&file, junk).unwrap();
             assert!(preview_with("preview-torrent", "", "preview", &file).is_none());
         }
@@ -756,13 +968,24 @@ mod install_tests {
         let sb = Sandbox::new("plugin-ics");
         let file = sb.touch("a.ics", "");
         std::fs::write(&file, "BEGIN:VCALENDAR\nBEGIN:VEVENT\nSUMMARY:Lunch\\, with Sam\nDTSTART:20261023T120000Z\nDTEND:20261023T130000Z\nLOCATION:Cafe\nDESCRIPTION:Bring the\n  notes\nEND:VEVENT\nBEGIN:VTODO\nSUMMARY:Pay rent\nDUE;VALUE=DATE:20261101\nEND:VTODO\nEND:VCALENDAR\n").unwrap();
-        let s = text_of(preview_with("preview-calendar-contacts", "", "calendar", &file));
+        let s = text_of(preview_with(
+            "preview-calendar-contacts",
+            "",
+            "calendar",
+            &file,
+        ));
         assert!(s.contains("2 entries"), "{s}");
         assert!(s.contains("• Lunch, with Sam"), "{s}");
-        assert!(s.contains("when: 2026-10-23 12:00 UTC → 2026-10-23 13:00 UTC"), "{s}");
+        assert!(
+            s.contains("when: 2026-10-23 12:00 UTC → 2026-10-23 13:00 UTC"),
+            "{s}"
+        );
         assert!(s.contains("where: Cafe"), "{s}");
         assert!(s.contains("Bring the notes"), "{s}");
-        assert!(s.contains("☐ Pay rent") && s.contains("when: 2026-11-01"), "{s}");
+        assert!(
+            s.contains("☐ Pay rent") && s.contains("when: 2026-11-01"),
+            "{s}"
+        );
         std::fs::write(&file, "just text").unwrap();
         assert!(preview_with("preview-calendar-contacts", "", "calendar", &file).is_none());
     }
@@ -773,9 +996,17 @@ mod install_tests {
         let sb = Sandbox::new("plugin-vcf");
         let file = sb.touch("a.vcf", "");
         std::fs::write(&file, "BEGIN:VCARD\nVERSION:3.0\nFN:Ada Lovelace\nORG:Analytical Engines;\nTEL;TYPE=CELL,VOICE:+1 555 0100\nEMAIL;TYPE=INTERNET:ada@example.com\nEND:VCARD\n").unwrap();
-        let s = text_of(preview_with("preview-calendar-contacts", "", "contacts", &file));
+        let s = text_of(preview_with(
+            "preview-calendar-contacts",
+            "",
+            "contacts",
+            &file,
+        ));
         assert!(s.contains("1 contact"), "{s}");
-        assert!(s.contains("Ada Lovelace") && s.contains("Analytical Engines"), "{s}");
+        assert!(
+            s.contains("Ada Lovelace") && s.contains("Analytical Engines"),
+            "{s}"
+        );
         assert!(s.contains("phone (cell): +1 555 0100"), "{s}");
         assert!(s.contains("email: ada@example.com"), "{s}");
     }
@@ -802,11 +1033,20 @@ mod install_tests {
         let sb = Sandbox::new("plugin-cover");
         let file = sb.touch("x", "");
         let pick = |members: &str| {
-            let extra = format!("function t() return {{ text = tostring(pick_cover({members})) }} end");
+            let extra =
+                format!("function t() return {{ text = tostring(pick_cover({members})) }} end");
             text_of(preview_with("preview-documents", &extra, "t", &file))
         };
-        assert_eq!(pick(r#"{"OEBPS/ch1.xhtml", "OEBPS/images/b.jpg", "OEBPS/images/Cover.PNG", "OEBPS/images/a.jpg"}"#), "OEBPS/images/Cover.PNG");
-        assert_eq!(pick(r#"{"pages/02.jpg", "pages/01.jpg", "info.txt"}"#), "pages/01.jpg");
+        assert_eq!(
+            pick(
+                r#"{"OEBPS/ch1.xhtml", "OEBPS/images/b.jpg", "OEBPS/images/Cover.PNG", "OEBPS/images/a.jpg"}"#
+            ),
+            "OEBPS/images/Cover.PNG"
+        );
+        assert_eq!(
+            pick(r#"{"pages/02.jpg", "pages/01.jpg", "info.txt"}"#),
+            "pages/01.jpg"
+        );
         assert_eq!(pick(r#"{"a.txt"}"#), "nil");
     }
 
@@ -816,9 +1056,16 @@ mod install_tests {
         if Command::new("readelf").arg("--version").output().is_err() {
             return;
         }
-        let s = text_of(preview_with("preview-system", "", "program", Path::new("/bin/sh")));
+        let s = text_of(preview_with(
+            "preview-system",
+            "",
+            "program",
+            Path::new("/bin/sh"),
+        ));
         assert!(s.contains("machine:"), "{s}");
-        assert!(preview_with("preview-system", "", "program", Path::new("/etc/hostname")).is_none());
+        assert!(
+            preview_with("preview-system", "", "program", Path::new("/etc/hostname")).is_none()
+        );
     }
 
     #[test]
@@ -833,27 +1080,51 @@ mod install_tests {
         crate::state::write_config("settings", r#"{"disabledPlugins":["preview-torrent"]}"#);
         assert!(ask().is_none());
         let listed = list();
-        let entry = listed.as_array().unwrap().iter().find(|p| p["id"] == "preview-torrent").unwrap();
-        assert_eq!((entry["bundled"].clone(), entry["enabled"].clone()), (json!(true), json!(false)));
+        let entry = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|p| p["id"] == "preview-torrent")
+            .unwrap();
+        assert_eq!(
+            (entry["bundled"].clone(), entry["enabled"].clone()),
+            (json!(true), json!(false))
+        );
     }
 
     #[test]
     fn a_plugin_in_the_config_folder_replaces_a_bundled_one() {
         let sb = Sandbox::new("plugin-override");
-        install(&sb, "preview-torrent", r#"{"previews":[{"id":"t","ext":["torrent"],"function":"p"}]}"#, "function p(ctx) return { text = 'mine', note = 'custom' } end");
+        install(
+            &sb,
+            "preview-torrent",
+            r#"{"previews":[{"id":"t","ext":["torrent"],"function":"p"}]}"#,
+            "function p(ctx) return { text = 'mine', note = 'custom' } end",
+        );
         let file = sb.touch("a.torrent", "x");
         let path = file.to_string_lossy().into_owned();
-        assert!(matches!(preview(&path, "a.torrent", "torrent", 1, 1), Some(Preview::Text { text, .. }) if text == "mine"));
+        assert!(
+            matches!(preview(&path, "a.torrent", "torrent", 1, 1), Some(Preview::Text { text, .. }) if text == "mine")
+        );
     }
 
     #[test]
     fn plugins_switch_by_id_short_name_or_all() {
         let _sb = Sandbox::new("plugin-cli");
-        install(&_sb, "mine", r#"{"actions":[{"id":"a"}]}"#, "function a() end");
+        install(
+            &_sb,
+            "mine",
+            r#"{"actions":[{"id":"a"}]}"#,
+            "function a() end",
+        );
         let off = || disabled_plugins();
         assert!(set_enabled("mine", false).unwrap().contains("mine off"));
         assert_eq!(off(), ["mine"]);
-        assert!(set_enabled("nonsense", true).unwrap_err().contains("no plugin"));
+        assert!(
+            set_enabled("nonsense", true)
+                .unwrap_err()
+                .contains("no plugin")
+        );
         set_enabled("all", false).unwrap();
         assert!(off().contains(&"mine".to_owned()));
         set_enabled("all", true).unwrap();
