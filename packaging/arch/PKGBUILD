@@ -1,5 +1,5 @@
 # Maintainer: Justin Garza <jgarza9788@gmail.com>
-# Built by scripts/release.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
+# Built by scripts/release/30-build.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
 pkgname=captainfm
 pkgver=0.0.2
 pkgrel=1

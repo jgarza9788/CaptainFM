@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Builds CaptainFM-<version>-x86_64.AppImage from the dist binary (docs/RELEASING.md, section 3).
+# Builds CaptainFM-<version>-x86_64.AppImage from the dist binary (docs/RELEASING.md; called by scripts/release/30-build.sh).
 #
 #   scripts/appimage.sh [OUTDIR]      OUTDIR defaults to dist-release/v<version>/
 #
-# Needs target/dist/captainfm (./build.sh, or cargo build --profile dist), the tools in ~/Work/CaptainFM-tools
+# Needs target/dist/captainfm (./build.sh, or cargo build --profile dist; or CFM_BIN=<binary>), the tools in ~/Work/CaptainFM-tools
 # (linuxdeploy, linuxdeploy-plugin-qt, appimagetool; their SHA256SUMS are checked), qmake6 and jxrlib (the KDE
 # image plugins need it). Build in a scratch folder; nothing is added to the git tree.
 set -euo pipefail
@@ -12,7 +12,7 @@ ROOT=$PWD
 TOOLS=${TOOLS:-$HOME/Work/CaptainFM-tools}
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 OUT=${1:-$ROOT/dist-release/v$VERSION}
-BIN=$ROOT/target/dist/captainfm
+BIN=${CFM_BIN:-$ROOT/target/dist/captainfm}     # 30-build.sh passes the binary from the package
 [ -x "$BIN" ] || { echo "appimage.sh: $BIN is missing; build it first (./build.sh)" >&2; exit 1; }
 (cd "$TOOLS" && sha256sum -c SHA256SUMS >/dev/null) || { echo "appimage.sh: tool checksums do not match" >&2; exit 1; }
 
