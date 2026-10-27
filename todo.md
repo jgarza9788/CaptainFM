@@ -3,7 +3,7 @@
 ## 1. Blackbeard: still open (2026-10-26)
 - [ ] The AppImage only starts on a glibc as new as this machine's (2.44), so it is for rolling distros. To reach older distros, build it inside an older distro's container (Debian 12 or Ubuntu 22.04) with a Qt 6 that the app builds against; first check which Qt 6 version the QML and `cxx-qt` need. Also call `scripts/appimage.sh` from `scripts/release.sh`.
 - [ ] Rebuild and install (`./build.sh`) so `~/.local/bin/captainfm` has these fixes (the installed one is the 19:24 build, with the dead Vim keys).
-- [ ] Not covered, do by hand: mouse wheel scrolling (the test pointer has no wheel), a real remote or cloud drive, fractional scales other than this machine's 1.5, copy and Shift-move drags in the final build, and an install of the final package in a clean container (the release from `master`).
+- [x] Not covered, do by hand: mouse wheel scrolling (the test pointer has no wheel), a real remote or cloud drive, fractional scales other than this machine's 1.5, copy and Shift-move drags in the final build, and an install of the final package in a clean container (the release from `master`). **did manually**
 
 ## 2. Features few people use: decide with the numbers
 Counting began on 2026-10-24 (section 10), so the earliest sensible review is about 2026-11-21.
