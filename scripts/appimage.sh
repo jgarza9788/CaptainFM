@@ -43,6 +43,7 @@ done
 
 # linuxdeploy's AppRun starts the binary through a symlink, which makes Qt look for its platform plugins in AppDir/
 # instead of next to the real binary, so it finds none ("Could not find the Qt platform plugin"). Start the real one.
+rm -f AppDir/AppRun    # it is a symlink to the binary; writing through it would overwrite the binary
 cat > AppDir/AppRun <<'EOF'
 #!/usr/bin/env bash
 set -e
