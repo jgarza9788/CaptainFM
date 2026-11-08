@@ -47,7 +47,8 @@ cat > AppDir/AppRun <<'EOF'
 #!/usr/bin/env bash
 set -e
 this_dir="$(readlink -f "$(dirname "$0")")"
-source "$this_dir"/apprun-hooks/"linuxdeploy-plugin-qt-hook.sh"
+# The Qt plugin writes this hook only for Qt 5 ("skipping AppRun hook creation on Qt 6"); the exports below cover Qt 6.
+if [ -f "$this_dir/apprun-hooks/linuxdeploy-plugin-qt-hook.sh" ]; then source "$this_dir/apprun-hooks/linuxdeploy-plugin-qt-hook.sh"; fi
 export QT_PLUGIN_PATH="$this_dir/usr/plugins${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}"
 export QML_IMPORT_PATH="$this_dir/usr/qml${QML_IMPORT_PATH:+:$QML_IMPORT_PATH}"
 export QML2_IMPORT_PATH="$QML_IMPORT_PATH"
