@@ -48,7 +48,8 @@ QtObject {
         Backend.clipboardWrite(JSON.stringify(paths), cut)
         const p = pane()
         p.endVisual()
-        p.dir.clearSelection()
+        // Explorer and Nautilus keep the selection after a copy; the Vim keymap drops its marks, as before.
+        if (app.keymap !== "fp") p.dir.clearSelection()
         app.toast((cut ? "Cut " : "Copied ") + plural(paths.length, "item"))
     }
 
@@ -74,10 +75,31 @@ QtObject {
         pane().dir.clearSelection()
     }
 
+    // Where the cursor goes once `paths` are gone: the first item after the last of them, else the one before
+    // the first of them (the end of the list).
+    function neighbourAfter(p, paths) {
+        const gone = {}
+        for (const x of paths) gone[x] = true
+        const rows = paths.map(x => p.dir.rowOfPath(x)).filter(r => r >= 0)
+        if (rows.length === 0) return ""
+        const n = p.view.count
+        for (let r = Math.max(...rows) + 1; r < n; r++) { const x = p.dir.pathAt(r); if (!gone[x]) return x }
+        for (let r = Math.min(...rows) - 1; r >= 0; r--) { const x = p.dir.pathAt(r); if (!gone[x]) return x }
+        return ""
+    }
+
+    function removeThen(p, paths, act) {
+        p.endVisual()
+        const next = neighbourAfter(p, paths)
+        if (next !== "") p.pendingPath = next
+        act()
+    }
+
     function trash() {
         const paths = targets()
         if (paths.length === 0) return
-        const go = () => { pane().endVisual(); Backend.trash(JSON.stringify(paths)) }
+        const p = pane()
+        const go = () => removeThen(p, paths, () => Backend.trash(JSON.stringify(paths)))
         if (!Prefs.v.confirmTrash) { go(); return }
         app.prompt.open({
             label: "Move " + plural(paths.length, "item") + " to the trash?",
@@ -105,7 +127,7 @@ QtObject {
         app.prompt.open({
             label: "Permanently delete " + plural(paths.length, "item") + "?",
             confirm: true,
-            accept: () => { pane().endVisual(); Backend.remove(JSON.stringify(paths)) },
+            accept: () => removeThen(pane(), paths, () => Backend.remove(JSON.stringify(paths))),
             cancel: () => app.refocus()
         })
     }
@@ -191,13 +213,81 @@ QtObject {
         Style.zoomTarget = Math.max(0.7, Math.min(2.2, Math.round((Style.zoomTarget + delta) * 100) / 100))
     }
 
+    // A plain cursor move (arrows, Home/End, Page keys, type-ahead) in the File Pilot keymap selects only the
+    // item it lands on, as in Explorer: it drops Shift ranges and Ctrl marks alike. The Vim keymap keeps its
+    // `m` marks, and moving in Vim's visual mode extends it.
+    function plain(p) {
+        if (app.keymap === "fp") { p.endVisual(); p.dir.clearSelection() }
+        p.clickAnchor = -1
+    }
+
     function moveBy(sign, n, has) {
         const p = pane()
         if (!p) return
-        if (p.grid) { if (app.keymap === "fp" && p.visualMode) { p.endVisual(); p.dir.clearSelection() }; for (let i = 0; i < (has ? n : 1); i++) p.moveVertical(sign); return }
-        // Windows-style: a plain arrow key drops a Shift-extended selection.
-        if (app.keymap === "fp" && p.visualMode) { p.endVisual(); p.dir.clearSelection() }
-        p.move(sign * (has ? n : 1))
+        plain(p)
+        p.move(sign * p.vStep() * (has ? n : 1))
+    }
+
+    // Ctrl+arrows: move the focus and leave the selection alone. The item the cursor was on counts as
+    // selected (an arrow selected it), so it is marked first when nothing is.
+    function focusBy(delta) {
+        const p = pane()
+        if (!p || p.view.count === 0) return
+        const cur = p.view.currentIndex
+        if (p.dir.selectedCount === 0 && cur >= 0) p.dir.toggleSelect(cur)
+        p.focusTo((cur < 0 ? 0 : cur) + delta)
+    }
+
+    // Ctrl+Shift+arrows: add the items passed over to the selection.
+    function addBy(delta) {
+        const p = pane()
+        if (!p || p.view.count === 0) return
+        const cur = Math.max(0, p.view.currentIndex)
+        const to = Math.max(0, Math.min(p.view.count - 1, cur + delta))
+        p.dir.selectRange(cur, to, true)
+        p.focusTo(to)
+    }
+
+    // Shift+keys: extend the range from the anchor.
+    function extendTo(row) {
+        const p = pane(); if (!p) return
+        if (!p.visualMode) p.startVisual()
+        p.setCursor(row)
+    }
+    function extendBy(delta) {
+        const p = pane(); if (!p) return
+        extendTo(Math.max(0, p.view.currentIndex) + delta)
+    }
+
+    // Enter on a multi-selection opens all of it: each folder in a tab of its own, each file in its application.
+    function openMany(paths) {
+        const go = () => {
+            const dirs = paths.filter(x => Backend.isDir(x))
+            for (const x of paths) if (dirs.indexOf(x) < 0) Backend.openPath(x)
+            for (const d of dirs) app.newTab(d)
+            app.toast("Opened " + plural(paths.length, "item"))
+        }
+        if (paths.length <= 10) { go(); return }
+        app.prompt.open({ label: "Open " + plural(paths.length, "item") + "?", confirm: true, accept: go, cancel: () => app.refocus() })
+    }
+
+    // The preview that the media keys drive: the gallery's own when the pane shows one.
+    function player() {
+        const p = pane()
+        return p && p.gallery && p.galleryPreview ? p.galleryPreview : app.inspector
+    }
+
+    function selectPattern() {
+        const p = pane(); if (!p) return
+        app.prompt.open({
+            label: "Select (*.jpg, a?c, or re:regex):",
+            text: "",
+            accept: (t) => {
+                const n = p.dir.selectMatching(t)
+                if (n === 0) app.toast("Nothing matches “" + t + "”", "warn")
+                else app.toast("Selected " + plural(n, "item") + " matching “" + t + "”")
+            }
+        })
     }
 
     // Type-ahead: letters typed in quick succession jump to the item starting with them.
@@ -214,7 +304,7 @@ QtObject {
         typeTime = now
         const from = typeBuffer.length === 1 ? p.view.currentIndex + 1 : Math.max(0, p.view.currentIndex)
         const row = p.dir.findPrefix(typeBuffer, from)
-        if (row >= 0) p.setCursor(row)
+        if (row >= 0) { plain(p); p.setCursor(row) }
         return row >= 0
     }
 
@@ -224,23 +314,35 @@ QtObject {
         { id: "cursor.down", title: "Cursor down", fp: ["<Down>"], keys: ["j", "<Down>"], run: (n, has) => moveBy(1, n, has) },
         { id: "cursor.up", title: "Cursor up", fp: ["<Up>"], keys: ["k", "<Up>"], run: (n, has) => moveBy(-1, n, has) },
         { id: "cursor.top", title: "Go to first item", fp: ["<Home>", "<C-Home>"], keys: ["g g", "<Home>"],
-          run: (n, has) => { const p = pane(); if (p) p.setCursor(has ? n - 1 : 0) } },
+          run: (n, has) => { const p = pane(); if (p) { plain(p); p.setCursor(has ? n - 1 : 0) } } },
         { id: "cursor.bottom", title: "Go to last item (or line N)", fp: ["<End>", "<C-End>"], keys: ["G", "<End>"],
-          run: (n, has) => { const p = pane(); if (p) p.setCursor(has ? n - 1 : p.view.count - 1) } },
+          run: (n, has) => { const p = pane(); if (p) { plain(p); p.setCursor(has ? n - 1 : p.view.count - 1) } } },
         { id: "cursor.halfDown", title: "Half page down", keys: ["<C-d>"],
-          run: (n) => { const p = pane(); if (p) p.move(Math.max(1, Math.floor(p.pageRows() / 2)) * n) } },
+          run: (n) => { const p = pane(); if (p) { plain(p); p.move(Math.max(1, Math.floor(p.pageRows() / 2)) * n) } } },
         { id: "cursor.halfUp", title: "Half page up", keys: ["<C-u>"],
-          run: (n) => { const p = pane(); if (p) p.move(-Math.max(1, Math.floor(p.pageRows() / 2)) * n) } },
+          run: (n) => { const p = pane(); if (p) { plain(p); p.move(-Math.max(1, Math.floor(p.pageRows() / 2)) * n) } } },
         { id: "cursor.pageDown", title: "Page down", fp: ["<PageDown>"], keys: ["<PageDown>"],
-          run: (n) => { const p = pane(); if (p) p.move(p.pageRows() * n) } },
+          run: (n) => { const p = pane(); if (p) { plain(p); p.move(p.pageRows() * n) } } },
         { id: "cursor.pageUp", title: "Page up", fp: ["<PageUp>"], keys: ["<PageUp>"],
-          run: (n) => { const p = pane(); if (p) p.move(-p.pageRows() * n) } },
+          run: (n) => { const p = pane(); if (p) { plain(p); p.move(-p.pageRows() * n) } } },
+        { id: "cursor.focusDown", title: "Move the focus down (keep the selection)", fp: ["<C-Down>"], keys: [],
+          run: (n) => { const p = pane(); if (p) focusBy(p.vStep() * n) } },
+        { id: "cursor.focusUp", title: "Move the focus up (keep the selection)", fp: ["<C-Up>"], keys: [],
+          run: (n) => { const p = pane(); if (p) focusBy(-p.vStep() * n) } },
+        { id: "sel.addDown", title: "Add the item below to the selection", fp: ["<C-S-Down>"], keys: [],
+          run: (n) => { const p = pane(); if (p) addBy(p.vStep() * n) } },
+        { id: "sel.addUp", title: "Add the item above to the selection", fp: ["<C-S-Up>"], keys: [],
+          run: (n) => { const p = pane(); if (p) addBy(-p.vStep() * n) } },
+        { id: "sel.addLeft", title: "Add the item to the left to the selection (grid views)", fp: ["<C-S-Left>"], keys: [],
+          run: (n) => { const p = pane(); if (p && p.grid) addBy(-p.hStep() * n) } },
+        { id: "sel.addRight", title: "Add the item to the right to the selection (grid views)", fp: ["<C-S-Right>"], keys: [],
+          run: (n) => { const p = pane(); if (p && p.grid) addBy(p.hStep() * n) } },
 
         { id: "nav.up", title: "Parent folder / collapse", fp: ["<Left>"], keys: ["h", "<Left>"],
           run: (n) => {
               const p = pane(); if (!p) return
-              // Icons/columns views: the arrow keys move sideways in File Pilot mode.
-              if (p.grid && app.keymap === "fp") { p.moveHorizontal(-1); return }
+              // Icons/columns views: the arrow keys move sideways in File Pilot mode; in the gallery h does too.
+              if (p.gallery || (p.grid && app.keymap === "fp")) { plain(p); for (let i = 0; i < n; i++) p.moveHorizontal(-1); return }
               for (let i = 0; i < n; i++) { if (p.tree) p.treeLeft(); else p.goUp() }
           } },
         { id: "nav.parent", title: "Go to parent folder", fp: ["<BS>", "<A-Up>"], keys: ["<BS>", "-"],
@@ -249,7 +351,7 @@ QtObject {
           run: () => {
               const p = pane(); if (!p) return
               if (p.tree) { p.treeRight(); return }
-              if (p.grid && app.keymap === "fp") { p.moveHorizontal(1); return }
+              if (p.gallery || (p.grid && app.keymap === "fp")) { plain(p); p.moveHorizontal(1); return }
               if (app.pickMode && p.currentPath !== "" && !p.currentIsDir) { app.pickEnterFile(); return }
               // Miller view: a file has no column to open, so Right goes to its preview (Enter opens the file).
               if (p.miller && p.currentPath !== "" && !p.currentIsDir && !p.deep) { app.inspectorOn = true; app.inspector.play(); return }
@@ -259,6 +361,8 @@ QtObject {
           run: () => {
               const p = pane(); if (!p) return
               if (app.pickMode && p.currentPath !== "" && !p.currentIsDir) { app.pickEnterFile(); return }
+              const sel = app.pickMode ? [] : JSON.parse(p.dir.selectedPaths())
+              if (sel.length > 1) { openMany(sel); return }
               p.openCurrent(p.deep && !p.currentIsDir)
           } },
         { id: "pick.accept", title: "Picker: accept", keys: [], palette: false, run: () => { if (app.pickMode) app.pickAccept() } },
@@ -278,16 +382,31 @@ QtObject {
         { id: "nav.jump", title: "Jump to folder…", words: ["goto", "cd"], fp: ["<C-l>", "<C-g>", "<A-d>"], keys: ["z", "<C-l>", ", g j"], run: () => app.jump.open("") },
         { id: "nav.reload", title: "Reload folder", fp: ["<F5>", "<C-r>"], keys: [", v r", "<C-S-r>"], run: () => { const p = pane(); if (p) p.dir.reload() } },
 
-        { id: "sel.toggle", title: "Toggle mark and move down", fp: ["<Insert>", "<C-Space>"], keys: ["m"],
-          run: () => { const p = pane(); if (p && p.view.currentIndex >= 0) { p.dir.toggleSelect(p.view.currentIndex); p.move(1) } } },
+        // File Pilot: Ctrl+Space and Insert toggle the focused item in place (with Ctrl+arrows to move the focus);
+        // Vim's `m` marks and moves down.
+        { id: "sel.toggle", title: "Toggle mark (Vim: and move down)", fp: ["<Insert>", "<C-Space>"], keys: ["m"],
+          run: () => {
+              const p = pane(); if (!p || p.view.currentIndex < 0) return
+              p.endVisual()
+              p.dir.toggleSelect(p.view.currentIndex)
+              if (app.keymap !== "fp") p.move(1)
+          } },
         { id: "sel.extendDown", title: "Extend selection down", keys: [], fp: ["<S-Down>"],
-          run: () => { const p = pane(); if (!p) return; if (!p.visualMode) p.startVisual(); p.move(1) } },
+          run: (n) => { const p = pane(); if (p) extendBy(p.vStep() * n) } },
         { id: "sel.extendUp", title: "Extend selection up", keys: [], fp: ["<S-Up>"],
-          run: () => { const p = pane(); if (!p) return; if (!p.visualMode) p.startVisual(); p.move(-1) } },
+          run: (n) => { const p = pane(); if (p) extendBy(-p.vStep() * n) } },
+        { id: "sel.extendLeft", title: "Extend selection left (grid views)", keys: [], fp: ["<S-Left>"],
+          run: (n) => { const p = pane(); if (p && p.grid) extendBy(-p.hStep() * n) } },
+        { id: "sel.extendRight", title: "Extend selection right (grid views)", keys: [], fp: ["<S-Right>"],
+          run: (n) => { const p = pane(); if (p && p.grid) extendBy(p.hStep() * n) } },
+        { id: "sel.extendPageDown", title: "Extend selection a page down", keys: [], fp: ["<S-PageDown>"],
+          run: (n) => { const p = pane(); if (p) extendBy(p.pageRows() * n) } },
+        { id: "sel.extendPageUp", title: "Extend selection a page up", keys: [], fp: ["<S-PageUp>"],
+          run: (n) => { const p = pane(); if (p) extendBy(-p.pageRows() * n) } },
         { id: "sel.extendEnd", title: "Extend selection to the end", keys: [], fp: ["<S-End>"],
-          run: () => { const p = pane(); if (!p) return; if (!p.visualMode) p.startVisual(); p.setCursor(p.view.count - 1) } },
+          run: () => { const p = pane(); if (p) extendTo(p.view.count - 1) } },
         { id: "sel.extendHome", title: "Extend selection to the start", keys: [], fp: ["<S-Home>"],
-          run: () => { const p = pane(); if (!p) return; if (!p.visualMode) p.startVisual(); p.setCursor(0) } },
+          run: () => extendTo(0) },
         { id: "nav.newTab", title: "Open in a new tab", keys: ["<C-CR>"], fp: ["<C-CR>"],
           run: () => {
               if (app.pickMode) { app.pickAccept(); return }
@@ -303,11 +422,16 @@ QtObject {
           run: () => app.setKeymap(app.keymap === "fp" ? "vim" : "fp") },
         { id: "sel.visual", title: "Visual selection mode", keys: ["v"],
           run: () => { const p = pane(); if (!p) return; if (p.visualMode) p.endVisual(); else p.startVisual() } },
-        { id: "sel.all", title: "Select all", fp: ["<C-a>"], keys: ["<C-a>"], run: () => { const p = pane(); if (p) p.dir.selectAll() } },
+        { id: "sel.all", title: "Select all", fp: ["<C-a>"], keys: ["<C-a>"], run: () => { const p = pane(); if (p) { p.endVisual(); p.dir.selectAll() } } },
+        { id: "sel.invert", title: "Invert selection", words: ["reverse selection", "select others"], fp: ["<C-S-a>"], keys: ["*"],
+          run: () => { const p = pane(); if (p) { p.endVisual(); p.dir.invertSelection() } } },
+        { id: "sel.pattern", title: "Select by pattern…", words: ["glob", "wildcard", "select matching", "regex"], fp: ["<C-s>"], keys: ["+"],
+          run: () => selectPattern() },
         { id: "sel.clear", title: "Clear selection / filter / search", fp: ["<Esc>"], keys: ["<Esc>"],
           run: () => {
               const p = pane(); if (!p) return
-              if (p.visualMode) p.endVisual()
+              // File Pilot: one Esc clears a Shift-selection; Vim's visual mode leaves its marks behind.
+              if (p.visualMode) { p.endVisual(); if (app.keymap === "fp") p.dir.clearSelection() }
               else if (p.dir.selectedCount > 0) p.dir.clearSelection()
               else if (p.deep) p.exitDeep()
               else if (p.dir.filter !== "") p.dir.setFilterText("")
@@ -343,7 +467,12 @@ QtObject {
         { id: "view.hidden", title: "Toggle hidden files", words: ["dotfiles"], fp: ["<C-h>"], keys: [".", "<C-h>", ", v h"],
           run: () => { app.showHidden = !app.showHidden; app.toast(app.showHidden ? "Showing hidden files" : "Hiding hidden files") } },
         { id: "view.inspector", title: "Toggle preview pane (inspector)", words: ["preview", "right", "inspector", "side panel", "info"], fp: ["<C-i>", "<Space>"], keys: ["i", "<Space>", ", v i"],
-          run: () => { app.inspectorOn = !app.inspectorOn } },
+          run: () => {
+              // In the gallery Space plays and pauses the video or song on show.
+              const p = pane()
+              if (p && p.gallery && p.galleryPreview && p.galleryPreview.hasMedia) { p.galleryPreview.togglePlayback(); return }
+              app.inspectorOn = !app.inspectorOn
+          } },
         { id: "view.zoomIn", title: "Zoom in", fp: ["<C-=>", "<C-+>", "<KP-+>"], keys: ["<C-=>", "<C-+>", ", v +", "<KP-+>"], run: () => zoom(0.1) },
         { id: "view.zoomOut", title: "Zoom out", fp: ["<C-->", "<KP-->"], keys: ["<C-->", ", v -", "<KP-->"], run: () => zoom(-0.1) },
         { id: "view.zoomReset", title: "Reset zoom", fp: ["<C-0>", "<KP-0>"], keys: ["<C-0>", ", v z", "<KP-0>"], run: () => { Style.zoomTarget = 1.0 } },
@@ -356,6 +485,14 @@ QtObject {
         { id: "view.list", title: "View: list", fp: ["<A-1>"], keys: [", v l"], run: () => { const p = pane(); if (p) p.viewMode = "list" } },
         { id: "view.grid", title: "View: icons with thumbnails", keys: [", v g"], fp: ["<A-4>"],
           run: () => { const p = pane(); if (p) p.viewMode = p.icons ? "list" : "grid" } },
+        { id: "view.gallery", title: "View: gallery (big preview over a strip of thumbnails)", words: ["filmstrip", "photos", "pictures", "slideshow"], keys: [", v G"], fp: ["<A-7>"],
+          run: () => { const p = pane(); if (p) p.viewMode = p.gallery ? "list" : "gallery" } },
+        { id: "view.galleryStrip", title: "Gallery: show / hide the thumbnail strip", words: ["filmstrip"], keys: [", v S"], fp: [],
+          run: () => {
+              const p = pane(); if (!p) return
+              if (!p.gallery) { app.toast("Not in the gallery view (Alt+7)", "warn"); return }
+              p.galleryStrip = !p.galleryStrip
+          } },
         { id: "view.columns", title: "View: columns", keys: [", v c"], fp: ["<A-6>"],
           run: () => { const p = pane(); if (p) p.viewMode = p.columns ? "list" : "columns" } },
         { id: "view.tree", title: "View: tree", fp: ["<A-2>"], keys: [", v t"],
@@ -371,11 +508,15 @@ QtObject {
               app.toast(app.groupBy === "none" ? "Grouping off" : "Grouped by " + app.groupBy)
           } },
         { id: "tab.list", title: "Search open tabs…", keys: [", t t"], fp: ["<A-t>", "<C-S-t>"], run: () => app.tabsPicker() },
-        { id: "media.toggle", title: "Media: play / pause", keys: [", m p"], fp: ["<C-m>"], run: () => app.inspector.togglePlayback() },
-        { id: "media.seekBack", title: "Media: back 10 seconds", words: ["rewind"], keys: [", m h"], fp: ["<C-Left>"], run: () => app.inspector.seekBy(-10000) },
-        { id: "media.seekFwd", title: "Media: forward 10 seconds", words: ["fast forward"], keys: [", m l"], fp: ["<C-Right>"], run: () => app.inspector.seekBy(10000) },
-        { id: "media.mute", title: "Media: mute / unmute", words: ["silence"], keys: [", m m"], fp: ["<C-S-m>"], run: () => app.inspector.toggleMute() },
-        { id: "media.loop", title: "Media: loop on / off", keys: [", m r"], fp: [], run: () => app.inspector.toggleLoop() },
+        { id: "media.toggle", title: "Media: play / pause", keys: [", m p"], fp: ["<C-m>"], run: () => player().togglePlayback() },
+        // In the grid views, where Left and Right move sideways, Ctrl+Left / Ctrl+Right move the focus sideways
+        // (keeping the selection) instead of seeking.
+        { id: "media.seekBack", title: "Media: back 10 seconds (grid views: focus left)", words: ["rewind"], keys: [", m h"], fp: ["<C-Left>"],
+          run: (n) => { const p = pane(); if (p && p.grid && app.keymap === "fp") focusBy(-p.hStep() * n); else player().seekBy(-10000) } },
+        { id: "media.seekFwd", title: "Media: forward 10 seconds (grid views: focus right)", words: ["fast forward"], keys: [", m l"], fp: ["<C-Right>"],
+          run: (n) => { const p = pane(); if (p && p.grid && app.keymap === "fp") focusBy(p.hStep() * n); else player().seekBy(10000) } },
+        { id: "media.mute", title: "Media: mute / unmute", words: ["silence"], keys: [", m m"], fp: ["<C-S-m>"], run: () => player().toggleMute() },
+        { id: "media.loop", title: "Media: loop on / off", keys: [", m r"], fp: [], run: () => player().toggleLoop() },
         { id: "view.animations", title: "Toggle animations", fp: [], keys: [", v a"],
           run: () => { Style.animations = !Style.animations; app.toast(Style.animations ? "Animations on" : "Animations off"); app.markDirty() } },
         { id: "view.density", title: "Cycle row spacing (compact / normal / roomy)", fp: [], keys: [", v d"],

@@ -12,6 +12,13 @@ Rectangle {
     property var info: null
     property string requested: ""
 
+    // Gallery view: folders and files with no preview show a big icon, and pictures sit in the middle.
+    property bool bigIcons: false
+    property bool centred: false
+    property int imageSize: 900
+    readonly property bool bigIcon: bigIcons && info !== null
+                                    && (info.kind === "dir" || info.kind === "binary" || info.kind === "none")
+
     // Which hotkeys to advertise under the player (filled in by the main window).
     property string hotkeyNote: ""
     signal actionRequested(string commandId)
@@ -173,16 +180,16 @@ Rectangle {
             fillMode: Image.PreserveAspectFit
             asynchronous: true
             autoTransform: true
-            sourceSize.width: 900
-            sourceSize.height: 900
+            sourceSize.width: insp.imageSize
+            sourceSize.height: insp.imageSize
             horizontalAlignment: Image.AlignHCenter
-            verticalAlignment: Image.AlignTop
+            verticalAlignment: insp.centred ? Image.AlignVCenter : Image.AlignTop
         }
 
         ListView {
             id: entryList
             anchors.fill: parent
-            visible: insp.info && (insp.info.kind === "dir" || insp.info.kind === "archive")
+            visible: insp.info && (insp.info.kind === "dir" || insp.info.kind === "archive") && !insp.bigIcon
             model: visible ? insp.info.entries : []
             boundsBehavior: Flickable.StopAtBounds
             delegate: Text {
@@ -452,10 +459,33 @@ Rectangle {
             width: parent.width
             horizontalAlignment: Text.AlignHCenter
             wrapMode: Text.Wrap
-            visible: insp.info && (insp.info.kind === "binary" || insp.info.kind === "none")
+            visible: insp.info && (insp.info.kind === "binary" || insp.info.kind === "none") && !insp.bigIcon
             color: Style.fgDim
             font { family: Style.font; pixelSize: Style.smallFont }
             text: insp.info ? (insp.info.message ?? "") : ""
+        }
+
+        // Gallery: the item's own glyph, big, with what the preview has to say under it.
+        Column {
+            anchors.centerIn: parent
+            width: parent.width
+            visible: insp.bigIcon
+            spacing: Style.pad
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: insp.info ? Style.glyph(insp.info.name, insp.info.kind === "dir", insp.info.isLink) : ""
+                color: insp.info ? Style.glyphColor(insp.info.name, insp.info.kind === "dir") : Style.fgDim
+                font { family: Style.font; pixelSize: Math.round(Style.fontSize * 7) }
+            }
+            Text {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                wrapMode: Text.Wrap
+                visible: text !== ""
+                color: Style.fgDim
+                font { family: Style.font; pixelSize: Style.smallFont }
+                text: !insp.info ? "" : (insp.info.kind === "dir" ? "" : (insp.info.message ?? ""))
+            }
         }
 
         Text {

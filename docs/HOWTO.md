@@ -49,9 +49,12 @@ frequently and recently used folders (ranked by frecency), and common places lik
 
 | Task | FP | Vim |
 | --- | --- | --- |
-| Mark / unmark and move on | `Insert` | `m` |
-| Extend a selection | `Shift-↑` `Shift-↓` | `v`, then `j` `k` |
-| Select all | `Ctrl-A` | `Ctrl-a` |
+| Mark / unmark (FP: in place; Vim: and move on) | `Ctrl-Space`, `Insert` | `m` |
+| Extend a selection | `Shift`+arrows, `Shift-PgUp/PgDn`, `Shift-Home/End` | `v`, then `j` `k` |
+| Move the focus, keep the selection | `Ctrl`+arrows (`Ctrl-←/→` in grid views) | |
+| Add the items passed over | `Ctrl-Shift`+arrows | |
+| Select all / invert | `Ctrl-A` / `Ctrl-Shift-A` | `Ctrl-a` / `*` |
+| Select by pattern (`*.jpg, a?c`, or `re:regex`) | `Ctrl-S` | `+` |
 | Copy / cut / paste | `Ctrl-C` `Ctrl-X` `Ctrl-V` | `yy` `dd` `p` |
 | Move to trash | `Del` | `dt` |
 | Delete permanently (asks first) | `Shift-Del` | `dD` |
@@ -63,6 +66,13 @@ frequently and recently used folders (ranked by frecency), and common places lik
 | Open with the default app | `Ctrl-O` | `o` |
 | Terminal here | ``Ctrl-` `` | `!` |
 
+- **Selecting works as in Explorer, Nautilus and Finder.** A click or a plain arrow selects only that item; `Ctrl`+click
+  toggles one; `Shift`+click selects from the last plain or `Ctrl` click (the anchor stays put, so `Shift`+clicks can grow
+  and shrink the range) and `Ctrl-Shift`+click adds a range; a click on empty space clears; dragging on empty space draws
+  a rubber band (`Ctrl` adds to the selection). A right-click on an item outside the selection selects only it. `Esc`
+  clears. `Enter` on a selection opens all of it: files in their apps, each folder in a tab of its own (more than 10
+  asks first). After a delete the cursor goes to the item that took the deleted one's place. With a filter on, only
+  the items shown count and are acted on. The Vim keymap keeps its `m` marks when you move.
 - Copy and cut use the system clipboard in the same format as Nautilus, so pasting works in other file managers.
 - Name clashes never overwrite: pasting `a.txt` next to `a.txt` creates `a (copy).txt`.
 - Trash follows the freedesktop spec. **Undo works for copy, move, rename, new items and trash** (permanent
@@ -131,6 +141,9 @@ Pin the things you use all the time and they appear under **PINNED** in the side
 | Cycle pane layout | | `, w l` |
 
 - Up to four panes per tab. Drag a pane's `⠿` grip onto another pane to swap them; drag a tab to reorder.
+- **Drag a tab down out of the tab strip** to make it a pane of the tab on show: the outline shows where it goes (the
+  edge of the page you are nearest to: left, right, above or below). Dragging the tab on show shows its neighbour,
+  which takes it in.
 - **Save a layout** with `, l s` (name it) and bring it back with `, l l`. Layouts hold your tabs, panes and views.
 - The last session (tabs, panes, views, sort, hidden files, zoom, sidebar state) is restored on start.
 - Open folders from the shell into the running window: `captainfm --tab ~/Projects ~/Music`.
@@ -146,9 +159,18 @@ Switch the view of the active pane (all remembered per pane and saved with your 
 | Miller columns | `Alt-3` | `, v m` | parent, current and child side by side |
 | Icons | `Alt-4` | `, v g` | thumbnails, from the freedesktop thumbnail cache or the image itself |
 | Columns | `Alt-6` | `, v c` | a compact multi-column name list |
+| Gallery | `Alt-7` | `, v G` | a big preview of the item under the cursor over a strip of thumbnails |
 | Group by | `Alt-5` | `, v b` | cycles none → type → date → size, with section headers |
 
 ![Icons view](images/icons.png)
+
+**Gallery.** `←` `→` (`h` `l` in Vim) move through the strip and the preview follows; `Home` `End`, typing a name and
+`Enter` work as everywhere. Pictures, video, code, PDFs and the rest show as in the preview pane; folders and files with no
+preview show a big icon. `Space` plays and pauses a video or song (and the media keys drive this player); the wheel
+scrolls the strip; `, v S` (or *Gallery: show / hide the thumbnail strip* in the palette) hides the strip. The preview
+pane on the right steps aside while the gallery is on.
+
+![Gallery view](images/gallery.png)
 
 Also: `Ctrl-H` shows hidden files, `Ctrl-=` / `Ctrl--` / `Ctrl-0` zoom (or `Ctrl`+scroll, or the status-bar slider),
 `, v d` cycles row spacing, `, v a` turns animations off.
@@ -392,7 +414,8 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | Keys | Action |
 | --- | --- |
 | arrows, `Home` `End` `PgUp` `PgDn` | move · `←`/`Backspace`/`Alt-↑` parent · `→`/`Enter` open · `Alt-←/→` history |
-| `Shift`+arrows · `Insert` · `Ctrl-A` | extend selection · toggle mark · select all |
+| `Shift`+arrows/`PgUp`/`PgDn`/`Home`/`End` · `Ctrl-Space` `Insert` · `Ctrl-A` `Ctrl-Shift-A` `Ctrl-S` | extend selection · toggle mark · select all, invert, by pattern |
+| `Ctrl`+arrows · `Ctrl-Shift`+arrows | move the focus (keep the selection) · add to the selection |
 | `Ctrl-C` `Ctrl-X` `Ctrl-V` | copy, cut, paste |
 | `Del` · `Shift-Del` | trash · delete permanently |
 | `F2` · `Ctrl-N` · `Ctrl-Shift-N` | rename (batch if several) · new file · new folder |
@@ -406,8 +429,8 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | `Ctrl-H` `Ctrl-I` `Ctrl-=` `Ctrl--` `Ctrl-0` | hidden · preview · zoom |
 | `Ctrl-B` `Ctrl-D` | pin folder · pin item |
 | `Ctrl-Shift-C` · ``Ctrl-` `` · `Ctrl-O` | copy path · terminal · open externally |
-| `Alt-1…6` · `F5` · `Ctrl-Shift-B` · `Ctrl-Shift-K` · `Ctrl-Q` | views · reload · sidebar · keymap · quit |
-| `Ctrl-M` `Ctrl-←` `Ctrl-→` `Ctrl-Shift-M` | play/pause · seek · mute |
+| `Alt-1…7` · `F5` · `Ctrl-Shift-B` · `Ctrl-Shift-K` · `Ctrl-Q` | views · reload · sidebar · keymap · quit |
+| `Ctrl-M` `Ctrl-←` `Ctrl-→` `Ctrl-Shift-M` | play/pause · seek (grid views: move the focus) · mute |
 
 ### Vim keys
 
@@ -417,7 +440,7 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | `Enter` `o` `H` `L` `-` | open · open externally · history · parent |
 | `z` / `Ctrl-l` | go to |
 | `/` · `Ctrl-f` · `, f f` · `, f d` | filter · deep search |
-| `m` `v` `Ctrl-a` | mark · visual · select all |
+| `m` `v` `Ctrl-a` `*` `+` | mark · visual · select all · invert · select by pattern |
 | `yy` `dd` `p` · `dt` `dD` · `u` `Ctrl-r` | copy cut paste · trash delete · undo redo |
 | `r` `a` `A` `R` · `yp` `yn` · `!` | rename new-file new-folder batch-rename · copy path/name · terminal |
 | `.` `i` | hidden · preview |
@@ -426,7 +449,7 @@ All of them honor `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME`.
 | `F5` `F6` | copy / move to other pane |
 | `, ,` `:` `Ctrl-p` | command palette |
 | `, p f` `, p i` | pin folder · pin item |
-| `, v …` | `t` tree, `m` Miller, `g` icons, `c` columns, `l` list, `b` group, `h` hidden, `i` preview, `s` sidebar, `a` animations, `d` spacing, `+`/`-`/`z` zoom |
+| `, v …` | `t` tree, `m` Miller, `g` icons, `c` columns, `G` gallery, `S` gallery strip, `l` list, `b` group, `h` hidden, `i` preview, `s` sidebar, `a` animations, `d` spacing, `+`/`-`/`z` zoom |
 | `, l s` `, l l` | save / load layout |
 | `, g d` `g e` `g c` | devices · eject · connect to server |
 | `, m p/h/l/m/r` | media play, back, forward, mute, loop |

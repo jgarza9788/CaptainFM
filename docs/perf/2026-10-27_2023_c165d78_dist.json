@@ -1,0 +1,102 @@
+{
+ "when": "2026-10-27 20:23",
+ "fixture_version": 2,
+ "profile": "dist",
+ "runs": 5,
+ "commit": "c165d78",
+ "dirty": false,
+ "binary_mb": 10.06854248046875,
+ "machine": {
+  "cpu": "Intel(R) Core(TM) i5-8600T CPU @ 2.30GHz",
+  "cores": 6,
+  "ram": "31 GB",
+  "kernel": "7.2.8-9-omarchy",
+  "host": "omarchy"
+ },
+ "cases": {
+  "startup (empty folder)": {
+   "cpu_s": {
+    "median": 0.503988,
+    "best": 0.49572099999999997,
+    "worst": 0.542098
+   },
+   "rss_mb": {
+    "median": 101.91796875,
+    "best": 101.4296875,
+    "worst": 102.33203125
+   },
+   "qml_loaded_ms": {
+    "median": 251.0,
+    "best": 240.0,
+    "worst": 269.0
+   }
+  },
+  "list 20,000 files": {
+   "cpu_s": {
+    "median": 0.712818,
+    "best": 0.672688,
+    "worst": 0.7552300000000001
+   },
+   "rss_mb": {
+    "median": 113.08984375,
+    "best": 112.98046875,
+    "worst": 113.34375
+   },
+   "list_dir_ms": {
+    "median": 16.461466,
+    "best": 12.860617,
+    "worst": 19.210729
+   }
+  },
+  "index 70,000+ files and search": {
+   "cpu_s": {
+    "median": 0.957592,
+    "best": 0.9453849999999999,
+    "worst": 1.063286
+   },
+   "rss_mb": {
+    "median": 125.1953125,
+    "best": 125.04296875,
+    "worst": 125.82421875
+   },
+   "index_ms": {
+    "median": 8.262845,
+    "best": 7.737243,
+    "worst": 9.528809
+   },
+   "search_ms": {
+    "median": 5.059042,
+    "best": 4.547603,
+    "worst": 5.483254
+   }
+  },
+  "copy 200 MB (100 files)": {
+   "cpu_s": {
+    "median": 0.971438,
+    "best": 0.940584,
+    "worst": 1.045574
+   },
+   "rss_mb": {
+    "median": 110.32421875,
+    "best": 109.79296875,
+    "worst": 110.5703125
+   },
+   "copy_ms": {
+    "median": 104.299394,
+    "best": 103.067022,
+    "worst": 111.505574
+   },
+   "copy_mb_per_s": {
+    "median": 1917.556683023489,
+    "best": 1793.6323075651806,
+    "worst": 1940.4849011743058
+   }
+  }
+ },
+ "scratch": "/tmp",
+ "fixture": {
+  "tree_files": 50000,
+  "flat_files": 20000,
+  "copy_mb": 200
+ }
+}

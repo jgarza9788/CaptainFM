@@ -170,6 +170,23 @@ mod qobject {
         #[rust_name = "clear_selection"]
         fn clearSelection(self: Pin<&mut Self>);
 
+        /// Make the selection exactly the rows in `rows` (a JSON array of row numbers), in one change:
+        /// the rubber band calls it on every pointer move.
+        #[qinvokable]
+        #[rust_name = "replace_selection"]
+        fn replaceSelection(self: Pin<&mut Self>, rows: &QString);
+
+        /// Select what is shown and not selected, and unselect the rest.
+        #[qinvokable]
+        #[rust_name = "invert_selection"]
+        fn invertSelection(self: Pin<&mut Self>);
+
+        /// Add the shown entries whose name matches `pattern` (globs like `*.jpg, a?c`, or `re:regex`);
+        /// returns how many matched.
+        #[qinvokable]
+        #[rust_name = "select_matching"]
+        fn selectMatching(self: Pin<&mut Self>, pattern: &QString) -> i32;
+
         /// JSON array of the selected paths.
         #[qinvokable]
         #[rust_name = "selected_paths"]
@@ -409,6 +426,42 @@ fn range_paths(all: &[Entry], order: &[u32], from: i32, to: i32) -> Vec<String> 
         .collect()
 }
 
+/// A name matcher for "select by pattern": comma-separated globs (`*`, `?`, case-insensitive), or
+/// `re:` and a regular expression. `None` when the pattern is empty or the regex does not compile.
+fn name_matcher(pattern: &str) -> Option<regex::Regex> {
+    let pattern = pattern.trim();
+    if let Some(re) = pattern.strip_prefix("re:") {
+        return regex::RegexBuilder::new(re)
+            .case_insensitive(true)
+            .build()
+            .ok();
+    }
+    let globs: Vec<String> = pattern
+        .split(',')
+        .map(str::trim)
+        .filter(|g| !g.is_empty())
+        .map(|g| {
+            let mut out = String::from("^");
+            for c in g.chars() {
+                match c {
+                    '*' => out.push_str(".*"),
+                    '?' => out.push('.'),
+                    c => out.push_str(&regex::escape(&c.to_string())),
+                }
+            }
+            out.push('$');
+            out
+        })
+        .collect();
+    if globs.is_empty() {
+        return None;
+    }
+    regex::RegexBuilder::new(&globs.join("|"))
+        .case_insensitive(true)
+        .build()
+        .ok()
+}
+
 /// Collapsing a folder also collapses every folder inside it.
 fn collapse_in(expanded: &mut HashSet<String>, path: &str) {
     let prefix = format!("{path}/");
@@ -435,6 +488,17 @@ impl DirModelRust {
 
     fn shown(&self) -> impl Iterator<Item = &Entry> {
         self.order.iter().map(|&i| &self.all[i as usize])
+    }
+
+    /// Selected entries that are shown: a filter hides the rest, and actions only see these (see
+    /// `selected_paths`), so the count says the same.
+    fn shown_selected(&self) -> i32 {
+        if self.selected.is_empty() {
+            return 0;
+        }
+        self.shown()
+            .filter(|e| self.selected.contains(&e.path))
+            .count() as i32
     }
 
     fn new_order(&self, all: &[Entry], meta: &[Meta]) -> Vec<u32> {
@@ -694,7 +758,7 @@ impl qobject::DirModel {
     // ---- selection --------------------------------------------------------------------
 
     fn emit_selection_changed(mut self: Pin<&mut Self>, first: i32, last: i32) {
-        let count = self.selected.len() as i32;
+        let count = self.shown_selected();
         self.as_mut().set_selected_count(count);
         if self.order.is_empty() || last < first {
             return;
@@ -746,6 +810,48 @@ impl qobject::DirModel {
         self.as_mut().rust_mut().selected.clear();
         let last = self.order.len() as i32 - 1;
         self.emit_selection_changed(0, last);
+    }
+
+    fn replace_selection(mut self: Pin<&mut Self>, rows: &QString) {
+        let rows: Vec<i32> = serde_json::from_str(&rows.to_string()).unwrap_or_default();
+        let paths: HashSet<String> = rows
+            .into_iter()
+            .filter_map(|r| self.entry(r).map(|e| e.path.clone()))
+            .collect();
+        if paths == self.selected {
+            return;
+        }
+        self.as_mut().rust_mut().selected = paths;
+        let last = self.order.len() as i32 - 1;
+        self.emit_selection_changed(0, last);
+    }
+
+    fn invert_selection(mut self: Pin<&mut Self>) {
+        let paths: Vec<String> = self.shown().map(|e| e.path.clone()).collect();
+        let sel = &mut self.as_mut().rust_mut().selected;
+        for p in paths {
+            if !sel.remove(&p) {
+                sel.insert(p);
+            }
+        }
+        let last = self.order.len() as i32 - 1;
+        self.emit_selection_changed(0, last);
+    }
+
+    fn select_matching(mut self: Pin<&mut Self>, pattern: &QString) -> i32 {
+        let Some(re) = name_matcher(&pattern.to_string()) else {
+            return 0;
+        };
+        let paths: Vec<String> = self
+            .shown()
+            .filter(|e| re.is_match(&e.name))
+            .map(|e| e.path.clone())
+            .collect();
+        let n = paths.len() as i32;
+        self.as_mut().rust_mut().selected.extend(paths);
+        let last = self.order.len() as i32 - 1;
+        self.emit_selection_changed(0, last);
+        n
     }
 
     fn selected_paths(&self) -> QString {
@@ -1077,7 +1183,7 @@ impl qobject::DirModel {
                 .collect();
             self.as_mut().rust_mut().selected = kept;
         }
-        let (count, selected) = (self.order.len() as i32, self.selected.len() as i32);
+        let (count, selected) = (self.order.len() as i32, self.shown_selected());
         self.as_mut().set_entry_count(count);
         self.as_mut().set_selected_count(selected);
         if !same_rows || force_signal {
@@ -1234,6 +1340,21 @@ mod tests {
         assert_eq!(range_paths(&all, &order, 2, 1), ["/r/c", "/r/b"]);
         assert_eq!(range_paths(&all, &order, -5, 0), ["/r/d"]);
         assert_eq!(range_paths(&all, &order, 3, 99), ["/r/a"]);
+    }
+
+    #[test]
+    fn select_by_pattern_takes_globs_lists_and_regexes() {
+        let m = name_matcher("*.JPG, a?c").unwrap();
+        assert!(m.is_match("photo.jpg"));
+        assert!(m.is_match("abc"));
+        assert!(!m.is_match("abcd"));
+        assert!(!m.is_match("photo.jpeg"));
+        // Regex characters in a glob are literal.
+        assert!(name_matcher("a+b").unwrap().is_match("a+b"));
+        assert!(!name_matcher("a+b").unwrap().is_match("aab"));
+        assert!(name_matcher("re:^f0[1-3]$").unwrap().is_match("f02"));
+        assert!(name_matcher(" , ").is_none());
+        assert!(name_matcher("re:(").is_none());
     }
 
     #[test]
