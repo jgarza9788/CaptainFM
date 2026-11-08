@@ -703,6 +703,50 @@ Window {
         })
     }
 
+    // ---- tearing a tab off into a pane -------------------------------------------------------
+    // Drag a tab down out of the strip: it becomes a pane (or panes) of the tab on show, on the side of the
+    // page the pointer is nearest to. Dragging the tab on show shows its neighbour, which takes it in.
+    property int tearIndex: -1          // the tab being dragged out, -1 when none
+    property string tearZone: "right"   // left | right | top | bottom
+    property int tearReturn: -1         // the tab that was on show before the drag switched away from it
+
+    function tearPreview(i) {
+        if (i < 0) {
+            if (tearReturn >= 0 && tearReturn < tabsModel.count) tabIndex = tearReturn
+            tearIndex = -1; tearReturn = -1
+            return
+        }
+        tearIndex = i
+        if (i === tabIndex) { tearReturn = i; tabIndex = i > 0 ? i - 1 : i + 1 }
+    }
+
+    // The edge of the page nearest to a point (scene coordinates).
+    function zoneAt(sx, sy) {
+        const p = tabsHost.mapFromItem(null, sx, sy)
+        const top = tabStrip.height
+        const rx = p.x / Math.max(1, tabsHost.width), ry = (p.y - top) / Math.max(1, tabsHost.height - top)
+        const d = { left: rx, right: 1 - rx, top: ry, bottom: 1 - ry }
+        return Object.keys(d).reduce((a, b) => d[a] <= d[b] ? a : b)
+    }
+
+    function tearTab(i, zone) {
+        if (i < 0 || i >= tabsModel.count || tabsModel.count < 2) return false
+        const into = i === tabIndex ? (i > 0 ? i - 1 : i + 1) : tabIndex
+        const src = tabPages[i], target = tabPages[into]
+        if (!src || !target) return false
+        const panes = src.paneItems.map(p => ({ path: p.dir.path, view: p.viewMode }))
+        if (target.paneCount + panes.length > 4) { toast("At most 4 panes in a tab", "warn"); return false }
+        target.layoutMode = zone === "top" || zone === "bottom" ? "rows" : "columns"
+        for (const p of panes) target.addPane(p.path, p.view)
+        if (zone === "left" || zone === "top") target.moveLastToFront(panes.length)
+        const title = src.title
+        tabsModel.remove(i)
+        tabIndex = into > i ? into - 1 : into
+        markDirty()
+        toast("Tab “" + title + "” is now a pane")
+        return true
+    }
+
     function moveTab(from, to) {
         if (from === to || from < 0 || to < 0 || from >= tabsModel.count || to >= tabsModel.count) return
         tabsModel.move(from, to, 1)
@@ -1178,7 +1222,8 @@ Window {
                                     readonly property bool current: index === app.tabIndex
                                     readonly property bool armed: app.armedKey === "tab:" + index
                                     readonly property Item page: app.tabPages.length > index ? app.tabPages[index] : null
-                                    anchors.verticalCenter: parent.verticalCenter
+                                    // Not anchored: a drag moves the tab down out of the strip (tear-off).
+                                    y: 4
                                     height: parent.height - 8
                                     readonly property int maxWidth: Math.round(220 * Style.zoom)
                                     width: Math.min(maxWidth, label.implicitWidth + Style.pad * 2.4)
@@ -1249,12 +1294,29 @@ Window {
                                             else app.selectTab(chip.index)
                                         }
                                     }
-                                    // Drag a tab sideways to reorder; it drops where its centre lands.
+                                    // Drag a tab sideways to reorder; it drops where its centre lands. Dragged down
+                                    // out of the strip, it is torn off into a pane of the tab on show.
                                     DragHandler {
-                                        yAxis.enabled: false
+                                        id: chipDrag
                                         cursorShape: Qt.ClosedHandCursor
+                                        onCentroidChanged: {
+                                            if (!active) return
+                                            const stripBottom = tabStrip.mapToItem(null, 0, tabStrip.height).y
+                                            const tearing = tabsModel.count > 1 && centroid.scenePosition.y > stripBottom + Style.pad * 2
+                                            if (tearing !== (app.tearIndex === chip.index)) app.tearPreview(tearing ? chip.index : -1)
+                                            if (tearing) app.tearZone = app.zoneAt(centroid.scenePosition.x, centroid.scenePosition.y)
+                                        }
                                         onActiveChanged: {
                                             if (active) return
+                                            chip.y = 4
+                                            if (app.tearIndex === chip.index) {
+                                                const i = app.tearIndex, zone = app.tearZone
+                                                app.tearIndex = -1; app.tearReturn = -1
+                                                chip.parent.forceLayout()
+                                                // Later: removing the tab destroys this chip, whose handler is running.
+                                                Qt.callLater(() => app.tearTab(i, zone))
+                                                return
+                                            }
                                             const centre = chip.x + chip.width / 2
                                             let target = 0
                                             const siblings = chip.parent.children
@@ -1294,6 +1356,7 @@ Window {
                             onSortRequested: (key) => commands.setSort(key)
                             onScopeToggled: commands.search(!app.pane.dir.path || app.pane.dir.path !== Backend.searchRoot(app.pane.dir.path))
                             onPickRequested: app.pickEnterFile()
+                            onCommandRequested: (id) => commands.run(id, 1, false)
                         }
                         onItemAdded: (i, item) => {
                             const a = app.tabPages.slice()
@@ -1302,6 +1365,33 @@ Window {
                         }
                         onItemRemoved: (i, item) => {
                             app.tabPages = app.tabPages.filter(t => t !== item)
+                        }
+                    }
+
+                    // Where a tab being torn off would land.
+                    Rectangle {
+                        id: tearOverlay
+                        visible: app.tearIndex >= 0
+                        z: 3
+                        readonly property real stripH: tabStrip.height
+                        readonly property real fullH: parent.height - stripH
+                        readonly property bool side: app.tearZone === "left" || app.tearZone === "right"
+                        x: app.tearZone === "right" ? parent.width / 2 : 0
+                        y: stripH + (app.tearZone === "bottom" ? fullH / 2 : 0)
+                        width: side ? parent.width / 2 : parent.width
+                        height: side ? fullH : fullH / 2
+                        radius: 6
+                        color: Style.alpha(Style.accent, 0.16)
+                        border { width: 2; color: Style.accent }
+                        Text {
+                            anchors.centerIn: parent
+                            width: parent.width - Style.pad * 4
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.Wrap
+                            readonly property Item page: app.tearIndex >= 0 && app.tearIndex < app.tabPages.length ? app.tabPages[app.tearIndex] : null
+                            text: page ? "Drop to show “" + page.title + "” " + ({ left: "on the left", right: "on the right", top: "above", bottom: "below" })[app.tearZone] : ""
+                            color: Style.fg
+                            font { family: Style.font; pixelSize: Style.fontSize; bold: true }
                         }
                     }
                 }
@@ -1333,7 +1423,9 @@ Window {
                     hotkeyNote: app.mediaHotkeys()
                     onActionRequested: (id) => commands.run(id, 1, false)
                     Layout.fillHeight: true
-                    Layout.preferredWidth: app.inspectorOn && app.width > 760 ? Math.min(Math.round(420 * Style.zoom), app.width * 0.34) : 0
+                    // The gallery view is a preview itself: the side pane steps aside while it is on.
+                    Layout.preferredWidth: app.inspectorOn && app.width > 760 && !(app.pane && app.pane.gallery)
+                                           ? Math.min(Math.round(420 * Style.zoom), app.width * 0.34) : 0
                     visible: Layout.preferredWidth > 1
                     clip: true
                     path: visible && app.pane ? app.pane.currentPath : ""
@@ -1643,6 +1735,23 @@ Window {
                 // Test automation for the remote capacity lookup (a hover cannot be sent): !space:<part of the name>
                 const found = sidebar.remotes.find(x => x.label.indexOf(t.substring(7)) >= 0 || (x.path || "").indexOf(t.substring(7)) >= 0)
                 if (found) sidebar.askSpace(found); else toast("No remote “" + t.substring(7) + "”", "error")
+            }
+            else if (t.indexOf("!click:") === 0 && t.indexOf("!click:pin:") !== 0) {
+                // Test automation for the mouse selection protocol: !click:<row>[:C|S|CS] (Ctrl, Shift, both)
+                const [row, mods] = t.substring(7).split(":")
+                const m = (mods ?? "").indexOf("C") >= 0 ? Qt.ControlModifier : 0
+                if (pane) pane.clickRow(parseInt(row), m | ((mods ?? "").indexOf("S") >= 0 ? Qt.ShiftModifier : 0))
+            }
+            else if (t.indexOf("!rclickrow:") === 0) {
+                // A right-click on row N: it selects only that row when it is not part of the selection.
+                const row = parseInt(t.substring(11))
+                if (pane) pane.rightClickRow(row, JSON.parse(pane.dir.selectedPaths()).indexOf(pane.dir.pathAt(row)) >= 0)
+            }
+            else if (t === "!clickempty") { if (pane) pane.clickEmpty(0) }
+            else if (t.indexOf("!tear:") === 0) {
+                // Test automation for tearing a tab off (a drag cannot be sent): !tear:<tab index>:<left|right|top|bottom>
+                const [ti, zone] = t.substring(6).split(":")
+                tearTab(parseInt(ti), zone || "right")
             }
             else if (t === "!play") inspectorPane.togglePlayback()
             else if (t === "!clear") { const f = app.activeFocusItem; if (f && f.text !== undefined) f.text = "" }

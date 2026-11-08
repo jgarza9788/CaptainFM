@@ -37,6 +37,7 @@ Item {
     signal scopeToggled()
     signal zoomRequested(real steps)
     signal pickRequested()
+    signal commandRequested(string commandId)
 
     readonly property var layouts: ["columns", "rows", "grid"]
 
@@ -49,9 +50,9 @@ Item {
             panesModel.append({ startPath: paths[i], startView: startViews[i] ?? "list" })
     }
 
-    function addPane(path) {
+    function addPane(path, view) {
         if (paneCount >= 4) return false
-        panesModel.append({ startPath: path, startView: activePane ? activePane.viewMode : "list" })
+        panesModel.append({ startPath: path, startView: view ?? (activePane ? activePane.viewMode : "list") })
         activeIndex = paneCount - 1
         if (paneCount > 2 && layoutMode === "columns") layoutMode = "grid"
         return true
@@ -82,6 +83,18 @@ Item {
             for (let i = 0; i < paneCount; i++) items.push(paneRepeater.itemAt(i))
             paneItems = items
             activeIndex = b
+        })
+    }
+
+    // Move the last `n` panes to the front (a tab torn off onto the left or top edge), keeping their order.
+    function moveLastToFront(n) {
+        if (n <= 0 || n >= paneCount) return
+        for (let k = 0; k < n; k++) panesModel.move(paneCount - n + k, k, 1)
+        Qt.callLater(() => {
+            const items = []
+            for (let i = 0; i < paneCount; i++) items.push(paneRepeater.itemAt(i))
+            paneItems = items
+            activeIndex = 0
         })
     }
 
@@ -130,6 +143,7 @@ Item {
                 onContextRequested: page.contextRequested()
                 onReconnectRequested: page.reconnectRequested()
                 onPickRequested: page.pickRequested()
+                onCommandRequested: (id) => page.commandRequested(id)
             }
             onItemAdded: (i, item) => {
                 const a = page.paneItems.slice()

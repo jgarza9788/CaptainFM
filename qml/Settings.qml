@@ -53,7 +53,7 @@ Rectangle {
         { title: "Key style", hint: "File Pilot keys, or modal Vim keys with a comma leader",
           choices: [["fp", "File Pilot"], ["vim", "Vim"]], get: () => app.keymap, set: (v) => { app.keymap = v; app.markDirty() } },
         Object.assign({ title: "Default view", hint: "for new panes and tabs" },
-            prefs("defaultView", [["list", "list"], ["tree", "tree"], ["miller", "Miller"], ["grid", "icons"], ["columns", "columns"]])),
+            prefs("defaultView", [["list", "list"], ["tree", "tree"], ["miller", "Miller"], ["grid", "icons"], ["columns", "columns"], ["gallery", "gallery"]])),
         Object.assign({ title: "Open items with", hint: "a folder or file under the pointer" },
             prefs("openOnClick", [["double", "double click"], ["single", "single click"]])),
         Object.assign({ title: "Learn from palette picks", hint: "rank the commands you use first; what you type is kept on this computer" },
@@ -237,7 +237,7 @@ Rectangle {
             Text {
                 anchors.centerIn: parent
                 // The number comes from Cargo.toml; the codename changes by hand with each release.
-                text: "CaptainFM v" + Backend.version() + " *Blackbeard (Edward Teach), 🏴‍☠️*"
+                text: "CaptainFM v" + Backend.version() + " *Crunch (Cap'n Crunch), 🥣*"
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.smallFont }
             }

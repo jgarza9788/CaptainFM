@@ -10,7 +10,7 @@ The feature set is inspired by [File Pilot](https://filepilot.tech/) on Windows;
 ![CaptainFM main view](docs/images/main.png)
 
 [Getting started](#getting-started) · [Highlights](#highlights) · [Install](#install) · [Keys](#keys-at-a-glance) ·
-[Command line](#command-line) · [Plugins](#configuration-and-plugins) · [Development](#development) · [How-to guide](docs/HOWTO.md)
+[Command line](#command-line) · [Plugins](#configuration-and-plugins) · [Development](#development) · [Terms](#terms-of-use) · [How-to guide](docs/HOWTO.md)
 
 ## Getting started
 
@@ -44,7 +44,7 @@ Settings are on `Ctrl-,`. CaptainFM never changes your default file manager unle
 - **Real previews.** Syntax-highlighted code, images (including HEIC, TIFF, RAW), video with transport
   controls, audio, PDFs, Office documents, Markdown, CSV tables, fonts and archives, plus e-books, comics,
   SQLite, certificates, torrents, calendars and contacts through small built-in plugins you can switch off.
-- **Tabs, up to four panes, saved layouts**; list, tree, Miller, icons (thumbnails) and columns views;
+- **Tabs, up to four panes, saved layouts**; list, tree, Miller, icons (thumbnails), columns and gallery views;
   group by type, date or size.
 - **Pins, jump bar, batch rename, undo/redo**, devices and remotes (SMB, SFTP, FTP, WebDAV, MTP, and cloud drives through rclone) with saved connections and keyring-stored passwords, drag and drop.
 - **Transfers you can watch.** Copies and moves show progress, speed and time left in a panel, can be paused or cancelled (`, x p`, `, x c`, `, x x` shows the panel), and ask whether to replace, skip or keep both on name clashes.
@@ -72,6 +72,31 @@ what it is tested on. Releases ship an Arch package, a tarball, and an AppImage 
 built on a very new glibc, so it only starts on rolling distros). There are no `.deb`, `.rpm` or Flatpak packages, on
 purpose: each needs a build against that distro's own Qt. On other distros build from source (below). X11, other
 desktops and other CPUs are untested.
+
+### Arch Linux and Omarchy
+
+```sh
+yay -S captainfm-bin    # AUR: the prebuilt program from the release page, installs in seconds
+yay -S captainfm        # AUR: builds from source (about 12 minutes; needs rust and cmake)
+```
+
+Any AUR helper works (`paru -S ...`), or by hand: `git clone https://aur.archlinux.org/captainfm-bin.git && cd captainfm-bin && makepkg -si`.
+**The AUR packages are not published yet (v0.0.3).** Until they are, use the package from the
+[latest release](https://github.com/jgarza9788/CaptainFM/releases/latest):
+
+```sh
+sudo pacman -U captainfm-<version>-1-x86_64.pkg.tar.zst
+```
+
+### Other ways
+
+- **AppImage** (rolling distros only, glibc 2.44 or newer): download `CaptainFM-<version>-x86_64.AppImage` from the
+  release page, then `chmod +x` it and run it.
+- **Tarball:** unpack it and run `./install.sh` (into `/usr/local`, or `PREFIX=~/.local ./install.sh`). It links against
+  your Qt, so it suits a system with the same Qt as an Arch/Omarchy install.
+- **From source:** below.
+
+### Build from source
 
 Needs Rust, Qt 6 (`qt6-declarative`, `qt6-multimedia`) and a C++ toolchain. Optional helpers unlock more previews
 and features: `ffmpeg`, `imagemagick`, `poppler`, `libarchive` (`bsdtar`), `sqlite`, `openssl`, `wl-clipboard`,
@@ -119,7 +144,7 @@ captainfm --default off    # restore the previous handler
 | New tab, split pane | `Ctrl-T`, `Ctrl-\` | `Ctrl-T`, `Ctrl-w v` |
 | Copy / move to the other pane | `F7` / `F8` | `, w y` / `, w m` |
 | Show, pause or cancel transfers | palette: "transfers" | `, x x` / `, x p` / `, x c` |
-| Preview pane, views | `Ctrl-I`, `Alt-1`…`Alt-6` | `, v i`, `, v l` … |
+| Preview pane, views | `Ctrl-I`, `Alt-1`…`Alt-7` | `, v i`, `, v l` … |
 
 Everything else is in the **[how-to guide](docs/HOWTO.md)**: daily use step by step, every view, searching, pins,
 batch rename, devices and remotes, themes, configuration, plugins, full key tables and troubleshooting.
@@ -162,6 +187,7 @@ on the command line when you switch back to it.
 ./run-tests.sh trash            # only tests whose name contains "trash"; --ignored adds the known failures, --list lists them
 cargo clippy --release --all-targets -- -D warnings   # ./build.sh runs fmt, clippy and the tests before it builds
 ./scripts/screenshots.sh        # regenerate docs/images from a synthetic home folder (headless)
+./scripts/selection-tests.sh    # the multi-selection protocol, headless: keys and clicks, then what went to the trash
 python3 scripts/perf.py         # standard performance test (dist build); saves a report to docs/perf/
 ```
 
@@ -173,7 +199,8 @@ CFM_SIZE=1400x860 CFM_KEYS="<Down> <Down> @view.tree <Right>" CFM_SHOT=/tmp/shot
 ```
 
 `CFM_KEYS` is a space-separated list of key tokens (`j`, `<C-d>`, `<Insert>`), `@command.id`, `=text` (types into
-the focused field; `_` is a space), `!accept` (also answers yes on a y/n question), `!click:pin:<name>` (clicks a pinned sidebar entry), `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
+the focused field; `_` is a space), `!accept` (also answers yes on a y/n question), `!click:pin:<name>` (clicks a pinned sidebar entry), `!click:<row>[:C|S|CS]`
+(clicks a row, with Ctrl and/or Shift), `!rclickrow:<row>`, `!clickempty`, `!tear:<tab>:<left|right|top|bottom>` (tears a tab off into a pane), `!next`, `!mode:template`, `!clear` and `!play`. `CFM_SHOT` saves
 a window image and quits, `CFM_DEBUG=1` prints timings, `CFM_KEYMAP=vim|fp` picks the keymap. Point
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME` and `XDG_CACHE_HOME` somewhere temporary to keep test runs away from your state.
 
@@ -181,6 +208,33 @@ Layout: `src/` Rust (`dir_model`, `listing`, `index`, `fuzzy`, `ops`, `transfer`
 `plugins`, `devices`, `remotes`, `batch`, `dbus`, `theme`, `state`, `thumbnails`), `qml/` interface,
 `packaging/` desktop assets and the built-in plugins (`packaging/plugins/`), `scripts/` tooling (screenshots, demo
 recordings, benchmarks). Planned work is in [`todo.md`](todo.md).
+
+## Terms of use
+
+CaptainFM is free software under the [MIT License](LICENSE). By installing or using it you agree to the following,
+which restate and spell out the licence and add no further restrictions:
+
+1. **No warranty.** The software is provided "as is", without warranty of any kind. The author is not liable for any
+   claim, damage or loss, including lost or damaged files, arising from its use (see the full text in `LICENSE`).
+2. **It changes your files, on your command.** Copy, move, rename, batch rename, trash, permanent delete, extract and
+   drag and drop change data on your disks and servers. `Del` moves to the trash and `Ctrl-Z` undoes file operations,
+   but undo is best effort and does not cover permanent delete, remote servers that have no trash, or files changed by
+   other programs. Keep backups of what matters, and try batch operations on copies first.
+3. **Remotes and passwords.** Connections to SMB, SFTP, FTP, WebDAV, MTP and cloud drives are made by gvfs and rclone,
+   not by CaptainFM, and are subject to their terms and to those of your provider. Saved passwords are stored only in
+   your system keyring (through `libsecret`).
+4. **Your data stays on your machine.** CaptainFM does not send anything over the network by itself: no accounts, no
+   telemetry, no update checks. The feature-use counts behind "Show feature use…" are a local file: switch the counting
+   off in Settings or clear it from the command palette ("Forget feature use"); it is never uploaded.
+5. **Plugins run your code.** Lua plugins you add to the plugin folder run with your user's permissions. Install only
+   plugins you trust. The built-in plugins ship with the program.
+6. **Third-party software.** Qt, Rust crates, Lua and the optional helpers (`ffmpeg`, `rclone`, ...) have their own
+   licences, which apply to them.
+7. **Not a substitute for care.** CaptainFM can be set as your default folder handler and file chooser (`--default`,
+   `--install-portal`); you can undo both from the same commands. Do not use it as the only safeguard for data whose loss
+   would cause harm.
+
+Questions or problems: open an issue at https://github.com/jgarza9788/CaptainFM/issues.
 
 ## License
 

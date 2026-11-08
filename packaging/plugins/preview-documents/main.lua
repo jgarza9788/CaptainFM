@@ -96,7 +96,8 @@ function pick_cover(members)
   local images = {}
   for _, m in ipairs(members) do
     local e = m:match("%.([^./]+)$")
-    if e then
+    -- A member named like an option ("--use-compress-program=...") or with control characters is never a cover.
+    if e and m:sub(1, 1) ~= "-" and not m:find("%c") then
       e = e:lower()
       if e == "png" or e == "jpg" or e == "jpeg" or e == "gif" or e == "webp" then images[#images + 1] = m end
     end
@@ -117,7 +118,7 @@ function cover(ctx)
   if not member then return nil end
   local out = cfm.cache_file(ctx.path .. ":" .. ctx.mtime .. ":cover", (member:match("%.([^.]+)$") or "png"):lower())
   if not cfm.exists(out) then
-    local r = cfm.run("sh", { "-c", 'bsdtar -xOf "$1" "$2" > "$3"', "sh", ctx.path, member, out })
+    local r = cfm.run("sh", { "-c", 'bsdtar --no-same-owner -xOf "$1" -- "$2" > "$3"', "sh", ctx.path, member, out })
     if not r.ok then cfm.run("rm", { "-f", out }); return nil end
   end
   return { image = out, note = ctx.ext == "epub" and "e-book cover" or "first page" }

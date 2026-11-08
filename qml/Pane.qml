@@ -12,14 +12,22 @@ FocusScope {
     property bool optSortDesc: false
     required property string startPath
     required property string startView
-    property string viewMode: startView     // list | tree | miller
+    property string viewMode: startView     // list | tree | miller | grid | columns | gallery
     readonly property bool tree: viewMode === "tree"
     readonly property bool miller: viewMode === "miller"
     readonly property bool icons: viewMode === "grid"
     readonly property bool columns: viewMode === "columns"
-    readonly property bool grid: icons || columns
+    // Gallery: a big preview of the item under the cursor over a strip of thumbnails.
+    readonly property bool gallery: viewMode === "gallery"
+    readonly property bool grid: icons || columns || gallery
+    property bool galleryStrip: true
+    readonly property var galleryPreview: galleryLoader.item
     property bool visualMode: false
     property int anchorRow: -1
+    // Where a Shift+click range starts: set by a plain click or a Ctrl+click, kept by Shift+clicks (-1: the cursor).
+    property int clickAnchor: -1
+    // Row of the cursor before a reload, so a deleted item's place goes to the one that took it.
+    property int lastRow: -1
     property string currentPath: ""       // full path under the cursor ("" when empty)
     property bool currentIsDir: false
 
@@ -47,6 +55,7 @@ FocusScope {
     signal sortRequested(string key)
     signal scopeToggled()
     signal reconnectRequested()
+    signal commandRequested(string commandId)
     property bool showHeader: false
     property string searchText: ""
     // Name of the server a connection is being made to (set by Main while it mounts), "" otherwise.
@@ -99,6 +108,7 @@ FocusScope {
 
     function ensureVisible(row) {
         // Section headers make row positions non-uniform: let the view place the row.
+        if (gallery) { grid2.positionViewAtIndex(row, GridView.Center); return }
         if (grid) { grid2.positionViewAtIndex(row, GridView.Contain); return }
         if (optGroupBy !== "none") { list.positionViewAtIndex(row, ListView.Contain); return }
         const top = row * rowH, bottom = top + rowH
@@ -128,18 +138,124 @@ FocusScope {
     // Grid views: vertical / horizontal steps depend on the flow direction.
     readonly property int gridColumns: Math.max(1, Math.floor(grid2.width / grid2.cellWidth))
     readonly property int gridRows: Math.max(1, Math.floor(grid2.height / grid2.cellHeight))
-    function moveVertical(sign) { move(sign * (icons ? gridColumns : 1)) }
-    function moveHorizontal(sign) { move(sign * (icons ? 1 : gridRows)) }
+    // One step down / sideways, in items: a row of icons is gridColumns items, a column of the columns view gridRows.
+    function vStep() { return icons ? gridColumns : 1 }
+    function hStep() { return icons || gallery ? 1 : (columns ? gridRows : 1) }
+    function moveVertical(sign) { move(sign * vStep()) }
+    function moveHorizontal(sign) { move(sign * hStep()) }
+
+    // Move the cursor (the focus) without touching the selection.
+    function focusTo(row) {
+        const n = list.count
+        if (n === 0) return
+        endVisual()
+        row = Math.max(0, Math.min(n - 1, row))
+        list.currentIndex = row
+        ensureVisible(row)
+    }
 
     function move(delta) { setCursor((list.currentIndex < 0 ? 0 : list.currentIndex) + delta) }
-    function pageRows() { return Math.max(1, Math.floor(list.height / rowH)) }
+    // Rows (list) or items (grid views) a Page Up / Page Down jumps.
+    function pageRows() {
+        if (gallery) return Math.max(1, Math.floor(grid2.width / grid2.cellWidth))
+        if (icons) return gridColumns * Math.max(1, gridRows - 1)
+        if (columns) return gridRows * Math.max(1, Math.floor(grid2.width / grid2.cellWidth))
+        return Math.max(1, Math.floor(list.height / rowH))
+    }
 
     function startVisual() {
         visualMode = true
-        anchorRow = Math.max(0, list.currentIndex)
-        dir.selectRange(anchorRow, anchorRow, true)
+        const cur = Math.max(0, list.currentIndex)
+        // A Shift+arrow after a click extends from the clicked item, as a Shift+click would.
+        anchorRow = clickAnchor >= 0 && clickAnchor < list.count ? clickAnchor : cur
+        dir.clearSelection()
+        dir.selectRange(anchorRow, cur, true)
     }
     function endVisual() { visualMode = false; anchorRow = -1 }
+
+    // ---- mouse selection (the Explorer / Nautilus / Finder protocol) ---------------------
+
+    // A plain click: only this item, and it becomes the anchor of the next Shift+click.
+    function selectOnly(row) {
+        endVisual()
+        dir.clearSelection()
+        setCursor(row)
+        clickAnchor = row
+    }
+
+    // The fixed end of a Shift range: the visual anchor, else the last plain or Ctrl click, else the cursor.
+    function rangeAnchor() {
+        if (visualMode && anchorRow >= 0) return anchorRow
+        if (clickAnchor >= 0 && clickAnchor < list.count) return clickAnchor
+        return Math.max(0, list.currentIndex)
+    }
+
+    // Shift+click replaces the selection with anchor..row; Ctrl+Shift+click adds the range.
+    function rangeTo(row, add) {
+        const a = rangeAnchor()
+        endVisual()
+        if (!add) dir.clearSelection()
+        dir.selectRange(a, row, true)
+        clickAnchor = a
+        list.currentIndex = row
+        ensureVisible(row)
+    }
+
+    // Ctrl+click toggles one item. The item the cursor was on counts as selected (a plain click selected
+    // it), so it is marked first and Ctrl+clicking a second item leaves both.
+    function toggleAt(row) {
+        endVisual()
+        const cur = list.currentIndex
+        if (dir.selectedCount === 0 && cur >= 0 && cur !== row) dir.toggleSelect(cur)
+        dir.toggleSelect(row)
+        list.currentIndex = row
+        clickAnchor = row
+    }
+
+    function clickRow(row, mods) {
+        if ((mods & Qt.ControlModifier) && (mods & Qt.ShiftModifier)) rangeTo(row, true)
+        else if (mods & Qt.ControlModifier) toggleAt(row)
+        else if (mods & Qt.ShiftModifier) rangeTo(row, false)
+        else selectOnly(row)
+    }
+
+    // A right-click on an item outside the selection selects only it, so its menu acts on it alone.
+    function rightClickRow(row, isSelected) {
+        if (!isSelected) selectOnly(row)
+        else list.currentIndex = row
+        contextRequested()
+    }
+
+    // A click on empty space drops the selection (Ctrl keeps it).
+    function clickEmpty(mods) {
+        if (mods & Qt.ControlModifier) return
+        endVisual()
+        dir.clearSelection()
+    }
+
+    // Rubber band: select the items under the rectangle from `a` to `b` (content coordinates of `view`),
+    // on top of `baseRows` (a Ctrl+drag keeps what was selected).
+    function bandSelect(view, a, b, baseRows) {
+        const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x)
+        const y0 = Math.max(0, Math.min(a.y, b.y)), y1 = Math.max(a.y, b.y)
+        const rows = {}
+        for (const r of baseRows) rows[r] = true
+        if (view === grid2) {
+            const cw = grid2.cellWidth, ch = grid2.cellHeight
+            for (let c = Math.floor(Math.max(0, x0) / cw); c <= Math.floor(x1 / cw); c++)
+                for (let r = Math.floor(y0 / ch); r <= Math.floor(y1 / ch); r++) {
+                    const i = grid2.indexAt(c * cw + cw / 2, r * ch + ch / 2)
+                    if (i >= 0) rows[i] = true
+                }
+        } else {
+            const step = Math.max(2, rowH / 2)
+            for (let y = y0; y <= y1 + step - 1; y += step) {
+                const i = list.indexAt(Style.pad * 4, Math.min(y, y1))
+                if (i >= 0) rows[i] = true
+            }
+        }
+        dir.replaceSelection(JSON.stringify(Object.keys(rows).map(Number)))
+    }
 
     property double navStart: 0
     readonly property bool debugTiming: Backend.env("CFM_DEBUG") !== ""
@@ -153,9 +269,11 @@ FocusScope {
             forwardStack = []
         }
         endVisual()
+        clickAnchor = -1
         pendingName = select ?? ""
         pendingPath = ""
         lastPath = ""
+        lastRow = -1
         dir.load(path)
         Backend.visit(path)
     }
@@ -189,6 +307,8 @@ FocusScope {
         forwardStack = forwardStack.concat([dir.path])
         backStack = backStack.slice(0, -1)
         endVisual()
+        clickAnchor = -1
+        lastRow = -1
         pendingName = baseName(dir.path)
         dir.load(target)
     }
@@ -199,6 +319,8 @@ FocusScope {
         backStack = backStack.concat([dir.path])
         forwardStack = forwardStack.slice(0, -1)
         endVisual()
+        clickAnchor = -1
+        lastRow = -1
         pendingName = ""
         dir.load(target)
     }
@@ -235,7 +357,11 @@ FocusScope {
         if (pendingPath !== "") row = dir.rowOfPath(pendingPath)
         if (row < 0 && pendingName !== "") row = dir.indexOf(pendingName)
         if (row >= 0) { pendingPath = ""; pendingName = "" }
-        else if (lastPath !== "") row = dir.rowOfPath(lastPath)
+        else if (lastPath !== "") {
+            row = dir.rowOfPath(lastPath)
+            // The item is gone (deleted, moved away): the cursor stays in its place, on the one after it.
+            if (row < 0 && lastRow >= 0 && list.count > 0) row = Math.min(lastRow, list.count - 1)
+        }
         list.currentIndex = row >= 0 ? row : (list.count > 0 ? 0 : -1)
         if (row >= 0) ensureVisible(row)
         else list.contentY = 0
@@ -379,6 +505,79 @@ FocusScope {
             hint: paneDrop.hint
             anchors { horizontalCenter: parent.horizontalCenter; bottom: parent.bottom; bottomMargin: Style.pad * 3 }
             z: 7
+        }
+    }
+
+    // Empty space in a view: a click drops the selection, a drag draws a rubber band (Ctrl+drag adds to the
+    // selection). It sits under the rows, so it only gets presses that no row took.
+    component BandArea: MouseArea {
+        id: band
+        property Flickable view: null
+        anchors.fill: parent
+        z: -1
+        acceptedButtons: Qt.LeftButton | Qt.RightButton
+        preventStealing: true
+        property point start: Qt.point(0, 0)      // content coordinates
+        property point end: Qt.point(0, 0)
+        property point pointer: Qt.point(0, 0)    // own coordinates, for scrolling at the edges
+        property bool banding: false
+        property var baseRows: []
+        readonly property bool outside: pointer.x < 0 || pointer.y < 0 || pointer.x > width || pointer.y > height
+        // Declared inside the view, which would put it in the scrolling content: it belongs to the view itself.
+        Component.onCompleted: parent = view
+
+        onPressed: (m) => {
+            pane.activated()
+            start = mapToItem(view.contentItem, m.x, m.y)
+            end = start
+            banding = false
+            const rows = []
+            if (m.button === Qt.LeftButton && (m.modifiers & Qt.ControlModifier))
+                for (const p of JSON.parse(dir.selectedPaths())) { const r = dir.rowOfPath(p); if (r >= 0) rows.push(r) }
+            baseRows = rows
+        }
+        onPositionChanged: (m) => {
+            if (!(pressedButtons & Qt.LeftButton)) return
+            pointer = Qt.point(m.x, m.y)
+            const p = mapToItem(view.contentItem, m.x, m.y)
+            if (!banding && Math.abs(p.x - start.x) + Math.abs(p.y - start.y) < 6) return
+            if (!banding) pane.endVisual()
+            banding = true
+            end = p
+            pane.bandSelect(view, start, end, baseRows)
+        }
+        onReleased: (m) => {
+            if (banding) { banding = false; return }
+            pane.clickEmpty(m.modifiers)
+        }
+        onCanceled: banding = false
+
+        // Holding the band past an edge scrolls the view.
+        Timer {
+            interval: 30; repeat: true
+            running: band.banding && band.outside
+            onTriggered: {
+                const v = band.view, q = band.pointer
+                const dy = q.y < 0 ? q.y : (q.y > band.height ? q.y - band.height : 0)
+                const dx = q.x < 0 ? q.x : (q.x > band.width ? q.x - band.width : 0)
+                if (v.contentHeight > v.height)
+                    v.contentY = Math.max(v.originY, Math.min(v.originY + v.contentHeight - v.height, v.contentY + dy / 2))
+                if (v.contentWidth > v.width)
+                    v.contentX = Math.max(v.originX, Math.min(v.originX + v.contentWidth - v.width, v.contentX + dx / 2))
+                band.end = band.mapToItem(v.contentItem, q.x, q.y)
+                pane.bandSelect(v, band.start, band.end, band.baseRows)
+            }
+        }
+        Rectangle {
+            Component.onCompleted: parent = band.view
+            z: 20
+            visible: band.banding
+            x: Math.min(band.start.x, band.end.x) + band.view.contentItem.x
+            y: Math.min(band.start.y, band.end.y) + band.view.contentItem.y
+            width: Math.abs(band.end.x - band.start.x)
+            height: Math.abs(band.end.y - band.start.y)
+            color: Style.alpha(Style.accent, 0.14)
+            border { width: 1; color: Style.accent }
         }
     }
 
@@ -618,7 +817,7 @@ FocusScope {
 
         onCurrentIndexChanged: {
             pane.syncCurrent()
-            if (pane.currentPath !== "") pane.lastPath = pane.currentPath
+            if (pane.currentPath !== "") { pane.lastPath = pane.currentPath; pane.lastRow = currentIndex }
         }
 
         // Narrow tiles drop columns: no date under ~640 px, no size under ~330 px.
@@ -649,7 +848,9 @@ FocusScope {
 
             Rectangle {
                 anchors { fill: parent; leftMargin: 2; rightMargin: 2 }
-                color: row.current ? (pane.active ? Style.selection : Style.alpha(Style.selection, 0.5)) : "transparent"
+                // The cursor row keeps the stronger highlight; a selected row gets a tint, as grid cells do.
+                color: row.current ? (pane.active ? Style.selection : Style.alpha(Style.selection, 0.5))
+                       : (row.selected ? Style.alpha(Style.yellow, 0.12) : "transparent")
                 Behavior on color { ColorAnimation { duration: Style.anim(80) } }
             }
             // Accent edge on the cursor row.
@@ -772,23 +973,11 @@ FocusScope {
                 acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                 onPressed: pane.activated()
                 onClicked: (m) => {
-                    if (m.button === Qt.RightButton) {
-                        // Keep a multi-selection; otherwise act on the row under the pointer.
-                        if (!row.selected) pane.setCursor(row.index)
-                        else list.currentIndex = row.index
-                        pane.contextRequested()
-                        return
-                    }
-                    if (m.button === Qt.MiddleButton) { pane.setCursor(row.index); pane.openCurrent(false); return }
-                    if (m.modifiers & Qt.ControlModifier) { dir.toggleSelect(row.index); list.currentIndex = row.index }
-                    else if (m.modifiers & Qt.ShiftModifier) {
-                        const from = Math.max(0, list.currentIndex)
-                        dir.selectRange(from, row.index, true)
-                        list.currentIndex = row.index
-                    } else {
-                        pane.setCursor(row.index)
-                        if (Prefs.v.openOnClick === "single") pane.openCurrent(false)
-                    }
+                    // Keep a multi-selection when the row is part of it; otherwise act on this row alone.
+                    if (m.button === Qt.RightButton) { pane.rightClickRow(row.index, row.selected); return }
+                    if (m.button === Qt.MiddleButton) { pane.selectOnly(row.index); pane.openCurrent(false); return }
+                    pane.clickRow(row.index, m.modifiers)
+                    if (!(m.modifiers & (Qt.ControlModifier | Qt.ShiftModifier)) && Prefs.v.openOnClick === "single") pane.openCurrent(false)
                 }
                 onDoubleClicked: if (Prefs.v.openOnClick !== "single") pane.openCurrent(false)
             }
@@ -799,6 +988,8 @@ FocusScope {
             acceptedModifiers: Qt.ControlModifier
             onWheel: (e) => pane.zoomRequested(e.angleDelta.y > 0 ? 1 : -1)
         }
+
+        BandArea { view: list }
 
         // Slow folders (cloud and network drives) say so: only after 300 ms, so local folders never flash it.
         Timer {
@@ -899,21 +1090,59 @@ FocusScope {
         }
     }
 
-    // Icons (thumbnails) and Columns (compact multi-column) views.
-    GridView {
-        id: grid2
-        visible: pane.grid
+    // Gallery view: the big preview of the item under the cursor, above the thumbnail strip.
+    Loader {
+        id: galleryLoader
+        active: pane.gallery
+        visible: active
         anchors {
             left: parentCol.right; right: childCol.left
-            top: pane.deep ? searchBar.bottom : colHead.bottom; bottom: parent.bottom
+            top: pane.deep ? searchBar.bottom : colHead.bottom
+            bottom: grid2.visible ? grid2.top : parent.bottom
+        }
+        sourceComponent: Inspector {
+            bigIcons: true
+            centred: true
+            imageSize: 1800
+            color: Style.bg
+            path: pane.currentPath
+            onActionRequested: (id) => pane.commandRequested(id)
+        }
+        // A click on the preview makes this the active pane, as a click on a row does.
+        TapHandler { onPressedChanged: if (pressed) pane.activated() }
+    }
+
+    // The top edge of the gallery's strip (one row of thumbnails at the bottom of the pane).
+    Item {
+        id: stripTop
+        anchors { left: parent.left; right: parent.right; bottom: parent.bottom }
+        height: Math.round(112 * Style.zoom) + Style.pad
+    }
+
+    Rectangle {
+        visible: pane.gallery && grid2.visible
+        anchors { left: grid2.left; right: grid2.right; bottom: grid2.top }
+        height: 1; color: Style.surface; z: 5
+    }
+
+    // Icons (thumbnails), Columns (compact multi-column) and the gallery's strip of thumbnails.
+    GridView {
+        id: grid2
+        visible: pane.grid && (!pane.gallery || pane.galleryStrip)
+        anchors {
+            left: parentCol.right; right: childCol.left
+            top: pane.gallery ? stripTop.top : (pane.deep ? searchBar.bottom : colHead.bottom)
+            bottom: parent.bottom
             margins: pane.icons ? Style.pad : 0
         }
         model: pane.grid ? dir : null
         clip: true
         currentIndex: list.currentIndex
         boundsBehavior: Flickable.StopAtBounds
-        cellWidth: pane.icons ? Math.round(124 * Style.zoom * Style.density) : Math.round(250 * Style.zoom)
-        cellHeight: pane.icons ? Math.round(132 * Style.zoom * Style.density) : Style.rowHeight
+        cellWidth: pane.icons ? Math.round(124 * Style.zoom * Style.density)
+                   : (pane.gallery ? Math.round(108 * Style.zoom) : Math.round(250 * Style.zoom))
+        cellHeight: pane.icons ? Math.round(132 * Style.zoom * Style.density)
+                    : (pane.gallery ? Math.round(112 * Style.zoom) : Style.rowHeight)
         flow: pane.icons ? GridView.FlowLeftToRight : GridView.FlowTopToBottom
         // Distribute spare width so icon cells fill the row evenly.
         highlightFollowsCurrentItem: false
@@ -943,24 +1172,27 @@ FocusScope {
             // one over the network at once): it gets the desktop's cached thumbnail, like any other file, or its glyph.
             readonly property bool loadImage: isImage && pane.dir.remote === ""
             property string cached: ""
-            Component.onCompleted: if (pane.icons && !isDir && !loadImage) cached = Backend.thumbnail(fullPath)
+            readonly property bool thumbs: pane.icons || pane.gallery
+            readonly property bool wantCached: thumbs && !isDir && !loadImage
+            onWantCachedChanged: if (wantCached && cached === "") cached = Backend.thumbnail(fullPath)
+            Component.onCompleted: if (wantCached) cached = Backend.thumbnail(fullPath)
             readonly property color nameColor: selected ? Style.yellow : (hidden ? Style.fgDim : Style.fg)
 
             Rectangle {
-                anchors { fill: parent; margins: pane.icons ? 3 : 1 }
+                anchors { fill: parent; margins: cell.thumbs ? 3 : 1 }
                 radius: 6
                 color: cell.selected ? Style.alpha(Style.yellow, 0.12)
                        : (cell.current ? (pane.active ? Style.selection : Style.alpha(Style.selection, 0.5)) : "transparent")
-                border { width: cell.current && pane.icons ? 2 : 0; color: pane.active ? Style.accent : Style.fgDim }
+                border { width: cell.current && cell.thumbs ? 2 : 0; color: pane.active ? Style.accent : Style.fgDim }
             }
             Rectangle {
                 visible: cell.current && pane.columns
                 x: 1; width: 2; height: parent.height; color: pane.active ? Style.accent : Style.fgDim
             }
 
-            // Icons view: thumbnail or big glyph, name below.
+            // Icons view and the gallery's strip: thumbnail or big glyph, name below.
             Item {
-                visible: pane.icons
+                visible: cell.thumbs
                 anchors.fill: parent
                 Item {
                     id: thumbBox
@@ -1067,17 +1299,9 @@ FocusScope {
                 acceptedButtons: Qt.LeftButton | Qt.MiddleButton | Qt.RightButton
                 onPressed: pane.activated()
                 onClicked: (m) => {
-                    if (m.button === Qt.RightButton) {
-                        if (!cell.selected) pane.setCursor(cell.index); else list.currentIndex = cell.index
-                        pane.contextRequested()
-                        return
-                    }
-                    if (m.button === Qt.MiddleButton) { pane.setCursor(cell.index); pane.openCurrent(false); return }
-                    if (m.modifiers & Qt.ControlModifier) { dir.toggleSelect(cell.index); list.currentIndex = cell.index }
-                    else if (m.modifiers & Qt.ShiftModifier) {
-                        dir.selectRange(Math.max(0, list.currentIndex), cell.index, true)
-                        list.currentIndex = cell.index
-                    } else pane.setCursor(cell.index)
+                    if (m.button === Qt.RightButton) { pane.rightClickRow(cell.index, cell.selected); return }
+                    if (m.button === Qt.MiddleButton) { pane.selectOnly(cell.index); pane.openCurrent(false); return }
+                    pane.clickRow(cell.index, m.modifiers)
                 }
                 onDoubleClicked: if (Prefs.v.openOnClick !== "single") pane.openCurrent(false)
             }
@@ -1087,6 +1311,19 @@ FocusScope {
             acceptedModifiers: Qt.ControlModifier
             onWheel: (e) => pane.zoomRequested(e.angleDelta.y > 0 ? 1 : -1)
         }
+        // The gallery's strip scrolls sideways with a plain wheel.
+        WheelHandler {
+            enabled: pane.gallery
+            acceptedModifiers: Qt.NoModifier
+            target: null
+            onWheel: (e) => {
+                const d = e.angleDelta.y !== 0 ? e.angleDelta.y : e.angleDelta.x
+                const max = Math.max(0, grid2.contentWidth - grid2.width)
+                grid2.contentX = Math.max(grid2.originX, Math.min(grid2.originX + max, grid2.contentX - d))
+            }
+        }
+
+        BandArea { view: grid2 }
     }
 
     TapHandler {

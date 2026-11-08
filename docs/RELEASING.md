@@ -37,7 +37,7 @@ parses the flags once and every part it starts sees them.
 | `TOOLS` | `--tools` | `~/Work/CaptainFM-tools` |
 | `DEV_BRANCH` | `--dev-branch` | the branch checked out in `$DEV` |
 | `VERSION` | `--version` | read from `Cargo.toml` (the only place it is set; scheme `0.0.N`) |
-| `CODENAME` | `--codename` | read from `qml/Settings.qml` (edited by hand each release: v0.0.1 *Ahab*, v0.0.2 *Blackbeard*) |
+| `CODENAME` | `--codename` | read from `qml/Settings.qml` (edited by hand each release: v0.0.1 *Ahab*, v0.0.2 *Blackbeard*, v0.0.3 *Crunch*) |
 | `OUT_ROOT`, `OUT` | `--out` | `$DEV/dist-release`, `$OUT_ROOT/vX.Y.Z` |
 | `SKIP_TESTS` | `--skip-tests` | `0`. Skips lint and tests in part 3, only for a rebuild of something already tested |
 | `ASSUME_YES` | `--yes` | `0`. Answers the merge and publish questions; use with care |
@@ -64,9 +64,35 @@ the merge reports conflicts it stops so you can sort them out.
   `gh release upload vX.Y.Z <files> --clobber`.
 
 ## After
-Update the README install section to link the release, move what shipped from `todo.md` to `docs/done_vXXX.md`, and
-(later) push `PKGBUILD` and `.SRCINFO` to the AUR once the tag gives real source checksums. When done with the
-`master` checkout: `cd ~/Work/CaptainFM && git worktree remove ../CaptainFM-release` (part 2 makes it again).
+Update the README install section to link the release, move what shipped from `todo.md` to `docs/done_vXXX.md`, publish
+to the AUR (next section), and when done with the `master` checkout:
+`cd ~/Work/CaptainFM && git worktree remove ../CaptainFM-release` (part 2 makes it again).
+
+## The AUR
+Done by hand, after part 7, because the PKGBUILDs need the pushed tag and the release files. Two packages, each its own
+AUR git repo (needs an AUR account with an SSH key; pushing is public, so get a yes first):
+
+| Package | Installs | `source` |
+|---|---|---|
+| `captainfm` | builds from source (~12 min, `rust` and `cmake`) | the tag tarball `https://github.com/jgarza9788/CaptainFM/archive/refs/tags/v$pkgver.tar.gz` |
+| `captainfm-bin` | the prebuilt tarball (`provides=(captainfm)`, `conflicts=(captainfm)`) | `captainfm-$pkgver-x86_64-linux.tar.gz` from the release page |
+
+The PKGBUILD in `packaging/arch/` is the one the release scripts use, not the AUR one: it expects
+`captainfm-$pkgver-src.tar.gz` and `SKIP` checksums. For `captainfm` change `source` to the tag tarball (the folder in it
+is `CaptainFM-$pkgver`, so `cd` there) and take `captainfm.desktop` from `packaging/arch/` in that tarball. For each update:
+
+```sh
+git clone ssh://aur@aur.archlinux.org/captainfm.git      # once; the same for captainfm-bin
+# edit pkgver (pkgrel=1), then:
+updpkgsums                                                # real sha256sums; -bin can copy them from SHA256SUMS
+makepkg --printsrcinfo > .SRCINFO
+# test in a clean Arch container (podman run archlinux ...): makepkg -si, then captainfm --version
+git add PKGBUILD .SRCINFO && git commit -m "captainfm $VERSION" && git push
+```
+
+Rules: the AUR repo holds only `PKGBUILD`, `.SRCINFO` and small files; never push a binary. The `-bin` package must use
+the tarball from the release (same file as `SHA256SUMS` lists), not a rebuild. Once an AUR package is live, remove the
+"not published yet" note from the README install section and add the `yay -S` lines to the release notes.
 
 ---
 
@@ -94,4 +120,4 @@ every letter is a box). Optional: `gvfs`, `udisks2`, `ffmpeg`, `imagemagick`, `p
 
 **Rules:** never run `captainfm --default`, `--install` or the portal setup from a package script (the default folder
 handler is the user's choice, and `--install` writes into `$HOME`). The PKGBUILD needs `options=('!lto')` (makepkg's
-`-flto` objects cannot be read by rust-lld). `sha256sums` in the PKGBUILD is `SKIP` until a tag exists.
+`-flto` objects cannot be read by rust-lld). `sha256sums` in `packaging/arch/PKGBUILD` stay `SKIP` (it builds from the tarball the release makes); the AUR PKGBUILDs need real ones.

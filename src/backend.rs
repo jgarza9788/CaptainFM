@@ -1526,5 +1526,9 @@ mod tests {
     fn decode_bad_escape_is_literal() {
         assert_eq!(percent_decode("50%"), "50%");
         assert_eq!(percent_decode("%zz"), "%zz");
+        // Multibyte text right after a % used to panic on a mid-character slice.
+        assert_eq!(percent_decode("%aé"), "%aé");
+        assert_eq!(percent_decode("%é"), "%é");
+        assert_eq!(percent_decode("a%20b"), "a b");
     }
 }

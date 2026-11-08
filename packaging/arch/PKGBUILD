@@ -1,7 +1,7 @@
 # Maintainer: Justin Garza <jgarza9788@gmail.com>
 # Built by scripts/release/30-build.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
 pkgname=captainfm
-pkgver=0.0.2
+pkgver=0.0.3
 pkgrel=1
 pkgdesc='Fast, keyboard-first file manager for Omarchy (Qt6/QML, Rust)'
 arch=('x86_64')
