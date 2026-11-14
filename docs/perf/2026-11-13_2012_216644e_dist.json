@@ -1,0 +1,102 @@
+{
+ "when": "2026-11-13 20:12",
+ "fixture_version": 2,
+ "profile": "dist",
+ "runs": 5,
+ "commit": "216644e",
+ "dirty": false,
+ "binary_mb": 10.971588134765625,
+ "machine": {
+  "cpu": "Intel(R) Core(TM) i5-8600T CPU @ 2.30GHz",
+  "cores": 6,
+  "ram": "31 GB",
+  "kernel": "7.2.15-2-omarchy",
+  "host": "omarchy"
+ },
+ "cases": {
+  "startup (empty folder)": {
+   "cpu_s": {
+    "median": 0.47924900000000004,
+    "best": 0.47817,
+    "worst": 0.48378699999999997
+   },
+   "rss_mb": {
+    "median": 88.62109375,
+    "best": 88.52734375,
+    "worst": 88.96875
+   },
+   "qml_loaded_ms": {
+    "median": 187.0,
+    "best": 187.0,
+    "worst": 188.0
+   }
+  },
+  "list 20,000 files": {
+   "cpu_s": {
+    "median": 0.644261,
+    "best": 0.6428309999999999,
+    "worst": 0.6475569999999999
+   },
+   "rss_mb": {
+    "median": 100.3984375,
+    "best": 99.9453125,
+    "worst": 100.63671875
+   },
+   "list_dir_ms": {
+    "median": 12.395378,
+    "best": 12.34281,
+    "worst": 13.528067
+   }
+  },
+  "index 70,000+ files and search": {
+   "cpu_s": {
+    "median": 0.8875869999999999,
+    "best": 0.877161,
+    "worst": 0.888193
+   },
+   "rss_mb": {
+    "median": 100.53125,
+    "best": 99.08203125,
+    "worst": 100.62890625
+   },
+   "index_ms": {
+    "median": 8.180885,
+    "best": 7.62162,
+    "worst": 8.375716
+   },
+   "search_ms": {
+    "median": 4.440772,
+    "best": 4.337873,
+    "worst": 6.233949
+   }
+  },
+  "copy 200 MB (100 files)": {
+   "cpu_s": {
+    "median": 0.9377949999999999,
+    "best": 0.932741,
+    "worst": 0.9452160000000001
+   },
+   "rss_mb": {
+    "median": 96.89453125,
+    "best": 96.64453125,
+    "worst": 97.078125
+   },
+   "copy_ms": {
+    "median": 100.067817,
+    "best": 98.663802,
+    "worst": 100.874171
+   },
+   "copy_mb_per_s": {
+    "median": 1998.64457920572,
+    "best": 1982.6680905263647,
+    "worst": 2027.0858810002069
+   }
+  }
+ },
+ "scratch": "/tmp",
+ "fixture": {
+  "tree_files": 50000,
+  "flat_files": 20000,
+  "copy_mb": 200
+ }
+}
