@@ -51,8 +51,8 @@ load_version() {
 load_version
 
 # The codename is edited by hand in qml/Settings.qml, in a line like:  text: "CaptainFM v" + ... + " *Blackbeard (...) *"
-# Take the first word after the asterisk. Empty if the line is not found (then pass --codename).
-: "${CODENAME:=$(sed -n 's/.*Backend\.version() + " \*\([^ ]*\).*/\1/p' "$DEV/qml/Settings.qml" | head -1)}"
+# Take the text after the asterisk up to a "(", "," or the closing asterisk (it may be several words). Empty if the line is not found (then pass --codename).
+: "${CODENAME:=$(sed -n 's/.*Backend\.version() + " \*\([^*(,]*[^*(, ]\).*/\1/p' "$DEV/qml/Settings.qml" | head -1)}"
 
 # --- small helpers every part uses --------------------------------------------------------------------------------
 # Name of the part that is running, for messages: "30-build.sh: ..."

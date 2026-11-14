@@ -23,6 +23,7 @@ scripts/release/70-publish.sh     # public: shows everything, asks for a yes
 | 5 | `50-perf.sh` | Builds the `dist` binary and runs `scripts/perf.py`; saves a report in `docs/perf/`. | minutes |
 | 6 | `60-notes.sh` | Drafts `dist-release/notes.md` from the commits since the last tag, the limits and the install lines. | seconds |
 | 7 | `70-publish.sh` | Pushes `master`, tags `vX.Y.Z`, creates the GitHub release. Public. Refuses without a yes, and refuses if the tag exists. | seconds |
+| 8 | `80-aur.sh` | After publishing: writes the two AUR packages' `PKGBUILD` and `.SRCINFO` with real checksums into `dist-release/vX.Y.Z/aur/`. Pushes nothing. `--no-fetch` skips the tag-tarball download. | seconds |
 | | `all.sh` | Runs the parts in order and stops at the first failure. Stops before 70 unless given `--publish`. | |
 
 ## Variables
@@ -36,8 +37,8 @@ parses the flags once and every part it starts sees them.
 | `REL` | | `$DEV/../CaptainFM-release` |
 | `TOOLS` | `--tools` | `~/Work/CaptainFM-tools` |
 | `DEV_BRANCH` | `--dev-branch` | the branch checked out in `$DEV` |
-| `VERSION` | `--version` | read from `Cargo.toml` (the only place it is set; scheme `0.0.N`) |
-| `CODENAME` | `--codename` | read from `qml/Settings.qml` (edited by hand each release: v0.0.1 *Ahab*, v0.0.2 *Blackbeard*, v0.0.3 *Crunch*) |
+| `VERSION` | `--version` | read from `Cargo.toml` (the only place it is set; scheme `0.0.N`; the `pkgver` in `packaging/arch/PKGBUILD` is a placeholder that part 3 rewrites) |
+| `CODENAME` | `--codename` | read from `qml/Settings.qml` (edited by hand each release: v0.0.1 *Ahab*, v0.0.2 *Blackbeard*, v0.0.3 *Crunch*, v0.0.4 *Captain Francis Drake*; the name may be several words, and is read up to the closing `*`, a `(` or a `,`) |
 | `OUT_ROOT`, `OUT` | `--out` | `$DEV/dist-release`, `$OUT_ROOT/vX.Y.Z` |
 | `SKIP_TESTS` | `--skip-tests` | `0`. Skips lint and tests in part 3, only for a rebuild of something already tested |
 | `ASSUME_YES` | `--yes` | `0`. Answers the merge and publish questions; use with care |
@@ -69,7 +70,7 @@ to the AUR (next section), and when done with the `master` checkout:
 `cd ~/Work/CaptainFM && git worktree remove ../CaptainFM-release` (part 2 makes it again).
 
 ## The AUR
-Done by hand, after part 7, because the PKGBUILDs need the pushed tag and the release files. Two packages, each its own
+Pushed by hand, after part 7, because the PKGBUILDs need the pushed tag and the release files. `scripts/release/80-aur.sh` writes both PKGBUILDs (and `.SRCINFO`) with real checksums into `dist-release/vX.Y.Z/aur/`; copy them into the AUR clones. Two packages, each its own
 AUR git repo (needs an AUR account with an SSH key; pushing is public, so get a yes first):
 
 | Package | Installs | `source` |
@@ -105,6 +106,8 @@ X11, other desktops and other CPUs are untested.
 
 **AppImage limits (put them in the notes):**
 - Built here it needs glibc 2.44 or newer, so it starts on rolling distros only (it does not start on Debian 13).
+  The two symbols that set that floor are `cosh` and `sinh` (the binary's own newest otherwise is 2.39, `pidfd_spawnp`);
+  `scripts/appimage.sh` prints the floor of the whole image and `GLIBC_MAX=2.41 scripts/appimage.sh` fails above it.
   Older distros need a build inside an older distro's container, not done yet.
 - Host libraries are not bundled: `libGL`, `libEGL`, `libOpenGL`, `fontconfig`, `freetype`, `harfbuzz`, `libxkbcommon`,
   `libwayland-client`, `libdrm`, `libgbm` and at least one font. Tools such as gvfs, udisks and rclone are found on `PATH`.

@@ -1,7 +1,8 @@
 # Maintainer: Justin Garza <jgarza9788@gmail.com>
 # Built by scripts/release/30-build.sh, which makes captainfm-$pkgver-src.tar.gz from `master` and puts it next to this file.
 pkgname=captainfm
-pkgver=0.0.3
+# pkgver is rewritten from Cargo.toml by scripts/release/30-build.sh; this number is only a placeholder.
+pkgver=0.0.4
 pkgrel=1
 pkgdesc='Fast, keyboard-first file manager for Omarchy (Qt6/QML, Rust)'
 arch=('x86_64')
@@ -27,14 +28,13 @@ sha256sums=('SKIP' 'SKIP')
 build() {
   cd "$pkgname-$pkgver"
   export CARGO_TARGET_DIR=target
-  cargo build --profile dist --locked --no-default-features \
-    --features plugin-torrent,plugin-calendar-contacts,plugin-sqlite,plugin-system,plugin-documents
+  # The built-in plugins are Cargo.toml's default feature (`bundled-plugins`), so the list lives only there.
+  cargo build --profile dist --locked
 }
 
 check() {
   cd "$pkgname-$pkgver"
-  cargo test --profile dist --locked --no-default-features \
-    --features plugin-torrent,plugin-calendar-contacts,plugin-sqlite,plugin-system,plugin-documents
+  cargo test --profile dist --locked
 }
 
 package() {

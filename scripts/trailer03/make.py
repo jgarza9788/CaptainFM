@@ -17,8 +17,8 @@ from scenes import Scene
 PREVIEW = bool(os.environ.get("PREVIEW"))
 W, H, FPS = (960, 540, 30) if PREVIEW else (3840, 2160, 60)
 Q = W / 3840
-WORK = os.path.expanduser("~/.cache/cfm-trailer03" + ("-preview" if PREVIEW else ""))
-OUT = os.path.join(WORK, "preview.mp4") if PREVIEW else os.path.expanduser("~/Videos/CaptainFM_Trailer03.mp4")
+WORK = os.path.expanduser("~/.cache/cfm-trailer" + os.environ.get("TAG", "03") + ("-preview" if PREVIEW else ""))
+OUT = os.path.join(WORK, "preview.mp4") if PREVIEW else os.path.expanduser("~/Videos/CaptainFM_Trailer" + os.environ.get("TAG", "03") + ".mp4")
 MONO_BOLD = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf"
 HANDLE = 0.2          # each clip runs this long past its slot on both sides, for the transition
 TRANS = 2 * HANDLE

@@ -2,7 +2,7 @@
 import os, re, subprocess
 import numpy as np
 
-DEMO = os.environ.get("DEMO", os.path.expanduser("~/Videos/cfm-demo03"))
+DEMO = os.environ.get("DEMO", os.path.expanduser("~/Videos/cfm-demo" + os.environ.get("TAG", "03")))
 
 def first_change(video, thresh=6.0, max_s=8.0):
     """Seconds into `video` when the picture first changes a lot from its first frame (the app appearing)."""
