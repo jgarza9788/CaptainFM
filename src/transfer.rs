@@ -3,6 +3,7 @@
 //! Each paste registers a [`Ctl`] here. The worker thread updates its counters while it copies and the
 //! UI polls [`snapshot`]. Cancel and pause are flags the copy loop checks between chunks.
 
+use crate::lock::MutexExt;
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -116,7 +117,7 @@ impl Ctl {
             dest,
             items as u64,
         ));
-        let mut reg = REGISTRY.lock().unwrap();
+        let mut reg = REGISTRY.locked();
         // Finished jobs stay listed for a while, but not forever.
         let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
         let mut drop_n = finished.saturating_sub(8);
@@ -134,19 +135,19 @@ impl Ctl {
     /// Record how many items failed and the first reason.
     pub fn set_errors(&self, count: usize, first: &str) {
         self.errors.store(count as u64, Ordering::Relaxed);
-        *self.first_error.lock().unwrap() = first.to_owned();
+        *self.first_error.locked() = first.to_owned();
     }
 
     pub fn state(&self) -> State {
-        *self.state.lock().unwrap()
+        *self.state.locked()
     }
 
     pub fn set_state(&self, s: State) {
-        *self.state.lock().unwrap() = s;
+        *self.state.locked() = s;
     }
 
     pub fn set_current(&self, name: &str) {
-        *self.current.lock().unwrap() = name.to_owned();
+        *self.current.locked() = name.to_owned();
     }
 
     pub fn add_bytes(&self, n: u64) {
@@ -175,7 +176,7 @@ impl Ctl {
         let total = self.bytes_total.load(Ordering::Relaxed);
         let paused = self.pause.load(Ordering::Relaxed);
         let per_sec = {
-            let mut s = self.speed.lock().unwrap();
+            let mut s = self.speed.locked();
             let dt = s.at.elapsed().as_secs_f64();
             if state != State::Running || paused {
                 s.per_sec = 0.0;
@@ -213,7 +214,7 @@ impl Ctl {
             "dest": self.dest,
             "state": state.name(),
             "paused": paused,
-            "current": *self.current.lock().unwrap(),
+            "current": *self.current.locked(),
             "bytesDone": done,
             "bytesTotal": total,
             "itemsDone": items_done,
@@ -222,7 +223,7 @@ impl Ctl {
             "speed": per_sec,
             "eta": eta,
             "errors": self.errors.load(Ordering::Relaxed),
-            "error": *self.first_error.lock().unwrap(),
+            "error": *self.first_error.locked(),
         })
     }
 }
@@ -235,7 +236,7 @@ impl PartialOrd for State {
 
 /// Every transfer, oldest first, as a JSON array.
 pub fn snapshot() -> String {
-    let reg = REGISTRY.lock().unwrap();
+    let reg = REGISTRY.locked();
     serde_json::Value::Array(reg.iter().map(|c| c.snapshot()).collect()).to_string()
 }
 
@@ -267,7 +268,7 @@ pub fn pause(id: i32, paused: bool) {
 
 /// Forget the transfers that are over.
 pub fn clear_finished() {
-    REGISTRY.lock().unwrap().retain(|c| c.state() < State::Done);
+    REGISTRY.locked().retain(|c| c.state() < State::Done);
 }
 
 #[cfg(test)]
@@ -383,7 +384,7 @@ mod tests {
             j.set_state(State::Done);
         }
         let running = Ctl::register("Copied", "/tmp", 1);
-        let reg = REGISTRY.lock().unwrap();
+        let reg = REGISTRY.locked();
         let finished = reg.iter().filter(|c| c.state() >= State::Done).count();
         assert!(finished <= 8, "{finished} finished jobs kept");
         assert!(
@@ -418,5 +419,48 @@ mod tests {
         assert_eq!(mine["fraction"], 0.25);
         c.set_state(State::Done);
         clear_finished();
+    }
+
+    #[test]
+    fn clearing_finished_jobs_keeps_the_live_ones() {
+        let _sb = crate::testutil::Sandbox::new("transfer-clear");
+        let done = Ctl::register("Copied", "/tmp", 1);
+        done.set_state(State::Done);
+        let failed = Ctl::register("Copied", "/tmp", 1);
+        failed.set_state(State::Failed);
+        let running = Ctl::register("Copied", "/tmp", 1);
+        running.set_state(State::Running);
+        clear_finished();
+        let reg = REGISTRY.locked();
+        assert!(reg.iter().any(|c| c.id == running.id));
+        assert!(!reg.iter().any(|c| c.id == done.id || c.id == failed.id));
+    }
+
+    #[test]
+    fn cancelling_a_job_makes_every_checkpoint_fail() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        assert!(!c.cancelled());
+        cancel(c.id);
+        assert!(c.cancelled());
+        for _ in 0..3 {
+            assert_eq!(
+                c.checkpoint().unwrap_err().kind(),
+                io::ErrorKind::Interrupted
+            );
+        }
+    }
+
+    #[test]
+    fn a_job_that_panics_while_holding_a_lock_does_not_break_the_panel() {
+        let c = Ctl::register("Copied", "/tmp", 1);
+        let c2 = c.clone();
+        let _ = std::thread::spawn(move || {
+            let _g = c2.current.lock().unwrap();
+            panic!("worker died");
+        })
+        .join();
+        // The snapshot reads `current`; it must not panic on the poisoned lock.
+        c.set_current("still readable");
+        assert!(snapshot().contains("still readable"));
     }
 }

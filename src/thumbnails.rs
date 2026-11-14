@@ -65,4 +65,42 @@ mod tests {
         assert!(lookup(target).unwrap().contains("/large/"));
         assert!(lookup(target).unwrap().starts_with("file://"));
     }
+
+    #[test]
+    fn the_name_is_32_hex_digits_and_png() {
+        let n = cache_name("/tmp/a b/ü.png");
+        assert_eq!(n.len(), 32 + 4);
+        assert!(n.ends_with(".png"));
+        assert!(n[..32].chars().all(|c| c.is_ascii_hexdigit()));
+        assert_ne!(
+            n,
+            cache_name("/tmp/a b/u.png"),
+            "different paths, different names"
+        );
+    }
+
+    #[test]
+    fn the_biggest_size_wins_over_smaller_ones() {
+        let sb = Sandbox::new("thumbs-xl");
+        let target = "/home/user/big.png";
+        let name = cache_name(target);
+        for size in ["normal", "large", "x-large"] {
+            sb.touch(&format!(".cache/thumbnails/{size}/{name}"), "x");
+        }
+        assert!(lookup(target).unwrap().contains("/x-large/"));
+    }
+
+    #[test]
+    fn a_relative_cache_home_is_ignored() {
+        let sb = Sandbox::new("thumbs-rel");
+        let target = "/home/user/rel.png";
+        sb.touch(
+            &format!(".cache/thumbnails/normal/{}", cache_name(target)),
+            "x",
+        );
+        // SAFETY: the sandbox holds the test lock, so no other test changes the environment now.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", "relative/cache") };
+        assert_eq!(cache_root(), sb.root.join(".cache/thumbnails"));
+        assert!(lookup(target).is_some(), "falls back to ~/.cache");
+    }
 }

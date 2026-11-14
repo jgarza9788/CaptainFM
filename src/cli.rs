@@ -115,7 +115,7 @@ fn applications_dir() -> PathBuf {
 fn icons_dir() -> PathBuf {
     applications_dir()
         .parent()
-        .unwrap()
+        .unwrap_or_else(|| std::path::Path::new("."))
         .join("icons/hicolor/scalable/apps")
 }
 
@@ -159,7 +159,9 @@ fn install() -> Result<String, String> {
 }
 
 fn write_file(path: &std::path::Path, text: &str) -> Result<(), String> {
-    fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
     fs::write(path, text).map_err(|e| e.to_string())
 }
 
