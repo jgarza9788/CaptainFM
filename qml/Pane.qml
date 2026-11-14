@@ -61,34 +61,6 @@ FocusScope {
     // Name of the server a connection is being made to (set by Main while it mounts), "" otherwise.
     property string connecting: ""
 
-    // A turning arc: the UI is alive while a server keeps us waiting.
-    component Spinner: Canvas {
-        width: Math.round(Style.fontSize * 1.1); height: width
-        property color tint: Style.yellow
-        onTintChanged: requestPaint()
-        onPaint: {
-            const ctx = getContext("2d")
-            ctx.reset()
-            ctx.lineWidth = Math.max(1.5, width / 7)
-            ctx.lineCap = "round"
-            ctx.strokeStyle = tint
-            ctx.beginPath()
-            ctx.arc(width / 2, height / 2, width / 2 - ctx.lineWidth, 0, Math.PI * 1.5)
-            ctx.stroke()
-        }
-        RotationAnimator on rotation {
-            running: parent.visible; loops: Animation.Infinite
-            from: 0; to: 360; duration: 900
-        }
-    }
-    // Seconds spent waiting, shown after 3 s so a slow server is told apart from a stuck one.
-    component WaitClock: Timer {
-        property int seconds: 0
-        interval: 1000; repeat: true
-        onRunningChanged: seconds = 0
-        onTriggered: seconds++
-        function suffix() { return seconds >= 3 ? "  " + seconds + " s" : "" }
-    }
     readonly property int rowH: Math.round(Style.rowHeight * (deep ? 1.85 : 1))
 
     function baseName(p) { return p.substring(p.lastIndexOf("/") + 1) }
@@ -443,31 +415,6 @@ FocusScope {
         })
     }
 
-    // "Copy to docs", "Move to Trash", ...: what releasing the drag here would do.
-    component DropChip: Rectangle {
-        property var hint: ({ kind: "", text: "" })
-        width: content.implicitWidth + Style.pad * 2.5
-        height: Math.round(Style.fontSize * 1.9)
-        radius: height / 2
-        color: Style.accent
-        Row {
-            id: content
-            anchors.centerIn: parent
-            spacing: Style.pad / 1.5
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: Dnd.glyph(hint.kind)
-                color: Style.bg
-                font { family: Style.font; pixelSize: Math.round(Style.fontSize * 1.15) }
-            }
-            Text {
-                anchors.verticalCenter: parent.verticalCenter
-                text: hint.text
-                color: Style.bg
-                font { family: Style.font; pixelSize: Style.smallFont; bold: true }
-            }
-        }
-    }
 
     // Dragging a pane's grip onto another pane swaps them.
     DropArea {
@@ -508,78 +455,6 @@ FocusScope {
         }
     }
 
-    // Empty space in a view: a click drops the selection, a drag draws a rubber band (Ctrl+drag adds to the
-    // selection). It sits under the rows, so it only gets presses that no row took.
-    component BandArea: MouseArea {
-        id: band
-        property Flickable view: null
-        anchors.fill: parent
-        z: -1
-        acceptedButtons: Qt.LeftButton | Qt.RightButton
-        preventStealing: true
-        property point start: Qt.point(0, 0)      // content coordinates
-        property point end: Qt.point(0, 0)
-        property point pointer: Qt.point(0, 0)    // own coordinates, for scrolling at the edges
-        property bool banding: false
-        property var baseRows: []
-        readonly property bool outside: pointer.x < 0 || pointer.y < 0 || pointer.x > width || pointer.y > height
-        // Declared inside the view, which would put it in the scrolling content: it belongs to the view itself.
-        Component.onCompleted: parent = view
-
-        onPressed: (m) => {
-            pane.activated()
-            start = mapToItem(view.contentItem, m.x, m.y)
-            end = start
-            banding = false
-            const rows = []
-            if (m.button === Qt.LeftButton && (m.modifiers & Qt.ControlModifier))
-                for (const p of JSON.parse(dir.selectedPaths())) { const r = dir.rowOfPath(p); if (r >= 0) rows.push(r) }
-            baseRows = rows
-        }
-        onPositionChanged: (m) => {
-            if (!(pressedButtons & Qt.LeftButton)) return
-            pointer = Qt.point(m.x, m.y)
-            const p = mapToItem(view.contentItem, m.x, m.y)
-            if (!banding && Math.abs(p.x - start.x) + Math.abs(p.y - start.y) < 6) return
-            if (!banding) pane.endVisual()
-            banding = true
-            end = p
-            pane.bandSelect(view, start, end, baseRows)
-        }
-        onReleased: (m) => {
-            if (banding) { banding = false; return }
-            pane.clickEmpty(m.modifiers)
-        }
-        onCanceled: banding = false
-
-        // Holding the band past an edge scrolls the view.
-        Timer {
-            interval: 30; repeat: true
-            running: band.banding && band.outside
-            onTriggered: {
-                const v = band.view, q = band.pointer
-                const dy = q.y < 0 ? q.y : (q.y > band.height ? q.y - band.height : 0)
-                const dx = q.x < 0 ? q.x : (q.x > band.width ? q.x - band.width : 0)
-                if (v.contentHeight > v.height)
-                    v.contentY = Math.max(v.originY, Math.min(v.originY + v.contentHeight - v.height, v.contentY + dy / 2))
-                if (v.contentWidth > v.width)
-                    v.contentX = Math.max(v.originX, Math.min(v.originX + v.contentWidth - v.width, v.contentX + dx / 2))
-                band.end = band.mapToItem(v.contentItem, q.x, q.y)
-                pane.bandSelect(v, band.start, band.end, band.baseRows)
-            }
-        }
-        Rectangle {
-            Component.onCompleted: parent = band.view
-            z: 20
-            visible: band.banding
-            x: Math.min(band.start.x, band.end.x) + band.view.contentItem.x
-            y: Math.min(band.start.y, band.end.y) + band.view.contentItem.y
-            width: Math.abs(band.end.x - band.start.x)
-            height: Math.abs(band.end.y - band.start.y)
-            color: Style.alpha(Style.accent, 0.14)
-            border { width: 1; color: Style.accent }
-        }
-    }
 
     // Slim per-pane header, only when several panes share the tab.
     Rectangle {
@@ -989,7 +864,7 @@ FocusScope {
             onWheel: (e) => pane.zoomRequested(e.angleDelta.y > 0 ? 1 : -1)
         }
 
-        BandArea { view: list }
+        BandArea { view: list; host: pane; model: dir }
 
         // Slow folders (cloud and network drives) say so: only after 300 ms, so local folders never flash it.
         Timer {
@@ -1323,7 +1198,7 @@ FocusScope {
             }
         }
 
-        BandArea { view: grid2 }
+        BandArea { view: grid2; host: pane; model: dir }
     }
 
     TapHandler {
