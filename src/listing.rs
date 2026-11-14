@@ -1,5 +1,6 @@
 //! Directory listing primitives: entries, fast reads, metadata and recursive-size passes, sorting.
 
+use crate::lock::MutexExt;
 use std::cmp::Ordering;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -383,7 +384,7 @@ pub fn dir_sizes_parallel(
                         break;
                     }
                     let batch = {
-                        let mut guard = pending.lock().unwrap();
+                        let mut guard = pending.locked();
                         guard.0.push((*idx, size));
                         if guard.1.elapsed() >= interval {
                             guard.1 = Instant::now();
@@ -400,7 +401,7 @@ pub fn dir_sizes_parallel(
         }
     });
     if !stop.load(AtomicOrdering::SeqCst) {
-        let rest = std::mem::take(&mut pending.lock().unwrap().0);
+        let rest = std::mem::take(&mut pending.locked().0);
         if !rest.is_empty() {
             flush(rest);
         }
@@ -799,7 +800,7 @@ mod fs_tests {
             dirs,
             Duration::from_millis(1),
             || false,
-            |batch| got.lock().unwrap().extend(batch),
+            |batch| got.locked().extend(batch),
         );
         let mut got = got.into_inner().unwrap();
         got.sort();

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Check the multi-selection protocol (todo.md section 1) headlessly: each case feeds keys (and mouse clicks, through the
+# Check the multi-selection protocol (docs/todo_2026-11-13.md section 1; run it before a release) headlessly: each case feeds keys (and mouse clicks, through the
 # same pane functions the mouse uses) to a fresh folder of d1/ and f01..f11, presses Delete, and compares what went to
 # the trash with what should have.
 #

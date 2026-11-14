@@ -7,6 +7,7 @@ mod dir_model;
 mod fuzzy;
 mod index;
 mod listing;
+mod lock;
 mod openwith;
 mod ops;
 mod plugins;

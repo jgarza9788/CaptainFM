@@ -3,8 +3,9 @@
 # scripts/record-demo02.sh records (DEMO folder), with ffmpeg only.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-DEMO=${DEMO:-$HOME/Videos/cfm-demo02}
-OUT=${1:-$HOME/Videos/CaptainFM_trailer02.mp4}
+TAG=${TAG:-02}   # the release number
+DEMO=${DEMO:-$HOME/Videos/cfm-demo$TAG}
+OUT=${1:-$HOME/Videos/CaptainFM_trailer$TAG.mp4}
 W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
 B=/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf
 BG=0x0b0d12; ACC=0x7aa2f7; HOT=0xff4d6d

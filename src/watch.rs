@@ -148,4 +148,81 @@ mod tests {
             .is_none()
         );
     }
+
+    #[test]
+    fn a_change_inside_a_subfolder_fires_only_when_recursive() {
+        for (recursive, expect) in [(true, true), (false, false)] {
+            let dir = temp(if recursive { "rec" } else { "flat" });
+            std::fs::create_dir(dir.join("sub")).unwrap();
+            let count = Arc::new(AtomicUsize::new(0));
+            let c = Arc::clone(&count);
+            let _w = watch(&dir, recursive, Duration::from_millis(30), move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            })
+            .expect("watcher");
+            std::fs::write(dir.join("sub/new"), "x").unwrap();
+            if expect {
+                assert!(wait_for(&count, 1), "recursive watch must see sub/new");
+            } else {
+                std::thread::sleep(Duration::from_millis(300));
+                assert_eq!(count.load(Ordering::SeqCst), 0, "a flat watch ignores sub/");
+            }
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn deleting_and_renaming_fire() {
+        let dir = temp("del");
+        std::fs::write(dir.join("a"), "x").unwrap();
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        let _w = watch(&dir, false, Duration::from_millis(30), move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("watcher");
+        std::fs::rename(dir.join("a"), dir.join("b")).unwrap();
+        assert!(wait_for(&count, 1), "a rename must fire");
+        std::thread::sleep(Duration::from_millis(150));
+        let seen = count.load(Ordering::SeqCst);
+        std::fs::remove_file(dir.join("b")).unwrap();
+        assert!(wait_for(&count, seen + 1), "a delete must fire");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn dropping_the_watch_stops_the_callbacks() {
+        let dir = temp("drop");
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        let w = watch(&dir, false, Duration::from_millis(30), move || {
+            c.fetch_add(1, Ordering::SeqCst);
+        })
+        .expect("watcher");
+        drop(w);
+        std::fs::write(dir.join("late"), "x").unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(count.load(Ordering::SeqCst), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn watch_many_survives_a_vanished_later_path() {
+        let dir = temp("many");
+        let gone = dir.join("not-here");
+        let count = Arc::new(AtomicUsize::new(0));
+        let c = Arc::clone(&count);
+        let _w = watch_many(
+            &[dir.clone(), gone],
+            false,
+            Duration::from_millis(30),
+            move || {
+                c.fetch_add(1, Ordering::SeqCst);
+            },
+        )
+        .expect("the first path is enough");
+        std::fs::write(dir.join("f"), "x").unwrap();
+        assert!(wait_for(&count, 1));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

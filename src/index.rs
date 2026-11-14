@@ -7,6 +7,7 @@
 //! A finished index is kept: after a while it only checks the folders' modified times, and rebuilds
 //! (while still serving the old one) only if something changed.
 
+use crate::lock::{MutexExt, RwLockExt};
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -109,12 +110,12 @@ pub fn total_paths() -> usize {
 /// Get the cached index for `root` or start building one. `on_progress` fires as it fills.
 pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) -> Arc<Index> {
     let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut guard = cache.lock().unwrap();
+    let mut guard = cache.locked();
     if let Some(existing) = guard.get(root) {
         let index = Arc::clone(existing);
         drop(guard);
         // Not on a remote: the check re-reads every indexed folder's time over the network.
-        let stale = index.checked.lock().unwrap().elapsed() >= CHECK_AFTER
+        let stale = index.checked.locked().elapsed() >= CHECK_AFTER
             && !crate::listing::is_remote(&index.root);
         if stale
             && index.done.load(Ordering::SeqCst)
@@ -125,10 +126,11 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
                 if changed(&refresh) {
                     let fresh = RwLock::new(Store::default());
                     scan(&refresh.root, &fresh, &|| {}, walk_for(&refresh.root));
-                    *refresh.store.write().unwrap() = fresh.into_inner().unwrap();
+                    *refresh.store.write_locked() =
+                        fresh.into_inner().unwrap_or_else(|e| e.into_inner());
                     on_progress();
                 }
-                *refresh.checked.lock().unwrap() = Instant::now();
+                *refresh.checked.locked() = Instant::now();
                 refresh.refreshing.store(false, Ordering::SeqCst);
             });
         }
@@ -137,7 +139,7 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
     if guard.len() >= 3
         && let Some(oldest) = guard
             .iter()
-            .min_by_key(|(_, i)| *i.checked.lock().unwrap())
+            .min_by_key(|(_, i)| *i.checked.locked())
             .map(|(k, _)| k.clone())
     {
         guard.remove(&oldest);
@@ -161,12 +163,12 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
             &on_progress,
             walk_for(&building.root),
         );
-        *building.checked.lock().unwrap() = Instant::now();
+        *building.checked.locked() = Instant::now();
         building.done.store(true, Ordering::SeqCst);
         if std::env::var_os("CFM_DEBUG").is_some() {
             eprintln!(
                 "[timing] indexed {} entries under {} in {:?}",
-                building.store.read().unwrap().entries.len(),
+                building.store.read_locked().entries.len(),
                 building.root,
                 t0.elapsed()
             );
@@ -179,7 +181,7 @@ pub fn get_or_build(root: &str, on_progress: impl Fn() + Send + Sync + 'static) 
 /// Whether any indexed folder was changed, added to or removed since it was read. A folder's modified
 /// time changes when something inside it is created, deleted or renamed.
 fn changed(index: &Index) -> bool {
-    let store = index.store.read().unwrap();
+    let store = index.store.read_locked();
     store
         .dirs
         .iter()
@@ -203,7 +205,7 @@ struct Queue {
 /// Walk `root` on several threads, adding what it finds to `store` as it goes.
 fn scan(root: &str, store: &RwLock<Store>, on_progress: &(dyn Fn() + Sync), walk: Walk) {
     let Ok(meta) = fs::metadata(root) else { return };
-    store.write().unwrap().dirs.push(DirInfo {
+    store.write_locked().dirs.push(DirInfo {
         abs: root.into(),
         mtime: mtime_of(&meta),
     });
@@ -246,7 +248,7 @@ fn worker(
 ) {
     loop {
         let job = {
-            let mut q = queue.lock().unwrap();
+            let mut q = queue.locked();
             loop {
                 if let Some(job) = q.stack.pop() {
                     q.active += 1;
@@ -255,7 +257,7 @@ fn worker(
                 if q.active == 0 {
                     break None;
                 }
-                q = wake.wait(q).unwrap();
+                q = wake.wait(q).unwrap_or_else(|e| e.into_inner());
             }
         };
         let Some(job) = job else {
@@ -300,7 +302,7 @@ fn worker(
         }
 
         let children = {
-            let mut s = store.write().unwrap();
+            let mut s = store.write_locked();
             let base = s.names.len() as u32;
             for e in &mut batch {
                 e.name_off += base;
@@ -324,14 +326,14 @@ fn worker(
                 .collect::<Vec<_>>()
         };
         {
-            let mut last = last_progress.lock().unwrap();
+            let mut last = last_progress.locked();
             if last.elapsed() > Duration::from_millis(150) {
                 *last = Instant::now();
                 drop(last);
                 on_progress();
             }
         }
-        let mut q = queue.lock().unwrap();
+        let mut q = queue.locked();
         q.stack.extend(children);
         q.active -= 1;
         drop(q);
@@ -363,7 +365,7 @@ pub fn search(
     let t0 = Instant::now();
     let query = Query::parse(query_text);
     let root_len = index.root.trim_end_matches('/').len();
-    let guard = index.store.read().unwrap();
+    let guard = index.store.read_locked();
     let store: &Store = &guard;
     let all: &[IEntry] = &store.entries;
     let needs_meta = query.needs_meta();
@@ -569,7 +571,7 @@ mod tests {
             max_depth: Some(1),
         };
         scan(&sb.path(""), &store, &|| {}, walk);
-        let s = store.read().unwrap();
+        let s = store.read_locked();
         let mut found: Vec<&str> = s.entries.iter().map(|e| s.name(e)).collect();
         found.sort();
         // The root and one level below are read: "b" is seen, its contents are not.

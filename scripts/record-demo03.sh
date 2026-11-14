@@ -2,7 +2,7 @@
 # Records the live scenes for trailer03 into a folder (default ~/Videos/cfm-demo03): one mp4 per scene, plus
 #   <scene>.log   what the app printed with CFM_DEBUG=1, including "[keys] <ms since start> <key>" for every key it was fed
 #   <scene>.meta  "exec <seconds from recording start to launching the app>"
-# It runs the release build on workspace 9 against a synthetic home folder (scripts/demo-fixture.sh, demo-fixture03.sh and
+# It runs the release build on workspace 9 against a synthetic home folder (scripts/demo-fixture.sh, demo-fixture$TAG.sh and
 # scripts/make-big-archive.py), so none of your files show. Fullscreen scenes use QT_SCALE_FACTOR=1.6 so the interface
 # reads well at 4K; the window-manager and speed scenes run tiled at the normal size.
 # It MOVES THE REAL POINTER (drag scene, through /dev/uinput) and switches to workspace 9 for a few minutes, then back.
@@ -12,10 +12,11 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 BIN=$ROOT/target/release/captainfm
-OUT=${1:-$HOME/Videos/cfm-demo03}; shift || true
+TAG=${TAG:-$(basename "$0" .sh)}; TAG=${TAG#record-demo}   # the release number, from the file name (record-demo04.sh -> 04); or set TAG=
+OUT=${1:-$HOME/Videos/cfm-demo$TAG}; shift || true
 ONLY=("$@")
 MON=${MON:-HDMI-A-2}
-BASE=$HOME/.cache/cfm-demo03; mkdir -p "$BASE"
+BASE=$HOME/.cache/cfm-demo$TAG; mkdir -p "$BASE"
 PRISTINE=$BASE/pristine H=$BASE/home
 BIG=$BASE/big
 mkdir -p "$OUT"
@@ -24,7 +25,7 @@ REAL_WS=$(hyprctl activeworkspace -j | python3 -c 'import json,sys;print(json.lo
 [ -d "$BIG" ] || python3 scripts/make-big-archive.py "$BIG"
 if [ ! -d "$PRISTINE/Showcase" ]; then
   rm -rf "$PRISTINE"; mkdir -p "$PRISTINE"; H=$PRISTINE
-  source scripts/demo-fixture.sh; source scripts/demo-fixture03.sh
+  source scripts/demo-fixture.sh; source scripts/demo-fixture$TAG.sh
   mkdir -p "$H/.local/share/captainfm" "$H/.config/captainfm"
   printf '{"bookmarks":["%s","%s/dotfiles"],"recents":[]}' "$P" "$H" > "$H/.local/share/captainfm/state.json"
   H=$BASE/home
@@ -84,7 +85,7 @@ scene() {
   echo "exec $(awk "BEGIN{print $t0-$REC_T0}")" > "$OUT/$name.meta"
   until hyprctl clients -j | grep -q '"class": "captainfm"'; do sleep 0.05; done
   hyprctl dispatch 'hl.dsp.window.fullscreen()' >/dev/null
-  if [ "$ptr" != - ]; then sleep 1.5; echo "ptr $(awk "BEGIN{print $(now)-$REC_T0}")" >> "$OUT/$name.meta"; python3 scripts/uinput_pointer.py < "$ROOT/scripts/demo03/$ptr" >"$OUT/$name.ptr.log" 2>&1 || echo "pointer script failed, see $OUT/$name.ptr.log"; fi
+  if [ "$ptr" != - ]; then sleep 1.5; echo "ptr $(awk "BEGIN{print $(now)-$REC_T0}")" >> "$OUT/$name.meta"; python3 scripts/uinput_pointer.py < "$ROOT/scripts/demo$TAG/$ptr" >"$OUT/$name.ptr.log" 2>&1 || echo "pointer script failed, see $OUT/$name.ptr.log"; fi
   # The keys run at 4 a second after the window is up; "dur" is the quiet tail after the last one.
   local nk=0; [ "$keys" != - ] && nk=$(wc -w <<< "$keys")
   record_stop "$(awk "BEGIN{print 0.6 + $nk * 0.25 + $dur}")"

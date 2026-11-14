@@ -1,5 +1,6 @@
 //! Persistent state: config files, bookmarks and frecency-ranked recent folders.
 
+use crate::lock::MutexExt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -148,7 +149,7 @@ impl FeatureUse {
     fn mark_on(id: &str, day: u32) {
         static SEEN: std::sync::Mutex<Vec<(u32, String)>> = std::sync::Mutex::new(Vec::new());
         {
-            let mut seen = SEEN.lock().unwrap();
+            let mut seen = SEEN.locked();
             if seen.iter().any(|(d, i)| *d == day && i == id) {
                 return;
             }
@@ -276,7 +277,7 @@ pub fn store_file() -> PathBuf {
 }
 
 fn with_store<R>(f: impl FnOnce(&mut Store) -> R) -> R {
-    let mut guard = STORE.lock().unwrap();
+    let mut guard = STORE.locked();
     let store = guard.get_or_insert_with(|| {
         fs::read_to_string(store_file())
             .ok()
@@ -347,7 +348,7 @@ pub fn record_visit(path: &str) {
 /// Forget the cached store so the next use re-reads it (after another instance changed the file,
 /// or in tests that switch data directories).
 pub fn reset_store() {
-    *STORE.lock().unwrap() = None;
+    *STORE.locked() = None;
 }
 
 pub fn bookmarks() -> Vec<String> {

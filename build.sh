@@ -17,7 +17,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-ALL=(torrent calendar-contacts sqlite system documents)
+# The plugin names come from Cargo.toml (`plugin-<name> = []`), so adding a plugin there is enough.
+mapfile -t ALL < <(sed -n 's/^plugin-\([a-z-]*\) = \[\]$/\1/p' Cargo.toml)
+[[ ${#ALL[@]} -gt 0 ]] || { echo "build.sh: found no plugin-* features in Cargo.toml" >&2; exit 1; }
 PROFILE=dist
 DRY=0
 CHECKS=1

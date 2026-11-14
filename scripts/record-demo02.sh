@@ -8,7 +8,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT=$PWD
 BIN=$ROOT/target/release/captainfm
-OUT=${1:-$HOME/Videos/cfm-demo02}; shift || true
+TAG=${TAG:-$(basename "$0" .sh)}; TAG=${TAG#record-demo}   # the release number, from the file name (record-demo04.sh -> 04); or set TAG=
+OUT=${1:-$HOME/Videos/cfm-demo$TAG}; shift || true
 ONLY=("$@")
 MON=${MON:-HDMI-A-2}
 mkdir -p "$HOME/.cache"; WORK=$(mktemp -d "$HOME/.cache/cfm-demo.XXXXXX")  # not /tmp: it is a small tmpfs
@@ -55,7 +56,7 @@ scene() {
   sleep 0.5; hyprctl dispatch 'hl.dsp.window.fullscreen()' >/dev/null; sleep 1.2
   local ready; ready=$(awk "BEGIN{print $(now)-$t0+1.2}")
   echo "$ready" > "$OUT/$name.t"
-  if [ "$ptr" != - ]; then python3 scripts/uinput_pointer.py < "$ROOT/scripts/demo02/$ptr" >"$OUT/$name.ptr.log" 2>&1 || echo "pointer script failed, see $OUT/$name.ptr.log"; fi
+  if [ "$ptr" != - ]; then python3 scripts/uinput_pointer.py < "$ROOT/scripts/demo$TAG/$ptr" >"$OUT/$name.ptr.log" 2>&1 || echo "pointer script failed, see $OUT/$name.ptr.log"; fi
   sleep "$dur"
   pkill -x captainfm || true; PID_APP=""
   sleep 0.5; kill -INT "$PID_REC"; wait "$PID_REC" 2>/dev/null || true; PID_REC=""

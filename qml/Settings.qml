@@ -237,7 +237,7 @@ Rectangle {
             Text {
                 anchors.centerIn: parent
                 // The number comes from Cargo.toml; the codename changes by hand with each release.
-                text: "CaptainFM v" + Backend.version() + " *Crunch (Cap'n Crunch), 🥣*"
+                text: "CaptainFM v" + Backend.version() + " *Captain Francis Drake*"
                 color: Style.fgDim
                 font { family: Style.font; pixelSize: Style.smallFont }
             }

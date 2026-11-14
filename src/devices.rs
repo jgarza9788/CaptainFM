@@ -1,5 +1,6 @@
 //! Devices and remotes: disks via lsblk/udisksctl (UDisks2) and network or phone mounts via GVfs.
 
+use crate::lock::MutexExt;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::PathBuf;
@@ -604,7 +605,7 @@ static ANSWERS: Mutex<Option<Sender<Option<String>>>> = Mutex::new(None);
 
 /// Deliver the answer (or `None` to cancel) to the prompt `mount_uri` is waiting on.
 pub fn answer_prompt(answer: Option<String>) {
-    if let Some(tx) = ANSWERS.lock().unwrap().as_ref() {
+    if let Some(tx) = ANSWERS.locked().as_ref() {
         let _ = tx.send(answer);
     }
 }
@@ -638,9 +639,13 @@ pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult
     else {
         return failed("gio is not installed".into());
     };
-    let mut stdin = child.stdin.take().unwrap();
-    let mut stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
+    // All three were requested as pipes above, so they are there; a missing one is a failed mount, not a panic.
+    let (Some(mut stdin), Some(mut stdout), Some(mut stderr)) =
+        (child.stdin.take(), child.stdout.take(), child.stderr.take())
+    else {
+        let _ = child.kill();
+        return failed("could not talk to gio".into());
+    };
 
     let (tx, rx): (Sender<Vec<u8>>, Receiver<Vec<u8>>) = mpsc::channel();
     std::thread::spawn(move || {
@@ -716,7 +721,7 @@ pub fn mount_uri(uri: &str, ask: impl Fn(&str) -> Option<String>) -> MountResult
 /// Register a channel the UI answers prompts through; returns the receiving end.
 pub fn begin_prompting() -> Receiver<Option<String>> {
     let (tx, rx) = mpsc::channel();
-    *ANSWERS.lock().unwrap() = Some(tx);
+    *ANSWERS.locked() = Some(tx);
     rx
 }
 

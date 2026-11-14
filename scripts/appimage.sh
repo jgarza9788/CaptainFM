@@ -57,15 +57,26 @@ exec "$this_dir/usr/bin/captainfm" "$@"
 EOF
 chmod +x AppDir/AppRun
 
+# The glibc floor: the newest GLIBC_x.y symbol any file in the image asks for is the oldest system it starts on.
+# GLIBC_MAX=2.41 scripts/appimage.sh fails the build if that is exceeded (Debian 13 has 2.41); without it, it only reports.
+floor=$(find AppDir -type f \( -name '*.so*' -o -path '*/usr/bin/*' \) -print0 | xargs -0 -n1 objdump -T 2>/dev/null \
+  | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+echo "glibc floor of this image: ${floor:-unknown}"
+if [ -n "${GLIBC_MAX:-}" ] && [ -n "$floor" ] && [ "$(printf '%s\n%s\n' "$floor" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
+  echo "appimage.sh: the image needs glibc $floor, above GLIBC_MAX=$GLIBC_MAX; build on an older distro (docs/RELEASING.md)" >&2; exit 1
+fi
+
 IMAGE=$OUT/CaptainFM-$VERSION-x86_64.AppImage
 "$TOOLS/appimagetool-x86_64.AppImage" AppDir "$IMAGE" >"$WORK/appimagetool.log" 2>&1 \
   || { echo "appimage.sh: appimagetool failed, see $WORK/appimagetool.log" >&2; exit 1; }
 chmod +x "$IMAGE"
 
 # Check 1 and 2 of the release steps: the version prints, and a headless run draws a folder and saves a picture.
-"$IMAGE" --version
+ran="$("$IMAGE" --version)" || { echo "appimage.sh: $IMAGE --version failed; do not publish it" >&2; exit 1; }
+echo "$ran"
+case "$ran" in *"$VERSION"*) ;; *) echo "appimage.sh: --version printed '$ran', expected $VERSION; do not publish $IMAGE" >&2; exit 1 ;; esac
 SHOT=$WORK/check.png
 HOME=$WORK/home QT_QPA_PLATFORM=offscreen CFM_SHOT=$SHOT CFM_KEYS="<F9> <F9>" CFM_SIZE=900x500 timeout 90 "$IMAGE" /usr/share >/dev/null 2>&1 || true
 [ -s "$SHOT" ] || { echo "appimage.sh: the headless run drew nothing; do not publish $IMAGE" >&2; exit 1; }
 echo "ok: $IMAGE ($(du -h "$IMAGE" | cut -f1)); checked: --version and a headless screenshot ($SHOT)"
-echo "still to check by hand: a different distro (glibc!), a live Wayland window"
+echo "still to check by hand: a different distro (see the glibc floor above), a live Wayland window"

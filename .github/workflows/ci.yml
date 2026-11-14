@@ -1,0 +1,50 @@
+# What `./build.sh` checks before it builds, run on every push and pull request: formatting, clippy with warnings as
+# errors, the unit tests, and the two headless UI scripts (scripts/selection-tests.sh, scripts/ui-tests.sh).
+#
+# It runs in an Arch container because the app needs a current Qt 6 (the same reason the release is built on Arch).
+# Written to match the local scripts; it has not been run on GitHub yet, so the first run may need a package added to
+# the pacman line below.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - name: Install the build tools and Qt
+        run: pacman -Syu --noconfirm --needed base-devel git rust cmake qt6-declarative qt6-multimedia fuse3 ttf-dejavu
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: cargo-${{ hashFiles('Cargo.lock') }}
+          restore-keys: cargo-
+
+      - name: Formatting
+        run: cargo fmt --check
+
+      - name: Clippy (warnings are errors)
+        run: cargo clippy --release --all-targets -- -D warnings
+
+      - name: Unit tests
+        run: ./run-tests.sh
+
+      - name: Build for the UI scripts
+        run: cargo build --release
+
+      - name: Selection protocol (headless)
+        run: ./scripts/selection-tests.sh
+
+      - name: Dialogs and file commands (headless)
+        run: ./scripts/ui-tests.sh
