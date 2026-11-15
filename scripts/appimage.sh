@@ -60,7 +60,7 @@ chmod +x AppDir/AppRun
 # The glibc floor: the newest GLIBC_x.y symbol any file in the image asks for is the oldest system it starts on.
 # GLIBC_MAX=2.41 scripts/appimage.sh fails the build if that is exceeded (Debian 13 has 2.41); without it, it only reports.
 floor=$(find AppDir -type f \( -name '*.so*' -o -path '*/usr/bin/*' \) -print0 | xargs -0 -n1 objdump -T 2>/dev/null \
-  | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1)
+  | grep -o 'GLIBC_[0-9][0-9.]*' | sed 's/GLIBC_//' | sort -Vu | tail -1) || true
 echo "glibc floor of this image: ${floor:-unknown}"
 if [ -n "${GLIBC_MAX:-}" ] && [ -n "$floor" ] && [ "$(printf '%s\n%s\n' "$floor" "$GLIBC_MAX" | sort -V | tail -1)" != "$GLIBC_MAX" ]; then
   echo "appimage.sh: the image needs glibc $floor, above GLIBC_MAX=$GLIBC_MAX; build on an older distro (docs/RELEASING.md)" >&2; exit 1

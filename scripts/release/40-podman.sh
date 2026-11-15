@@ -21,7 +21,7 @@ shot='QT_QPA_PLATFORM=offscreen CFM_SHOT=/tmp/s.png CFM_KEYS="<F9> <F9>" HOME=/t
 # --- 1. the package -------------------------------------------------------------------------------------------------
 say "package in a clean container"
 podman run --rm -v "$OUT":/r:Z docker.io/library/archlinux bash -c "
-  pacman -Sy --noconfirm >/dev/null &&
+  pacman -Syu --noconfirm >/dev/null &&
   pacman -U --noconfirm /r/captainfm-*.pkg.tar.zst >/dev/null &&
   captainfm --version &&
   $shot captainfm /usr/share; ls -la /tmp/s.png"
@@ -31,7 +31,7 @@ podman run --rm -v "$OUT":/r:Z docker.io/library/archlinux bash -c "
 if ls "$OUT"/CaptainFM-*-x86_64.AppImage >/dev/null 2>&1; then
   say "AppImage in a clean container"
   podman run --rm -v "$OUT":/r:Z docker.io/library/archlinux bash -c "
-    pacman -Sy --noconfirm --needed libglvnd fontconfig ttf-dejavu harfbuzz freetype2 libxkbcommon wayland libdrm mesa >/dev/null 2>&1
+    pacman -Syu --noconfirm --needed libglvnd fontconfig ttf-dejavu harfbuzz freetype2 libxkbcommon wayland libdrm mesa >/dev/null 2>&1
     /r/CaptainFM-*-x86_64.AppImage --appimage-extract-and-run --version &&
     $shot /r/CaptainFM-*-x86_64.AppImage --appimage-extract-and-run /usr/share; ls -la /tmp/s.png"
 else
